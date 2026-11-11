@@ -138,7 +138,7 @@ export default function HomeScreen({ navigation }) {
 }
 
 const s = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: '#F8F6F3' },
+  wrap: { flex: 1, backgroundColor: '#f8f2f2' },
   hero: { paddingBottom: 20, borderBottomLeftRadius: 22, borderBottomRightRadius: 22, overflow: 'hidden' },
 
   mobileBar: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
