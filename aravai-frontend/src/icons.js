@@ -24,4 +24,4 @@ export const ICON = {
 };
 
 // darker spice shades for icons on tinted tiles
-export const SPICE_DEEP = ['#9E2410', '#B7791F', '#6E5F1F', '#B34710', '#5A3E1B', '#8A6508', '#9A3412'];
+export const SPICE_DEEP = ['#9E2410', '#db9731', '#6E5F1F', '#B34710', '#5A3E1B', '#8A6508', '#9A3412'];
