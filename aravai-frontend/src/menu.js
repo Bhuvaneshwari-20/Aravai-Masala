@@ -1,7 +1,7 @@
 // module key = role_permissions.module in the database
 // screen = name of the screen in App.js navigator (no screen => "coming soon")
 export const MENU = [
-  { module: 'dashboard', label: 'Dashboard', icon: '📊', color: '#3B82F6' },
+  { module: 'dashboard', label: 'Dashboard', icon: '📊', color: '#2574f5' },
   { module: 'material', label: 'Material Master', icon: '📦', color: '#B45309', screen: 'MaterialList' },
   { module: 'vendor', label: 'Vendor Master', icon: '🏭', color: '#7C3AED', screen: 'VendorList' },
   { module: 'indent', label: 'Indent', icon: '📝', color: '#0EA5E9' },
