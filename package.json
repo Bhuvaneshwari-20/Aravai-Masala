@@ -1,1 +1,12 @@
-{}
+{
+  "name": "aravai-masala",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install && npm --prefix aravai-backend install && npm --prefix aravai-frontend install",
+    "dev": "concurrently -k -n API,WEB -c yellow,cyan \"npm --prefix aravai-backend run dev\" \"npm --prefix aravai-frontend run web\"",
+    "dev:phone": "concurrently -k -n API,APP -c yellow,cyan \"npm --prefix aravai-backend run dev\" \"npm --prefix aravai-frontend run start\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
