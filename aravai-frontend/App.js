@@ -9,12 +9,21 @@ import { COLORS, paperTheme } from './src/theme';
 import LoginScreen from './src/screens/LoginScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import Sidebar from './src/components/Sidebar';
+import MobileTabBar from './src/components/MobileTabBar';
 import { UiProvider } from './src/ui';
 import MaterialListScreen from './src/screens/material/MaterialListScreen';
 import MaterialDetailScreen from './src/screens/material/MaterialDetailScreen';
 import VendorListScreen from './src/screens/vendor/VendorListScreen';
 import VendorDetailScreen from './src/screens/vendor/VendorDetailScreen';
 import AccountListScreen from './src/screens/users/AccountListScreen';
+import StockListScreen from './src/screens/stock/StockListScreen';
+import StockCardScreen from './src/screens/stock/StockCardScreen';
+import ProductListScreen from './src/screens/product/ProductListScreen';
+import GramListScreen from './src/screens/gram/GramListScreen';
+import RecipeListScreen from './src/screens/recipe/RecipeListScreen';
+import BatchListScreen from './src/screens/batch/BatchListScreen';
+import BatchDetailScreen from './src/screens/batch/BatchDetailScreen';
+import MachineListScreen from './src/screens/machine/MachineListScreen';
 
 const Stack = createNativeStackNavigator();
 const navRef = createNavigationContainerRef();
@@ -38,7 +47,8 @@ function Root() {
   return (
     <View style={{ flex: 1, flexDirection: 'row', backgroundColor: COLORS.bg }}>
       {width >= 900 && <Sidebar navRef={navRef} current={route} />}
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+    <View style={{ flex: 1 }}>
     <NavigationContainer ref={navRef} onStateChange={() => setRoute(navRef.getCurrentRoute()?.name || 'Home')}>
       <Stack.Navigator screenOptions={headerOpts}>
         <Stack.Screen name="Home" component={HomeScreen} options={{ headerShown: false }} />
@@ -46,9 +56,19 @@ function Root() {
         <Stack.Screen name="MaterialDetail" component={MaterialDetailScreen} options={{ title: 'Material Details' }} />
         <Stack.Screen name="VendorList" component={VendorListScreen} options={{ title: 'Vendor Master' }} />
         <Stack.Screen name="VendorDetail" component={VendorDetailScreen} options={{ title: 'Vendor Details' }} />
+        <Stack.Screen name="StockList" component={StockListScreen} options={{ title: 'Material Stock' }} />
+        <Stack.Screen name="StockCard" component={StockCardScreen} options={{ title: 'Material Card' }} />
+        <Stack.Screen name="ProductList" component={ProductListScreen} options={{ title: 'Products & MRP' }} />
+        <Stack.Screen name="GramList" component={GramListScreen} options={{ title: 'Grams' }} />
+        <Stack.Screen name="RecipeList" component={RecipeListScreen} options={{ title: 'Recipes' }} />
+        <Stack.Screen name="BatchList" component={BatchListScreen} options={{ title: 'Batches' }} />
+        <Stack.Screen name="BatchDetail" component={BatchDetailScreen} options={{ title: 'Batch' }} />
+        <Stack.Screen name="MachineList" component={MachineListScreen} options={{ title: 'Machines' }} />
         <Stack.Screen name="AccountList" component={AccountListScreen} options={{ title: 'Users' }} />
       </Stack.Navigator>
     </NavigationContainer>
+    </View>
+    {width < 900 && <MobileTabBar navRef={navRef} current={route} />}
       </View>
     </View>
   );

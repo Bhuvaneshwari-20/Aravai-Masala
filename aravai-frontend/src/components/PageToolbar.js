@@ -8,7 +8,7 @@ import { COLORS } from '../theme';
 
 // Top row of every master list: icon + title + count on the left, compact search + Add button on the right.
 export default function PageToolbar({ icon, title, count, noun, search, onSearch, placeholder = 'Search', addLabel, onAdd }) {
-  const { isWide } = useLayout();
+  const { isWide, isPhone } = useLayout();
   return (
     <Container>
       <View style={[s.bar, !isWide && s.barCol]}>
@@ -27,8 +27,8 @@ export default function PageToolbar({ icon, title, count, noun, search, onSearch
             {!!search && <Pressable onPress={() => onSearch('')}><MCI name="close-circle" size={16} color={COLORS.grey} /></Pressable>}
           </View>
           {!!onAdd && (
-            <Pressable style={s.add} onPress={onAdd}>
-              <MCI name="plus" size={18} color="#fff" /><Text style={s.addText}>{addLabel}</Text>
+            <Pressable style={[s.add, isPhone && s.addPhone]} onPress={onAdd} accessibilityLabel={addLabel}>
+              <MCI name="plus" size={18} color="#fff" />{!isPhone && <Text style={s.addText}>{addLabel}</Text>}
             </Pressable>
           )}
         </View>
@@ -45,8 +45,9 @@ const s = StyleSheet.create({
   title: { fontSize: 20, fontWeight: '900', color: COLORS.text },
   sub: { fontSize: 12.5, color: COLORS.grey, fontWeight: '600', marginTop: 1 },
   actions: { flexDirection: 'row', alignItems: 'center' },
-  search: { flexDirection: 'row', alignItems: 'center', width: 280, height: 40, backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: 12 },
+  search: { flexDirection: 'row', alignItems: 'center', width: 280, height: 44, backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: 12 },
   input: { flex: 1, marginLeft: 8, fontSize: 14, color: COLORS.text, outlineStyle: 'none' },
   add: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.green, borderRadius: 10, height: 40, paddingHorizontal: 16, marginLeft: 10 },
+  addPhone: { width: 44, height: 44, borderRadius: 14, paddingHorizontal: 0, justifyContent: 'center', elevation: 3 },
   addText: { color: '#fff', fontWeight: '800', marginLeft: 6, fontSize: 14 },
 });

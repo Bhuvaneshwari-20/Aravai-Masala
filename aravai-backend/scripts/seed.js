@@ -5,8 +5,8 @@ const { pool } = require('../src/config/db');
 // V=view C=create E=edit D=delete A=approve
 const M = {
   'Purchase Department': { material: 'V', vendor: 'VCE', indent: 'VCE', quotation: 'VCEA', purchase_order: 'VCE', dashboard: 'V' },
-  'Store Incharge': { material: 'V', stock: 'VCE', indent: 'VC', purchase_order: 'V', finished_goods: 'V', reports: 'V', dashboard: 'V' },
-  'Production Incharge': { material: 'V', product: 'V', batching: 'VCEA', roasting: 'VE', grinding: 'VE', blending: 'VCE', recipe: 'V', machine: 'VE', packing: 'VE', finished_goods: 'VCE', reports: 'V', dashboard: 'V' },
+  'Store Incharge': { material: 'V', vendor: 'V', stock: 'VCE', indent: 'VC', purchase_order: 'V', finished_goods: 'V', reports: 'V', dashboard: 'V' },
+  'Production Incharge': { material: 'V', product: 'VCE', batching: 'VCEA', roasting: 'VE', grinding: 'VE', blending: 'VCE', recipe: 'VCE', machine: 'VE', packing: 'VE', finished_goods: 'VCE', reports: 'V', dashboard: 'V' },
   'Batching Operator': { batching: 'VCE', material: 'V', product: 'V', recipe: 'V' },
   'Roasting Operator': { roasting: 'VCE', machine: 'V' },
   'Grinding Operator': { grinding: 'VCE', machine: 'V' },

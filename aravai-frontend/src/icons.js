@@ -3,11 +3,10 @@ export const ICON = {
   "dashboard": "view-dashboard",
   "material": "package-variant",
   "vendor": "store",
-  "indent": "file-document-edit",
-  "quotation": "file-compare",
-  "purchase_order": "receipt-text",
+ 
   "stock": "clipboard-list",
   "product": "tag-multiple",
+  "gram": "scale",
   "recipe": "book-open-variant",
   "batching": "scale-balance",
   "roasting": "fire",

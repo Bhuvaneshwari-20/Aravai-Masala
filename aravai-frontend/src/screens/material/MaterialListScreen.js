@@ -17,12 +17,9 @@ import EmptyView from '../../components/EmptyView';
 import { COLORS, fmt, categoryStyle, padGrid } from '../../theme';
 
 function MaterialCard({ item, index, onPress }) {
-  const cs = categoryStyle(item.category_name);
+  const cs = categoryStyle(item.category_name || '');
   const cur = Number(item.current_stock) || 0;
-  const min = Number(item.minimum_stock) || 0;
-  const pct = min > 0 ? Math.max(0.04, Math.min(1, cur / (min * 2))) : 1;
   const low = !!item.is_low_stock;
-  const bar = low ? COLORS.danger : COLORS.ok;
   return (
     <FadeIn delay={Math.min(index, 8) * 45} from={14} style={{ flex: 1 }}>
       <PressableScale onPress={onPress} to={0.98} style={[s.card, !item.is_active && { opacity: 0.6 }]}>
@@ -32,10 +29,6 @@ function MaterialCard({ item, index, onPress }) {
             <View style={[s.tile, { backgroundColor: `${cs.color}1F` }]}><Text style={{ fontSize: 24 }}>{cs.icon}</Text></View>
             <View style={{ flex: 1 }}>
               <Text style={s.name} numberOfLines={1}>{item.material_name}</Text>
-              <View style={s.metaRow}>
-                <Text style={s.code}>{item.material_code}</Text>
-                <View style={[s.cat, { backgroundColor: `${cs.color}1A` }]}><Text style={[s.catText, { color: cs.color }]}>{item.category_name}</Text></View>
-              </View>
             </View>
             <View style={{ alignItems: 'flex-end' }}>
               {low && <View style={[s.badge, { backgroundColor: COLORS.dangerBg }]}><Text style={[s.badgeText, { color: COLORS.danger }]}>LOW STOCK</Text></View>}
@@ -46,9 +39,7 @@ function MaterialCard({ item, index, onPress }) {
           <View style={s.stockRow}>
             <Text style={s.stockLabel}>Stock</Text>
             <Text style={[s.stockVal, low && { color: COLORS.danger }]}>{fmt(cur)} <Text style={s.unit}>{item.unit}</Text></Text>
-            <Text style={s.min}>Min {fmt(min)}</Text>
           </View>
-          <View style={s.track}><View style={[s.fill, { width: `${pct * 100}%`, backgroundColor: bar }]} /></View>
         </View>
       </PressableScale>
     </FadeIn>
@@ -120,10 +111,6 @@ const s = StyleSheet.create({
   cardTop: { flexDirection: 'row', alignItems: 'center' },
   tile: { width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
   name: { fontSize: 16, fontWeight: '800', color: COLORS.text },
-  metaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
-  code: { color: COLORS.grey, fontSize: 12.5, fontWeight: '600', marginRight: 8 },
-  cat: { borderRadius: 10, paddingHorizontal: 8, paddingVertical: 1 },
-  catText: { fontSize: 11, fontWeight: '800' },
   badge: { borderRadius: 10, paddingHorizontal: 9, paddingVertical: 3, marginBottom: 3 },
   badgeText: { fontSize: 10.5, fontWeight: '900', letterSpacing: 0.4 },
   specs: { color: COLORS.grey, fontSize: 12.5, fontWeight: '600', marginTop: 10 },
@@ -131,7 +118,4 @@ const s = StyleSheet.create({
   stockLabel: { color: COLORS.grey, fontSize: 12, fontWeight: '700', marginRight: 8 },
   stockVal: { flex: 1, fontSize: 17, fontWeight: '900', color: COLORS.text },
   unit: { fontSize: 12, fontWeight: '700', color: COLORS.grey },
-  min: { color: COLORS.grey, fontSize: 12, fontWeight: '600' },
-  track: { height: 6, borderRadius: 3, backgroundColor: COLORS.greyBg, marginTop: 8, overflow: 'hidden' },
-  fill: { height: 6, borderRadius: 3 },
 });

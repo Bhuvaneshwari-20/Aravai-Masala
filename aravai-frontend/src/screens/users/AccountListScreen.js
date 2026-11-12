@@ -135,5 +135,5 @@ const s = StyleSheet.create({
   code: { color: COLORS.grey, fontSize: 12.5, fontWeight: '600', marginTop: 2 },
   badge: { borderRadius: 10, paddingHorizontal: 9, paddingVertical: 3 },
   badgeText: { fontSize: 10.5, fontWeight: '900', letterSpacing: 0.4 },
-  actions: { flexDirection: 'row', marginTop: 8, marginLeft: -6 },
+  actions: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8, marginLeft: -6 },
 });

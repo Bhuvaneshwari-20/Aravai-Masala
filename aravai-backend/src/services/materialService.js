@@ -69,15 +69,20 @@ async function createCategory(body, userId, ip) {
 }
 
 /* ---------- materials ---------- */
+const sent = (x) => x !== undefined && x !== null && String(x).trim() !== '';
+
+// Only name + unit (+ specifications) are required now. Any other field that is not sent stays undefined,
+// so create() falls back to a default and update() keeps the value already stored.
 function cleanInput(body) {
   const d = {
     material_name: v.reqStr(body.material_name, 'Material name', 150),
-    category_id: v.toId(body.category_id, 'category'),
     unit: String(body.unit || '').toUpperCase(),
-    sku: v.optStr(body.sku, 'SKU', 50),
-    place: v.optStr(body.place, 'Place', 100),
-    minimum_stock: v.num(body.minimum_stock, 'Minimum stock'),
-    purchase_rate: v.num(body.purchase_rate, 'Purchase rate', { max: 999999999, decimals: 2 }),
+    category_id: sent(body.category_id) ? v.toId(body.category_id, 'category') : undefined,
+    sku: body.sku === undefined ? undefined : v.optStr(body.sku, 'SKU', 50),
+    place: body.place === undefined ? undefined : v.optStr(body.place, 'Place', 100),
+    minimum_stock: sent(body.minimum_stock) ? v.num(body.minimum_stock, 'Minimum stock') : undefined,
+    purchase_rate: sent(body.purchase_rate) ? v.num(body.purchase_rate, 'Purchase rate', { max: 999999999, decimals: 2 }) : undefined,
+    default_filter_stages: v.intRange(body.default_filter_stages, 'Filtering stages', 0, 5),
   };
   if (!UNITS.includes(d.unit)) throw new AppError(`Unit must be one of ${UNITS.join(', ')}`);
   d.specifications = cleanSpecs(body.specifications);
@@ -85,9 +90,19 @@ function cleanInput(body) {
   return d;
 }
 
+// Category is no longer asked in the form. The column is still required, so new materials go under "General".
+async function defaultCategoryId(conn) {
+  const [rows] = await conn.query("SELECT id FROM material_categories WHERE category_name = 'General' LIMIT 1");
+  if (rows.length) return rows[0].id;
+  const [r] = await conn.query("INSERT INTO material_categories (category_name) VALUES ('General')");
+  return r.insertId;
+}
+
 async function checkRefs(conn, d, selfId = null) {
-  const [cat] = await conn.query('SELECT id FROM material_categories WHERE id = ?', [d.category_id]);
-  if (!cat.length) throw new AppError('Selected category does not exist');
+  if (d.category_id !== undefined) {
+    const [cat] = await conn.query('SELECT id FROM material_categories WHERE id = ?', [d.category_id]);
+    if (!cat.length) throw new AppError('Selected category does not exist');
+  }
   const [dup] = await conn.query('SELECT id FROM materials WHERE material_name = ? AND id <> ?', [d.material_name, selfId || 0]);
   if (dup.length) throw new AppError('A material with this name already exists', 409);
   if (d.sku) {
@@ -133,12 +148,13 @@ async function create(body, userId, ip) {
   const opening = v.num(body.opening_stock, 'Opening stock');
   return withTransaction(async (conn) => {
     await checkRefs(conn, d);
+    const categoryId = d.category_id !== undefined ? d.category_id : await defaultCategoryId(conn);
     const code = await nextNumber(conn, 'MATERIAL');
     const [r] = await conn.query(
       `INSERT INTO materials (material_code, material_name, sku, place, category_id, unit, opening_stock,
-         minimum_stock, purchase_rate, current_stock, is_active, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [code, d.material_name, d.sku, d.place, d.category_id, d.unit, opening, d.minimum_stock, d.purchase_rate,
-        opening, d.is_active === undefined ? 1 : d.is_active, userId]);
+         minimum_stock, default_filter_stages, purchase_rate, current_stock, is_active, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [code, d.material_name, d.sku ?? null, d.place ?? null, categoryId, d.unit, opening, d.minimum_stock ?? 0, d.default_filter_stages ?? 0,
+        d.purchase_rate ?? 0, opening, d.is_active === undefined ? 1 : d.is_active, userId]);
     await saveSpecs(conn, r.insertId, d.specifications);
 
     if (opening > 0) {
@@ -164,10 +180,11 @@ async function update(idRaw, body, userId, ip) {
     const before = await getById(id, conn);
     await checkRefs(conn, d, id);
     await conn.query(
-      `UPDATE materials SET material_name=?, sku=?, place=?, category_id=?, unit=?, minimum_stock=?, purchase_rate=?,
-         is_active=? WHERE id=?`,
-      [d.material_name, d.sku, d.place, d.category_id, d.unit, d.minimum_stock, d.purchase_rate,
-        d.is_active === undefined ? before.is_active : d.is_active, id]);
+      `UPDATE materials SET material_name=?, sku=?, place=?, category_id=?, unit=?, minimum_stock=?, default_filter_stages=?,
+         purchase_rate=?, is_active=? WHERE id=?`,
+      [d.material_name, d.sku !== undefined ? d.sku : before.sku, d.place !== undefined ? d.place : before.place,
+        d.category_id ?? before.category_id, d.unit, d.minimum_stock ?? before.minimum_stock,
+        d.default_filter_stages ?? before.default_filter_stages, d.purchase_rate ?? before.purchase_rate, d.is_active === undefined ? before.is_active : d.is_active, id]);
     await saveSpecs(conn, id, d.specifications);
     const after = await getById(id, conn);
     await audit({ userId, action: 'UPDATE', table: 'materials', recordId: id, oldValues: before, newValues: after, ip }, conn);

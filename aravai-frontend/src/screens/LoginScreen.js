@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Animated } from 'react-native';
+import { View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Animated, useWindowDimensions } from 'react-native';
 import { TextInput, Button, Text, HelperText } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
@@ -11,6 +11,8 @@ import SpinningDabba from '../components/SpinningDabba';
 
 export default function LoginScreen() {
   const { login } = useAuth();
+  const { height, width } = useWindowDimensions();
+  const small = height < 700 || width < 360;
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [show, setShow] = useState(false);
@@ -47,14 +49,14 @@ export default function LoginScreen() {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={s.wrap} keyboardShouldPersistTaps="handled">
           <Animated.View style={{ alignItems: 'center', transform: [{ scale: pop }, { translateY: float.interpolate({ inputRange: [0, 1], outputRange: [0, -8] }) }] }}>
-            <View style={s.logo}><Text style={{ fontSize: 48 }}>🌶️</Text></View>
+            <View style={[s.logo, small && { width: 80, height: 80, borderRadius: 40 }]}><Text style={{ fontSize: small ? 36 : 48 }}>🌶️</Text></View>
           </Animated.View>
           <FadeIn delay={200}>
-            <Text style={s.title}>ARAVAI MASALA</Text>
-            <Text style={s.sub}>Manufacturing Management</Text>
+            <Text style={[s.title, small && { fontSize: 22, marginTop: 12 }]}>ARAVAI MASALA</Text>
+            <Text style={[s.sub, small && { marginBottom: 16, fontSize: 13 }]}>Manufacturing Management</Text>
           </FadeIn>
 
-          <FadeIn delay={400} from={40} style={s.card}>
+          <FadeIn delay={400} from={40} style={[s.card, small && { padding: 16 }]}>
             <Text style={s.welcome}>Login</Text>
             <TextInput label="Username" mode="outlined" value={username} onChangeText={setUsername}
               autoCapitalize="none" left={<TextInput.Icon icon="account" />} outlineStyle={{ borderRadius: 14 }}
@@ -76,7 +78,7 @@ export default function LoginScreen() {
 }
 
 const s = StyleSheet.create({
-  wrap: { flexGrow: 1, justifyContent: 'center', padding: 24 },
+  wrap: { flexGrow: 1, justifyContent: 'center', padding: 20, paddingVertical: 32 },
   c1: { position: 'absolute', width: 260, height: 260, borderRadius: 130, backgroundColor: 'rgba(255,255,255,0.08)', top: -80, right: -70 },
   c2: { position: 'absolute', width: 200, height: 200, borderRadius: 100, backgroundColor: 'rgba(242,169,0,0.2)', bottom: -60, left: -50 },
   logo: { width: 104, height: 104, borderRadius: 52, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', elevation: 8,

@@ -38,6 +38,34 @@ function toBool(v, label) {
   throw new AppError(`${label} must be true or false`);
 }
 
+// Whole number within [min, max]. undefined/empty -> `fallback` (default: undefined = "not sent").
+function intRange(v, label, min, max, fallback) {
+  if (v === undefined || v === null || String(v).trim() === '') return fallback;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < min || n > max) throw new AppError(`${label} must be a whole number between ${min} and ${max}`);
+  return n;
+}
+
+// Strictly positive number (num() allows 0).
+function positive(v, label, opts) {
+  const n = num(v, label, opts);
+  if (n <= 0) throw new AppError(`${label} must be greater than 0`);
+  return n;
+}
+
+// 'YYYY-MM-DD' calendar date. Empty -> today. Future dates are rejected unless allowFuture.
+function date(v, label = 'Date', { allowFuture = false } = {}) {
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const s = clean(v);
+  if (!s) return todayStr;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new AppError(`${label} must be in YYYY-MM-DD format`);
+  const d = new Date(`${s}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) throw new AppError(`${label} is not a valid date`);
+  if (!allowFuture && s > todayStr) throw new AppError(`${label} cannot be in the future`);
+  return s;
+}
+
 function paging(q) {
   const page = Math.max(parseInt(q.page, 10) || 1, 1);
   const limit = Math.min(Math.max(parseInt(q.limit, 10) || 20, 1), 100);
@@ -48,4 +76,4 @@ const MOBILE_RE = /^[0-9]{10}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const GST_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
-module.exports = { clean, reqStr, optStr, num, toId, toBool, paging, MOBILE_RE, EMAIL_RE, GST_RE };
+module.exports = { clean, reqStr, optStr, num, intRange, positive, date, toId, toBool, paging, MOBILE_RE, EMAIL_RE, GST_RE };

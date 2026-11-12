@@ -11,7 +11,7 @@ import EmptyView from '../../components/EmptyView';
 import FadeIn from '../../components/FadeIn';
 import Container from '../../components/Container';
 import { DetailHeader, InfoCard, ActionBtn, Pill } from '../../components/DetailLayout';
-import { COLORS, fmt, money, categoryStyle } from '../../theme';
+import { COLORS, fmt, categoryStyle } from '../../theme';
 
 export default function MaterialDetailScreen({ route }) {
   const { id } = route.params;
@@ -47,10 +47,8 @@ export default function MaterialDetailScreen({ route }) {
   if (loading) return <LoadingView />;
   if (error || !m) return <EmptyView error={error || 'Material not found'} onRetry={() => { setLoading(true); load(); }} />;
 
-  const cs = categoryStyle(m.category_name);
+  const cs = categoryStyle(m.category_name || '');
   const cur = Number(m.current_stock) || 0;
-  const min = Number(m.minimum_stock) || 0;
-  const pct = min > 0 ? Math.max(0.04, Math.min(1, cur / (min * 2))) : 1;
   const low = !!m.is_low_stock;
   const canEdit = can('material', 'edit');
 
@@ -58,7 +56,7 @@ export default function MaterialDetailScreen({ route }) {
     <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
         <DetailHeader color={cs.color} tile={<Text style={{ fontSize: 30 }}>{cs.icon}</Text>}
-          title={m.material_name} subtitle={`${m.material_code}  •  ${m.category_name}`}
+          title={m.material_name} subtitle={m.material_code}
           pills={(
             <>
               <Pill text={m.is_active ? 'ACTIVE' : 'INACTIVE'} color={m.is_active ? COLORS.ok : COLORS.grey} bg={m.is_active ? COLORS.okBg : COLORS.greyBg} />
@@ -77,21 +75,12 @@ export default function MaterialDetailScreen({ route }) {
           <FadeIn delay={60} style={[s.stock, low && { borderColor: COLORS.danger }]}>
             <Text style={s.stockLabel}>CURRENT STOCK</Text>
             <Text style={[s.big, low && { color: COLORS.danger }]}>{fmt(cur)} <Text style={s.unit}>{m.unit}</Text></Text>
-            <View style={s.track}><View style={[s.fill, { width: `${pct * 100}%`, backgroundColor: low ? COLORS.danger : COLORS.ok }]} /></View>
-            <Text style={s.minText}>Minimum stock: {fmt(min)} {m.unit}</Text>
           </FadeIn>
         </Container>
 
         <InfoCard title="DETAILS" rows={[
-          { icon: '🗂️', label: 'Category', value: m.category_name },
           { icon: '📏', label: 'Unit', value: m.unit },
           { icon: '📝', label: 'Specifications', value: (m.specifications || []).map((x, i) => `${i + 1}. ${x}`).join('\n') },
-          { icon: '📥', label: 'Opening stock', value: `${fmt(m.opening_stock)} ${m.unit}` },
-          { icon: '🔔', label: 'Minimum stock', value: `${fmt(m.minimum_stock)} ${m.unit}` },
-          { icon: '💰', label: 'Purchase rate', value: money(m.purchase_rate) },
-          { icon: '📍', label: 'Place', value: m.place },
-          { icon: '🏷️', label: 'SKU', value: m.sku },
-          { icon: '🕒', label: 'Created', value: m.created_at },
         ]} />
       </ScrollView>
 
@@ -112,7 +101,4 @@ const s = StyleSheet.create({
   stockLabel: { fontSize: 11, fontWeight: '900', letterSpacing: 1.4, color: COLORS.grey },
   big: { fontSize: 40, fontWeight: '900', color: COLORS.text, marginTop: 4 },
   unit: { fontSize: 18, fontWeight: '700', color: COLORS.grey },
-  track: { height: 8, borderRadius: 4, backgroundColor: COLORS.greyBg, marginTop: 10, overflow: 'hidden' },
-  fill: { height: 8, borderRadius: 4 },
-  minText: { color: COLORS.grey, fontWeight: '600', marginTop: 8, fontSize: 13 },
 });
