@@ -13,13 +13,12 @@ import { COLORS, money } from '../theme';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const newPack = () => ({ weight_grams: null, mrp: '', from: todayStr(), existing: false });
 
-// Add (no product) or Edit (product) : name, category and pack sizes.
+// Add (no product) or Edit (product) : name and pack sizes.
 // Gram comes from the Grams master. Every MRP has a "from date"; the older MRP ends the day before.
 export default function ProductFormModal({ visible, product, onDismiss, onSaved }) {
   const isEdit = !!product;
   const grams = useOptions('/grams', {}, (g) => ({ value: g.weight_grams, label: g.label }), visible);
   const [name, setName] = useState('');
-  const [category, setCategory] = useState('');
   const [packs, setPacks] = useState([newPack()]);
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
@@ -29,10 +28,10 @@ export default function ProductFormModal({ visible, product, onDismiss, onSaved 
     if (!visible) return;
     setErrors({}); setErr(''); setSaving(false);
     if (product) {
-      setName(product.product_name); setCategory(product.category || '');
+      setName(product.product_name);
       setPacks(product.packs.map((p) => ({ id: p.id, weight_grams: p.weight_grams, mrp: String(p.mrp), from: p.mrp_from || todayStr(),
         orig_mrp: String(p.mrp), orig_from: p.mrp_from || todayStr(), history: p.mrp_history || [], existing: true })));
-    } else { setName(''); setCategory(''); setPacks([newPack()]); }
+    } else { setName(''); setPacks([newPack()]); }
   }, [visible, product]);
 
   const setPack = (i, k, v) => setPacks((p) => p.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
@@ -53,7 +52,7 @@ export default function ProductFormModal({ visible, product, onDismiss, onSaved 
     setSaving(true); setErr('');
     try {
       if (isEdit) {
-        await api.put(`/products/${product.id}`, { product_name: name.trim(), category: category.trim() });
+        await api.put(`/products/${product.id}`, { product_name: name.trim(), category: product.category || '' }); // category field removed from the form; keep the stored value
         for (const p of packs) {
           if (p.existing) {
             if (p.mrp !== p.orig_mrp || p.from !== p.orig_from) await api.put(`/products/${product.id}/packs/${p.id}`, { mrp: p.mrp, effective_from: p.from });
@@ -62,7 +61,7 @@ export default function ProductFormModal({ visible, product, onDismiss, onSaved 
           }
         }
       } else {
-        await api.post('/products', { product_name: name.trim(), category: category.trim(),
+        await api.post('/products', { product_name: name.trim(),
           packs: packs.map((p) => ({ weight_grams: p.weight_grams, mrp: p.mrp, effective_from: p.from })) });
       }
       setSaving(false);
@@ -77,7 +76,6 @@ export default function ProductFormModal({ visible, product, onDismiss, onSaved 
       <View>
         <Label>PRODUCT</Label>
         <FormField label="Product name *" value={name} onChangeText={setName} error={errors.name} maxLength={120} />
-        <FormField label="Category" value={category} onChangeText={setCategory} maxLength={80} />
         <Label style={{ marginTop: 6 }}>GRAM, MRP & FROM DATE</Label>
         {packs.map((p, i) => (
           <View key={i} style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 6 }}>
