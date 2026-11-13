@@ -4,6 +4,8 @@ router.use('/accounts', require('./accounts'));
 router.use('/material-categories', require('./materialCategories'));
 router.use('/materials', require('./materials'));
 router.use('/vendors', require('./vendors'));
+router.use('/roasting', require('./roasting'));
+router.use('/filtering', require('./filtering'));
 router.use('/stock', require('./stock'));
 router.use('/grams', require('./grams'));
 router.use('/products', require('./products'));

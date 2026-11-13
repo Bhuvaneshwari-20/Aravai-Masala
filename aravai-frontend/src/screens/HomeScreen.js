@@ -74,7 +74,7 @@ export default function HomeScreen({ navigation }) {
     if (it.module === 'material') return m.total === undefined ? 'Open' : `${fmt(m.total)} materials`;
     if (it.module === 'vendor') return v.total === undefined ? 'Open' : `${fmt(v.total)} vendors`;
     if (it.screen) return 'Open';
-    return 'Coming soon';
+    return `Stage ${it.stage} • Coming soon`;
   };
   const open = (it) => (it.screen ? navigation.navigate(it.screen) : toast(`${it.label} will be available in an upcoming phase`));
 
