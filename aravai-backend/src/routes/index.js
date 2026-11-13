@@ -10,4 +10,7 @@ router.use('/products', require('./products'));
 router.use('/recipes', require('./recipes'));
 router.use('/batches', require('./batches'));
 router.use('/machines', require('./machines'));
+router.use('/blending', require('./blending'));
+router.use('/packing', require('./packing')); 
+
 module.exports = router;

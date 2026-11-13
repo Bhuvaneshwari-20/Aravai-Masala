@@ -24,6 +24,9 @@ import RecipeListScreen from './src/screens/recipe/RecipeListScreen';
 import BatchListScreen from './src/screens/batch/BatchListScreen';
 import BatchDetailScreen from './src/screens/batch/BatchDetailScreen';
 import MachineListScreen from './src/screens/machine/MachineListScreen';
+import BlendingListScreen from './src/screens/production/BlendingListScreen';
+import PackingListScreen from './src/screens/production/PackingListScreen';  
+
 
 const Stack = createNativeStackNavigator();
 const navRef = createNavigationContainerRef();
@@ -65,6 +68,8 @@ function Root() {
         <Stack.Screen name="BatchDetail" component={BatchDetailScreen} options={{ title: 'Batch' }} />
         <Stack.Screen name="MachineList" component={MachineListScreen} options={{ title: 'Machines' }} />
         <Stack.Screen name="AccountList" component={AccountListScreen} options={{ title: 'Users' }} />
+      <Stack.Screen name="BlendingList" component={BlendingListScreen} options={{ title: 'Blending' }} />
+<Stack.Screen name="PackingList" component={PackingListScreen} options={{ title: 'Packing' }} /> 
       </Stack.Navigator>
     </NavigationContainer>
     </View>
