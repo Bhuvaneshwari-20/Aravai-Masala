@@ -9,7 +9,7 @@ export const MENU = [
    { module: 'filtering', label: 'Filtering', icon: '🧺', color: '#0891B2', screen: 'FilteringList' },
 
   { module: 'batching', label: 'Batching', icon: '⚖️', color: '#14B8A6', screen: 'BatchList' },
-  { module: 'roasting', label: 'Roasting', icon: '🔥', color: '#F97316' },
+ { module: 'roasting', label: 'Roasting', icon: '🔥', color: '#F97316', screen: 'RoastingList' },
   { module: 'grinding', label: 'Grinding', icon: '⚙️', color: '#64748B' },
   { module: 'blending', label: 'Blending', icon: '🥣', color: '#D946EF',screen: 'BlendingList'  },
     { module: 'machine', label: 'Machines', icon: '🛠️', color: '#475569', screen: 'MachineList' },
