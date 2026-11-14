@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, TextInput, StyleSheet } from 'react-native';
+import { View, TextInput, Pressable, StyleSheet } from 'react-native';
 import { Text, ActivityIndicator } from 'react-native-paper';
+import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import api, { errMsg } from '../api';
 import ModalShell from './ModalShell';
 import FormField from './FormField';
@@ -21,7 +22,7 @@ const today = () => {
 // Compact sheet-style table, like the paper "ARAVAI BATCHING PROCESS PLAN":
 // CODE | MATERIAL NAME | NO OF BAGS | WEIGHT | WEIGHED QTY   (Done by / Checked by are picked once below)
 // Lives outside the modal component so the inputs keep focus while typing.
-const COL = { code: 78, bags: 78, wt: 92, qty: 104 };
+const COL = { code: 78, bags: 78, wt: 92, qty: 104, filter: 64 };
 
 function Cell({ value, onChange, placeholder, digits, error, width }) {
   const clean = (t) => {
@@ -37,7 +38,16 @@ function Cell({ value, onChange, placeholder, digits, error, width }) {
   );
 }
 
-function SheetHeader({ wide }) {
+// Tick box used for the per-material "Filter" column (and the select-all in the header)
+function FilterBox({ on, onPress, size = 24 }) {
+  return (
+    <Pressable onPress={onPress} hitSlop={8} accessibilityRole="checkbox" accessibilityState={{ checked: on }}>
+      <MCI name={on ? 'checkbox-marked' : 'checkbox-blank-outline'} size={size} color={on ? COLORS.primary : COLORS.grey} />
+    </Pressable>
+  );
+}
+
+function SheetHeader({ wide, allFilter, onToggleAll }) {
   if (!wide) return null;
   return (
     <View style={t.head}>
@@ -46,11 +56,15 @@ function SheetHeader({ wide }) {
       <Text style={[t.th, { width: COL.bags, textAlign: 'center' }]}>NO OF BAGS</Text>
       <Text style={[t.th, { width: COL.wt, textAlign: 'center' }]}>WEIGHT (KG)</Text>
       <Text style={[t.th, { width: COL.qty, textAlign: 'center' }]}>WEIGHED QTY</Text>
+      <View style={{ width: COL.filter, alignItems: 'center' }}>
+        <Text style={t.th}>FILTER</Text>
+        <FilterBox on={allFilter} onPress={onToggleAll} size={18} />
+      </View>
     </View>
   );
 }
 
-function SheetRow({ item, row, errors, wide, onChange }) {
+function SheetRow({ item, row, errors, wide, onChange, filter, onToggleFilter }) {
   const inputs = (
     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
       <Cell width={COL.bags} digits placeholder="Bags" value={row.bags} onChange={(x) => onChange('bags', x)} error={errors.bags} />
@@ -60,8 +74,9 @@ function SheetRow({ item, row, errors, wide, onChange }) {
       <Cell width={COL.qty} placeholder="Qty kg" value={row.qty} onChange={(x) => onChange('qty', x)} error={errors.qty} />
     </View>
   );
+  const box = <FilterBox on={filter} onPress={onToggleFilter} />;
   return (
-    <View style={t.row}>
+    <View style={[t.row, filter && t.rowOn]}>
       <View style={[t.rowMain, !wide && { flexDirection: 'column', alignItems: 'flex-start' }]}>
         <View style={[{ flexDirection: 'row', alignItems: 'center' }, wide ? { flex: 1 } : { marginBottom: 6 }]}>
           <View style={t.code}><Text style={t.codeText}>{item.material_code}</Text></View>
@@ -69,8 +84,10 @@ function SheetRow({ item, row, errors, wide, onChange }) {
             <Text style={t.name} numberOfLines={1}>{item.material_name}</Text>
             <Text style={t.stock}>Stock {fmt(item.current_stock)} kg</Text>
           </View>
+          {!wide && <View style={{ alignItems: 'center', marginLeft: 8 }}><Text style={t.thSmall}>FILTER</Text>{box}</View>}
         </View>
         {inputs}
+        {wide && <View style={{ width: COL.filter, alignItems: 'center' }}>{box}</View>}
       </View>
       {!!(errors.bags || errors.wt || errors.qty) && <Text style={t.err}>{errors.qty || errors.bags || errors.wt}</Text>}
     </View>
@@ -81,6 +98,8 @@ const t = StyleSheet.create({
   head: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.greyBg, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10, marginBottom: 4 },
   th: { fontSize: 10.5, fontWeight: '900', letterSpacing: 0.6, color: COLORS.grey },
   row: { borderBottomWidth: 1, borderBottomColor: COLORS.border, paddingVertical: 7, paddingHorizontal: 4 },
+  rowOn: { backgroundColor: `${COLORS.primary}0D`, borderRadius: 8 },
+  thSmall: { fontSize: 9, fontWeight: '900', letterSpacing: 0.5, color: COLORS.grey },
   rowMain: { flexDirection: 'row', alignItems: 'center' },
   code: { width: COL.code - 8, marginRight: 8, backgroundColor: COLORS.greyBg, borderRadius: 6, paddingVertical: 3, alignItems: 'center' },
   codeText: { fontSize: 11.5, fontWeight: '900', color: COLORS.grey },
@@ -89,6 +108,8 @@ const t = StyleSheet.create({
   cell: { height: 38, borderWidth: 1, borderColor: '#E3D3C8', borderRadius: 8, backgroundColor: '#fff', fontSize: 14, fontWeight: '700', color: COLORS.text, paddingHorizontal: 6, outlineStyle: 'none' },
   x: { width: 16, textAlign: 'center', color: COLORS.grey, fontWeight: '800' },
   err: { color: COLORS.danger, fontSize: 11.5, fontWeight: '700', marginTop: 3, marginLeft: 4 },
+  fcheck: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border, borderRadius: 12, padding: 12, marginTop: 4, backgroundColor: '#fff' },
+  fcheckOn: { borderColor: COLORS.primary, backgroundColor: `${COLORS.primary}0D` },
 });
 
 // New batch (follows the Aravai batching sheet): date, product -> its recipe materials -> bags / weight / weighed qty
@@ -104,6 +125,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   const [doneBy, setDoneBy] = useState(null);
   const [checkedBy, setCheckedBy] = useState(null);
   const [machineId, setMachineId] = useState(null);
+  const [filterIds, setFilterIds] = useState({}); // material_id -> true when that material must be filtered
   const [recipe, setRecipe] = useState(null); // { id, ingredients: [...] }
   const [loadingRecipe, setLoadingRecipe] = useState(false);
   const [rows, setRows] = useState({}); // material_id -> { bags, wt, qty, touched }
@@ -114,12 +136,12 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   useEffect(() => {
     if (visible) {
       setDate(today()); setProductId(null); setRecipe(null); setRows({}); setErrors({}); setErr(''); setSaving(false);
-      setDoneBy(user?.id || null); setCheckedBy(null); setMachineId(null);
+      setDoneBy(user?.id || null); setCheckedBy(null); setMachineId(null); setFilterIds({});
     }
   }, [visible]); // eslint-disable-line
 
   useEffect(() => {
-    setRecipe(null); setRows({}); setErrors({});
+    setRecipe(null); setRows({}); setErrors({}); setFilterIds({});
     setLoadingRecipe(false); // a cancelled request never clears the spinner itself
     if (!visible || !productId) return undefined;
     let live = true;
@@ -151,6 +173,16 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
 
   const total = useMemo(() => r3(Object.values(rows).reduce((a, x) => a + (Number(x.qty) || 0), 0)), [rows]);
 
+  const toggleFilter = (id) => () => setFilterIds((p) => ({ ...p, [id]: !p[id] }));
+  const allFilter = !!recipe && recipe.ingredients.length > 0 && recipe.ingredients.every((i) => filterIds[i.material_id]);
+  const toggleAllFilter = () => setFilterIds(() => {
+    if (allFilter || !recipe) return {};
+    return Object.fromEntries(recipe.ingredients.map((i) => [i.material_id, true]));
+  });
+  // only materials that are actually weighed count (blank qty = not used in this batch)
+  const filterNames = recipe ? recipe.ingredients.filter((i) => filterIds[i.material_id] && Number(rows[i.material_id]?.qty) > 0).map((i) => i.material_name) : [];
+  const needsFiltering = filterNames.length > 0;
+
   const save = async () => {
     const e = {};
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) e.date = 'Use YYYY-MM-DD';
@@ -174,10 +206,10 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
     if (Object.keys(e).length || !recipe) return;
     setSaving(true); setErr('');
     try {
-      const r = await api.post('/batches', { product_id: productId, recipe_id: recipe.id, production_date: date, done_by: doneBy, checked_by: checkedBy, weighing_machine_id: machineId || undefined,
+      const r = await api.post('/batches', { product_id: productId, recipe_id: recipe.id, production_date: date, done_by: doneBy, checked_by: checkedBy, weighing_machine_id: machineId || undefined, needs_filtering: needsFiltering,
         ingredients: recipe.ingredients.map((i) => {
           const x = rows[i.material_id] || {};
-          return { material_id: i.material_id, no_of_bags: x.bags || undefined, weight_per_bag: x.wt || undefined, weighed_qty: x.qty || 0 };
+          return { material_id: i.material_id, no_of_bags: x.bags || undefined, weight_per_bag: x.wt || undefined, weighed_qty: x.qty || 0, needs_filtering: !!filterIds[i.material_id] };
         }) });
       setSaving(false);
       onSaved && onSaved(r.data.data);
@@ -196,10 +228,11 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
         {loadingRecipe && <ActivityIndicator style={{ margin: 16 }} color={COLORS.primary} />}
         {!!recipe && (
           <View>
-            <SheetHeader wide={isWide} />
+            <SheetHeader wide={isWide} allFilter={allFilter} onToggleAll={toggleAllFilter} />
             {recipe.ingredients.map((i) => {
               const k = `m${i.material_id}`;
               return <SheetRow key={i.material_id} item={i} row={rows[i.material_id] || {}} wide={isWide} onChange={change(i.material_id)}
+                filter={!!filterIds[i.material_id]} onToggleFilter={toggleFilter(i.material_id)}
                 errors={{ bags: errors[`${k}bags`], wt: errors[`${k}wt`], qty: errors[`${k}qty`] }} />;
             })}
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: total > 0 ? COLORS.okBg : COLORS.warnBg, borderRadius: 10, padding: 12, marginTop: 10, marginBottom: 14 }}>
@@ -211,6 +244,18 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
               <SelectField label="Checked by *" value={checkedBy} options={staff} onChange={setCheckedBy} error={errors.checkedBy} />
             </FormRow>
             <SelectField label="Weighing machine" value={machineId} options={machines} onChange={setMachineId} />
+
+            {/* Filtering is not done here. Ticked materials send the batch to the Filtering menu before Roasting. */}
+            <View style={[t.fcheck, needsFiltering && t.fcheckOn]}>
+              <MCI name={needsFiltering ? 'filter-variant' : 'arrow-right-bold-circle-outline'} size={24} color={needsFiltering ? COLORS.primary : COLORS.grey} />
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={{ fontWeight: '800', color: COLORS.text }}>{needsFiltering ? `Filtering required (${filterNames.length})` : 'No filtering'}</Text>
+                <Text style={{ fontSize: 12, color: COLORS.grey, marginTop: 2 }}>
+                  {needsFiltering ? `${filterNames.join(', ')}. After saving, this batch goes to Filtering first, then Roasting.`
+                    : 'Tick the Filter box on a material to filter it. Nothing ticked: this batch goes straight to Roasting.'}
+                </Text>
+              </View>
+            </View>
           </View>
         )}
         <ErrorBox text={errors.total || err} />

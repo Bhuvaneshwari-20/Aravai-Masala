@@ -126,7 +126,7 @@ export default function BatchDetailScreen({ route }) {
               <View style={s.done}>
                 <Text style={s.doneTitle}>Batching complete</Text>
                 <Text style={s.doneText}>{fmt(b.current_output_kg)} kg handed to the next stage.</Text>
-                <Text style={s.doneText}>Next process: {stageLabel(b.current_stage)}. This step will be available in the next phase.</Text>
+                <Text style={s.doneText}>Next process: {stageLabel(b.current_stage)}.{b.current_stage === 'FILTERING' ? ' Open Filtering from the menu to record it; the batch then moves to Roasting.' : ''}</Text>
               </View>
             )}
           </View>

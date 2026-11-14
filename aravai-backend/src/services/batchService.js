@@ -39,7 +39,7 @@ async function buildPlan(db, b) {
   const [rows] = await db.query(
     `SELECT d.material_id, m.material_code, m.material_name, m.unit, d.quantity_kg AS recipe_qty_kg, m.current_stock,
             m.default_filter_stages, bd.id AS batching_id, bd.entry_date, bd.no_of_bags, bd.weight_per_bag, bd.required_qty,
-            bd.weighed_qty, bd.weighing_machine_id, wm.machine_name AS weighing_machine_name, bd.done_by, du.full_name AS done_by_name, bd.checked_by, cu.full_name AS checked_by_name, bd.stock_txn_id
+            bd.weighed_qty, bd.needs_filtering AS material_needs_filtering, bd.weighing_machine_id, wm.machine_name AS weighing_machine_name, bd.done_by, du.full_name AS done_by_name, bd.checked_by, cu.full_name AS checked_by_name, bd.stock_txn_id
      FROM recipe_details d
      JOIN materials m ON m.id = d.material_id
      LEFT JOIN batching_details bd ON bd.batch_id = ? AND bd.material_id = d.material_id
@@ -133,6 +133,13 @@ async function start(body, userId, ip) {
   if (doneBy === checkedBy) throw new AppError('Checked by must be a different person from Done by');
   const machineId = body.weighing_machine_id ? v.toId(body.weighing_machine_id, 'weighing machine') : null;
 
+  // "Filter" checkbox on each material row of the batching form. If any weighed material is ticked the batch goes to
+  // FILTERING first, otherwise straight to ROASTING.  (Old clients send one batch-level needs_filtering flag and no
+  // per-material flags -> that flag then applies to every material.)
+  const isTrue = (x) => [true, 'true', 1, '1'].includes(x);
+  const batchFlag = isTrue(body.needs_filtering);
+  const hasPerMaterial = body.ingredients.some((i) => i && i.needs_filtering !== undefined);
+
   const blank = (x) => x === undefined || x === null || String(x).trim() === '';
   // blank / 0 weighed qty = that material is not used in this batch
   const items = body.ingredients
@@ -141,11 +148,13 @@ async function start(body, userId, ip) {
       const weighed = v.positive(i.weighed_qty ?? i.quantity_kg, 'Weighed quantity (kg)', { max: 1000000 });
       const bags = blank(i.no_of_bags) ? 1 : v.intRange(i.no_of_bags, 'No of bags', 1, 100000);
       const perBag = blank(i.weight_per_bag) ? r3(weighed / bags) : v.positive(i.weight_per_bag, 'Weight per bag (kg)', { max: 100000 });
-      return { material_id: v.toId(i.material_id, 'material'), bags, perBag, quantity_kg: weighed };
+      return { material_id: v.toId(i.material_id, 'material'), bags, perBag, quantity_kg: weighed, filter: hasPerMaterial ? isTrue(i.needs_filtering) : batchFlag };
     });
   if (!items.length) throw new AppError('Enter the quantity for at least one material');
   if (new Set(items.map((i) => i.material_id)).size !== items.length) throw new AppError('A material is added twice');
   const total = r3(items.reduce((a, i) => a + i.quantity_kg, 0));
+  const needsFiltering = items.some((i) => i.filter);
+  const nextStage = needsFiltering ? 'FILTERING' : 'ROASTING';
 
   return withTransaction(async (conn) => {
     const [prod] = await conn.query('SELECT id, is_active FROM product_master WHERE id = ?', [productId]);
@@ -174,9 +183,9 @@ async function start(body, userId, ip) {
     const batchNo = await nextNumber(conn, 'BATCH');
     // Batching is finished -> the batch is IN_PROGRESS at the next process (ROASTING), not COMPLETED.
     const [r] = await conn.query(
-      `INSERT INTO batch_master (batch_no, production_date, product_id, recipe_id, planned_qty_kg, current_stage, status, current_output_kg,
+      `INSERT INTO batch_master (batch_no, production_date, product_id, recipe_id, planned_qty_kg, current_stage, needs_filtering, status, current_output_kg,
          created_by, batching_completed_at, active_lock)
-       VALUES (?,?,?,?,?,'ROASTING','IN_PROGRESS',?,?,NOW(),NULL)`, [batchNo, date, productId, recipeId, total, total, userId]);
+       VALUES (?,?,?,?,?,?,?,'IN_PROGRESS',?,?,NOW(),NULL)`, [batchNo, date, productId, recipeId, total, nextStage, needsFiltering ? 1 : 0, total, userId]);
     const id = r.insertId;
 
     const alerts = [];
@@ -189,13 +198,13 @@ async function start(body, userId, ip) {
       });
       if (st.low_stock_alert) alerts.push(st.low_stock_alert);
       await conn.query(
-        `INSERT INTO batching_details (batch_id, entry_date, material_id, no_of_bags, weight_per_bag, weighed_qty, weighing_machine_id, stock_txn_id, done_by, checked_by, status)
-         VALUES (?,?,?,?,?,?,?,?,?,?,'COMPLETED')`, [id, date, i.material_id, i.bags, i.perBag, i.quantity_kg, machineId, st.txn_id, doneBy, checkedBy]);
+        `INSERT INTO batching_details (batch_id, entry_date, material_id, no_of_bags, weight_per_bag, weighed_qty, weighing_machine_id, stock_txn_id, done_by, checked_by, needs_filtering, status)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,'COMPLETED')`, [id, date, i.material_id, i.bags, i.perBag, i.quantity_kg, machineId, st.txn_id, doneBy, checkedBy, i.filter ? 1 : 0]);
     }
 
     const created = await getById(id, conn);
     await audit({ userId, action: 'CREATE', table: 'batch_master', recordId: id,
-      newValues: { batch_no: batchNo, product_id: productId, recipe_id: recipeId, total_kg: total, stage: 'ROASTING', materials: items, doneBy, checkedBy }, ip }, conn);
+      newValues: { batch_no: batchNo, product_id: productId, recipe_id: recipeId, total_kg: total, stage: nextStage, needs_filtering: needsFiltering, materials: items, doneBy, checkedBy }, ip }, conn);
     return { ...created, low_stock_alerts: alerts };
   });
 }
@@ -274,11 +283,12 @@ async function completeBatching(batchIdRaw, userId, ip) {
       const names = plan.ingredients.filter((i) => !i.is_done).map((i) => i.material_name).join(', ');
       throw new AppError(`Weigh every ingredient first. Pending: ${names}`);
     }
+    const nextStage = Number(b.needs_filtering) === 1 ? 'FILTERING' : 'ROASTING';
     await conn.query(
-      `UPDATE batch_master SET current_stage = 'ROASTING', current_output_kg = ?, batching_completed_at = NOW() WHERE id = ?`,
-      [plan.total_weighed_kg, batchId]);
+      `UPDATE batch_master SET current_stage = ?, current_output_kg = ?, batching_completed_at = NOW() WHERE id = ?`,
+      [nextStage, plan.total_weighed_kg, batchId]);
     await audit({ userId, action: 'UPDATE', table: 'batch_master', recordId: batchId,
-      oldValues: { current_stage: 'BATCHING' }, newValues: { current_stage: 'ROASTING', current_output_kg: plan.total_weighed_kg }, ip }, conn);
+      oldValues: { current_stage: 'BATCHING' }, newValues: { current_stage: nextStage, current_output_kg: plan.total_weighed_kg }, ip }, conn);
     return getById(batchId, conn);
   });
 }

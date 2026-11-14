@@ -9,6 +9,7 @@ export const ICON = {
   "gram": "scale",
   "recipe": "book-open-variant",
   "batching": "scale-balance",
+  "filtering": "filter-variant",
   "roasting": "fire",
   "grinding": "mortar-pestle",
   "blending": "blender",
