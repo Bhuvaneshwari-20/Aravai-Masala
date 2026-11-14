@@ -14,5 +14,6 @@ router.use('/batches', require('./batches'));
 router.use('/machines', require('./machines'));
 router.use('/blending', require('./blending'));
 router.use('/packing', require('./packing')); 
+router.use('/grinding', require('./grinding'));
 
 module.exports = router;

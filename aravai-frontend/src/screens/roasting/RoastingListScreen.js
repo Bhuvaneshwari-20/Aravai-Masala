@@ -23,11 +23,11 @@ const STATUS = {
 };
 const hhmm = (dt) => (dt ? dt.slice(11, 16) : '–');
 
-function Cell({ label, value, color }) {
+function Cell({ label, value, color, bold }) {
   return (
     <View style={{ flex: 1 }}>
       <Text style={s.cellLabel}>{label}</Text>
-      <Text style={[s.cellValue, color && { color }]}>{value}</Text>
+      <Text style={[s.cellValue, bold && { fontWeight: '900', fontSize: 16 }, color && { color }]}>{value}</Text>
     </View>
   );
 }
@@ -42,6 +42,7 @@ function RoastCard({ item, index, onPress }) {
           <View style={s.top}>
             <View style={{ flex: 1 }}>
               <Text style={s.code} numberOfLines={1}>{item.code_no}</Text>
+              {!!item.batch_no && <Text style={s.batch} numberOfLines={1}>{item.batch_no} · {item.material_code} {item.material_name}</Text>}
               <Text style={s.sub}>{item.roast_date} · {item.machine_name}</Text>
             </View>
             <View style={[s.badge, { backgroundColor: st.bg }]}><Text style={[s.badgeText, { color: st.color }]}>{st.label}</Text></View>
@@ -49,7 +50,7 @@ function RoastCard({ item, index, onPress }) {
 
           <View style={s.row}>
             <Cell label="I/P (Kg)" value={fmt(item.input_weight)} />
-            <Cell label="O/P (Kg)" value={item.output_weight == null ? '–' : fmt(item.output_weight)} />
+            <Cell label="O/P AFTER ROASTING (Kg)" bold value={item.output_weight == null ? '–' : fmt(item.output_weight)} />
             <Cell label="LOSS %" value={item.loss_percent == null ? '–' : `${item.loss_percent}%`} color={item.loss_alert ? COLORS.danger : undefined} />
           </View>
           <View style={s.row}>
@@ -89,7 +90,7 @@ export default function RoastingListScreen({ navigation, route }) {
   return (
     <View style={s.wrap}>
       <PageToolbar icon="fire" title="Roasting Register" count={list.total} noun="record" search={search} onSearch={setSearch}
-        placeholder="Search code no / machine" addLabel="Add Entry"
+        placeholder="Search batch no / material / code no / machine" addLabel="Add Entry"
         onAdd={can('roasting', 'create') ? () => setForm({ open: true, item: null }) : null} />
 
       <Container fill>
@@ -121,6 +122,7 @@ export default function RoastingListScreen({ navigation, route }) {
 }
 
 const s = StyleSheet.create({
+  batch: { color: COLORS.primary, fontSize: 12.5, fontWeight: '800', marginTop: 2 },
   wrap: { flex: 1, backgroundColor: COLORS.bg },
   card: { flexDirection: 'row', backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden', marginHorizontal: 12, marginVertical: 6,
     borderWidth: 1, borderColor: COLORS.border, elevation: 1, shadowColor: '#2B1B14', shadowOpacity: 0.06, shadowRadius: 8, shadowOffset: { width: 0, height: 3 } },
