@@ -26,7 +26,7 @@ import BatchDetailScreen from './src/screens/batch/BatchDetailScreen';
 import MachineListScreen from './src/screens/machine/MachineListScreen';
 import BlendingListScreen from './src/screens/production/BlendingListScreen';
 import PackingListScreen from './src/screens/production/PackingListScreen';  
-
+import GrindingListScreen from './src/screens/grinding/GrindingListScreen';
 
 const Stack = createNativeStackNavigator();
 const navRef = createNavigationContainerRef();
@@ -70,6 +70,7 @@ function Root() {
         <Stack.Screen name="AccountList" component={AccountListScreen} options={{ title: 'Users' }} />
       <Stack.Screen name="BlendingList" component={BlendingListScreen} options={{ title: 'Blending' }} />
 <Stack.Screen name="PackingList" component={PackingListScreen} options={{ title: 'Packing' }} /> 
+  <Stack.Screen name="GrindingList" component={GrindingListScreen} options={{ title: 'Grinding' }} />
       </Stack.Navigator>
     </NavigationContainer>
     </View>
