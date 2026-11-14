@@ -9,10 +9,13 @@ async function lookups() {
   const [batches] = await pool.query(
     `SELECT b.id, b.batch_no, b.product_id, p.product_name, b.current_output_kg,
             COALESCE((SELECT SUM(pd.total_packing_weight) FROM packing_details pd
-                       WHERE pd.batch_id = b.id AND pd.status <> 'CANCELLED'), 0) AS packed_kg
+                       WHERE pd.batch_id = b.id AND pd.status <> 'CANCELLED'), 0) AS packed_kg,
+            COALESCE((SELECT SUM(bd.weighed_qty) FROM batching_details bd WHERE bd.batch_id = b.id), 0) AS batching_kg
        FROM batch_master b JOIN product_master p ON p.id = b.product_id
-      WHERE b.current_stage = 'PACKING' AND b.status IN ('OPEN','IN_PROGRESS') ORDER BY b.id DESC`);
-  const [machines] = await pool.query(
+      WHERE b.current_stage = 'PACKING' AND b.status IN ('OPEN','IN_PROGRESS')
+     HAVING b.current_output_kg - packed_kg > 0.001   -- nothing left to pack = not offered
+      ORDER BY b.id DESC`);
+        const [machines] = await pool.query(
     "SELECT id, machine_code, machine_name FROM machine_master WHERE machine_type = 'PACKING' AND status IN ('ACTIVE','IDLE') ORDER BY machine_name");
   const [rates] = await pool.query(
     'SELECT id, product_id, sku_code, packing_size_label, weight_grams, mrp FROM product_packing_rates WHERE is_active = 1 ORDER BY product_id, weight_grams');
@@ -72,12 +75,12 @@ async function create(body, userId, ip) {
     // cannot pack more than the blending output (skipped when the batch has no recorded output)
     const [[{ packed }]] = await conn.query(
       "SELECT COALESCE(SUM(total_packing_weight), 0) AS packed FROM packing_details WHERE batch_id = ? AND status <> 'CANCELLED'", [batch.id]);
-    const outKg = Number(batch.current_output_kg);
-    if (outKg > 0) {
-      const remaining = h.r3(outKg - Number(packed));
-      if (totalKg > remaining + 0.001) {
-        throw new AppError(`Only ${remaining} kg is left in batch ${batch.batch_no}, but this entry packs ${totalKg} kg`);
-      }
+        const outKg = Number(batch.current_output_kg);
+    if (!(outKg > 0)) throw new AppError(`Batch ${batch.batch_no} has no blended output recorded, so nothing can be packed. Finish blending first`);
+    const remaining = h.r3(outKg - Number(packed));
+    if (remaining <= 0.001) throw new AppError(`Batch ${batch.batch_no} is fully packed. Nothing is left to pack`);
+    if (totalKg > remaining + 0.001) {
+      throw new AppError(`Only ${remaining} kg is left in batch ${batch.batch_no}, but this entry packs ${totalKg} kg`);
     }
 
     const [pk] = await conn.query(
@@ -105,9 +108,11 @@ async function create(body, userId, ip) {
          VALUES (?,?,'INWARD',?,?,?,?,'From packing')`, [fg.id, d.packing_date, accepted, batch.batch_no, pk.insertId, userId]);
     }
 
-    // rejected bags count as batch wastage; on the last run, powder that was not packed counts too
-    const leftoverKg = d.close_batch && outKg > 0 ? Math.max(h.r3(outKg - Number(packed) - totalKg), 0) : 0;
-    if (d.close_batch) {
+    // rejected bags count as batch wastage; when the last powder is packed (or "last run" is ticked), the batch completes
+    const remainingAfter = h.r3(outKg - Number(packed) - totalKg);
+    const closeNow = d.close_batch || remainingAfter <= 0.001;
+    const leftoverKg = closeNow ? Math.max(remainingAfter, 0) : 0;
+    if (closeNow) {
       await conn.query(
         `UPDATE batch_master SET total_wastage_kg = total_wastage_kg + ?, current_stage = 'COMPLETED', status = 'COMPLETED',
            completed_at = NOW() WHERE id = ?`, [h.r3(rejectedKg + leftoverKg), batch.id]);
@@ -117,12 +122,35 @@ async function create(body, userId, ip) {
     }
 
     const result = { id: pk.insertId, batch_no: batch.batch_no, sku_code: rate.sku_code, total_bag_count: d.total_bag_count,
-      accepted_bag_count: accepted, total_packing_weight: totalKg, batch_closed: d.close_batch };
+      accepted_bag_count: accepted, total_packing_weight: totalKg, batch_closed: closeNow };
     await audit({ userId, action: 'CREATE', table: 'packing_details', recordId: pk.insertId, newValues: result, ip }, conn);
     return result;
   });
 }
 
+
+
+/* ---------- one entry, for the details view ---------- */
+async function get(id) {
+  const pid = v.toId(id, 'packing entry');
+  const [rows] = await pool.query(
+    `SELECT pd.*, b.batch_no, b.current_stage AS batch_stage, b.status AS batch_status, b.current_output_kg AS batch_output_kg,
+            p.product_name, r.sku_code, r.packing_size_label, m.machine_code, m.machine_name, u.full_name AS operator_name,
+            COALESCE((SELECT SUM(bd.weighed_qty) FROM batching_details bd WHERE bd.batch_id = b.id), 0) AS batching_kg,
+            COALESCE((SELECT SUM(x.total_packing_weight) FROM packing_details x WHERE x.batch_id = b.id AND x.status <> 'CANCELLED'), 0) AS batch_packed_kg,
+            (SELECT COUNT(*) FROM packing_details x WHERE x.batch_id = b.id AND x.status <> 'CANCELLED') AS batch_runs
+       FROM packing_details pd
+       JOIN batch_master b ON b.id = pd.batch_id
+       JOIN product_master p ON p.id = pd.product_id
+       JOIN product_packing_rates r ON r.id = pd.packing_rate_id
+       JOIN machine_master m ON m.id = pd.machine_id
+       JOIN users u ON u.id = pd.operator_id
+      WHERE pd.id = ?`, [pid]);
+  if (!rows.length) throw new AppError('Packing entry not found', 404);
+  const d = rows[0];
+  d.overall_weight_kg = h.r3((Number(d.actual_weight) * Number(d.total_bag_count)) / 1000);
+  return d;
+}
 /* ---------- recent entries ---------- */
 async function list(q) {
   const { page, limit, offset } = v.paging(q);
@@ -135,10 +163,11 @@ async function list(q) {
     JOIN users u ON u.id = pd.operator_id ${w}`;
   const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total ${from}`, args);
   const [items] = await pool.query(
-    `SELECT pd.id, pd.packing_date, b.batch_no, p.product_name, r.sku_code, r.packing_size_label, m.machine_name, u.full_name AS operator_name,
-            pd.total_bag_count, pd.rejected_bag_count, pd.accepted_bag_count, pd.total_packing_weight, pd.status ${from}
-      ORDER BY pd.id DESC LIMIT ? OFFSET ?`, [...args, limit, offset]);
+`SELECT pd.id, pd.packing_date, b.batch_no, p.product_name, r.sku_code, r.packing_size_label, m.machine_name, u.full_name AS operator_name,
+        pd.total_bag_count, pd.rejected_bag_count, pd.accepted_bag_count, pd.total_packing_weight, pd.status,
+b.current_output_kg AS batch_output_kg, b.status AS batch_status,
+        COALESCE((SELECT SUM(x.total_packing_weight) FROM packing_details x WHERE x.batch_id = b.id AND x.status <> 'CANCELLED'), 0) AS batch_packed_kg ${from}
+  ORDER BY pd.id DESC LIMIT ? OFFSET ?`, [...args, limit, offset]);
   return { items, page, limit, total, total_pages: Math.max(Math.ceil(total / limit), 1) };
 }
-
-module.exports = { lookups, create, list };
+module.exports = { lookups, create, list, get };

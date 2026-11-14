@@ -7,7 +7,7 @@ import useLayout from '../hooks/useLayout';
 import { COLORS } from '../theme';
 
 // Top row of every master list: icon + title + count on the left, compact search + Add button on the right.
-export default function PageToolbar({ icon, title, count, noun, search, onSearch, placeholder = 'Search', addLabel, onAdd }) {
+export default function PageToolbar({ icon, title, count, noun,subtitle, search, onSearch, placeholder = 'Search', addLabel, onAdd }) {
   const { isWide, isPhone } = useLayout();
   return (
     <Container>
@@ -16,7 +16,7 @@ export default function PageToolbar({ icon, title, count, noun, search, onSearch
           <View style={s.titleIcon}><MCI name={icon} size={20} color="#fff" /></View>
           <View>
             <Text style={s.title}>{title}</Text>
-            <Text style={s.sub}>{count} {count === 1 ? noun : `${noun}s`}</Text>
+            <Text style={s.sub}>{subtitle || `${count} ${count === 1 ? noun : `${noun}s`}`}</Text>
           </View>
         </View>
         <View style={[s.actions, !isWide && { width: '100%', marginTop: 12 }]}>

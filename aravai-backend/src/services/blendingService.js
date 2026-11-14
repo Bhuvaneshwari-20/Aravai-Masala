@@ -130,6 +130,38 @@ async function create(body, userId, ip) {
   });
 }
 
+
+/* ---------- one entry, for the details view ---------- */
+async function get(id) {
+  const bid = v.toId(id, 'blending entry');
+  const [rows] = await pool.query(
+    `SELECT bd.*, b.batch_no, b.current_stage AS batch_stage, b.status AS batch_status, b.current_output_kg AS batch_output_kg,
+            p.product_name, rc.recipe_no, rc.version_no, m.machine_code, m.machine_name, u.full_name AS operator_name,
+            COALESCE((SELECT SUM(x.weighed_qty) FROM batching_details x WHERE x.batch_id = b.id), 0) AS batching_kg,
+COALESCE((SELECT SUM(x.total_packing_weight) FROM packing_details x WHERE x.batch_id = b.id AND x.status <> 'CANCELLED'), 0) AS batch_packed_kg
+       FROM blending_details bd
+       JOIN batch_master b ON b.id = bd.batch_id
+       JOIN product_master p ON p.id = b.product_id
+       JOIN recipe_master rc ON rc.id = bd.recipe_id
+       JOIN machine_master m ON m.id = bd.machine_id
+       JOIN users u ON u.id = bd.operator_id
+      WHERE bd.id = ?`, [bid]);
+  if (!rows.length) throw new AppError('Blending entry not found', 404);
+  const d = rows[0];
+  const [ing] = await pool.query(
+    `SELECT i.id, i.entry_date, i.ingredient_name, i.ingredient_weight, i.no_of_bags, i.weight_per_bag, mt.material_code,
+            du.full_name AS done_by_name, cu.full_name AS checked_by_name
+       FROM blending_ingredients i
+       LEFT JOIN materials mt ON mt.id = i.material_id
+       LEFT JOIN users du ON du.id = i.done_by
+       LEFT JOIN users cu ON cu.id = i.checked_by
+      WHERE i.blending_id = ? ORDER BY i.id`, [bid]);
+  const total = Number(d.total_input_weight);
+  d.ingredients = ing.map((r) => ({ ...r, percent: total > 0 ? h.r2((Number(r.ingredient_weight) / total) * 100) : 0 }));
+  d.loss_percent = total > 0 ? h.r2((Number(d.wastage_weight || 0) / total) * 100) : 0;
+  return d;
+}
+
 /* ---------- recent entries ---------- */
 async function list(q) {
   const { page, limit, offset } = v.paging(q);
@@ -147,4 +179,4 @@ async function list(q) {
   return { items, page, limit, total, total_pages: Math.max(Math.ceil(total / limit), 1) };
 }
 
-module.exports = { lookups, create, list };
+module.exports = { lookups, create, list, get };

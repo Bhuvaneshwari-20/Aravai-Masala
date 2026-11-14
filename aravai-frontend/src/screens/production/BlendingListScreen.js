@@ -1,10 +1,11 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { View, FlatList, RefreshControl, StyleSheet } from 'react-native';
+import { View, FlatList, RefreshControl, StyleSheet, Pressable } from 'react-native';
 import { Text, ActivityIndicator } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../../AuthContext';
 import { useUi } from '../../ui';
 import BlendingFormModal from '../../components/BlendingFormModal';
+import BlendingDetailModal from '../../components/BlendingDetailModal';
 import PageToolbar from '../../components/PageToolbar';
 import usePagedList from '../../hooks/usePagedList';
 import useDebounce from '../../hooks/useDebounce';
@@ -24,6 +25,7 @@ export default function BlendingListScreen() {
   const { can } = useAuth();
   const { toast } = useUi();
   const [showForm, setShowForm] = useState(false);
+  const [detailId, setDetailId] = useState(null);   // blending entry opened in the details view
   const [search, setSearch] = useState('');
   const dSearch = useDebounce(search, 400);
   const list = usePagedList('/blending', { search: dSearch || undefined });
@@ -36,8 +38,7 @@ export default function BlendingListScreen() {
 
   return (
     <View style={s.wrap}>
-      <PageToolbar icon="blender" title="Blending" count={list.total} noun="blending run" search={search} onSearch={setSearch}
-        placeholder="Search batch / product" addLabel="New Blending" onAdd={can('blending', 'create') ? () => setShowForm(true) : null} />
+<PageToolbar icon="blender" title="Blending" count={list.total} noun="blending run" subtitle={`${list.total} blending process was done`} search={search} onSearch={setSearch}        placeholder="Search batch / product" addLabel="New Blending" onAdd={can('blending', 'create') ? () => setShowForm(true) : null} />
       <Container fill>
         {list.loading ? <LoadingView /> : list.error && !list.items.length ? (
           <EmptyView error={list.error} onRetry={list.reload} />
@@ -52,7 +53,7 @@ export default function BlendingListScreen() {
             ListEmptyComponent={<EmptyView icon="🥣" message="No blending entries yet" />}
             ListFooterComponent={list.loadingMore ? <ActivityIndicator style={{ margin: 16 }} color={COLORS.primary} /> : null}
             renderItem={({ item }) => (
-              <View style={s.card}>
+              <Pressable style={({ pressed }) => [s.card, pressed && { opacity: 0.85 }]} onPress={() => setDetailId(item.id)}>
                 <View style={s.top}>
                   <Text style={s.batch}>{item.batch_no}</Text>
                   <Text style={s.product} numberOfLines={1}>{item.product_name}</Text>
@@ -64,11 +65,12 @@ export default function BlendingListScreen() {
                   <Chip label="Output" value={item.output_weight} color={COLORS.ok} />
                   <Chip label="Wastage" value={item.wastage_weight} color={COLORS.warn} />
                 </View>
-              </View>
+              </Pressable>
             )}
           />
         )}
       </Container>
+      <BlendingDetailModal visible={detailId !== null} id={detailId} onDismiss={() => setDetailId(null)} />
       <BlendingFormModal visible={showForm} onDismiss={() => setShowForm(false)}
         onSaved={() => { setShowForm(false); list.reload(); toast('Blending saved. Batch moved to packing'); }} />
     </View>
