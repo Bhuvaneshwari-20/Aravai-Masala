@@ -23,6 +23,8 @@ import GramListScreen from './src/screens/gram/GramListScreen';
 import RecipeListScreen from './src/screens/recipe/RecipeListScreen';
 import BatchListScreen from './src/screens/batch/BatchListScreen';
 import BatchDetailScreen from './src/screens/batch/BatchDetailScreen';
+import FilteringListScreen from './src/screens/filtering/FilteringListScreen';
+import RoastingListScreen from './src/screens/roasting/RoastingListScreen';
 import MachineListScreen from './src/screens/machine/MachineListScreen';
 import BlendingListScreen from './src/screens/production/BlendingListScreen';
 import PackingListScreen from './src/screens/production/PackingListScreen';  
@@ -66,6 +68,8 @@ function Root() {
         <Stack.Screen name="RecipeList" component={RecipeListScreen} options={{ title: 'Recipes' }} />
         <Stack.Screen name="BatchList" component={BatchListScreen} options={{ title: 'Batches' }} />
         <Stack.Screen name="BatchDetail" component={BatchDetailScreen} options={{ title: 'Batch' }} />
+        <Stack.Screen name="FilteringList" component={FilteringListScreen} options={{ title: 'Filtering' }} />
+<Stack.Screen name="RoastingList" component={RoastingListScreen} options={{ title: 'Roasting Register' }} />
         <Stack.Screen name="MachineList" component={MachineListScreen} options={{ title: 'Machines' }} />
         <Stack.Screen name="AccountList" component={AccountListScreen} options={{ title: 'Users' }} />
       <Stack.Screen name="BlendingList" component={BlendingListScreen} options={{ title: 'Blending' }} />
