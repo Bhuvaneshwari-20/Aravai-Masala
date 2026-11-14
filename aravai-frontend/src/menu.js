@@ -5,6 +5,7 @@ export const MENU = [
   { module: 'stock', label: 'Material Stock Card', icon: '🗂️', color: '#F59E0B', screen: 'StockList' },
   { module: 'product', label: 'Product & MRP', icon: '🏷️', color: '#EF4444', screen: 'ProductList' },
   { module: 'gram', label: 'Grams', icon: '📏', color: '#0EA5E9', screen: 'GramList' },
+    { module: 'mesh', label: 'Mesh Size', icon: '🔳', color: '#0891B2', screen: 'MeshList' },
   { module: 'recipe', label: 'Recipes', icon: '📖', color: '#8B5CF6', screen: 'RecipeList' },
    { module: 'filtering', label: 'Filtering', icon: '🧺', color: '#0891B2', screen: 'FilteringList' },
 
@@ -21,7 +22,7 @@ export const MENU = [
  
 // Home screen sections (order matters)
 export const GROUPS = [
-  { title: 'Masters', icon: 'database', color: '#C62828', modules: ['material', 'gram', 'vendor', 'product', 'recipe', 'machine'] },
+  { title: 'Masters', icon: 'database', color: '#C62828', modules: ['material', 'gram', 'mesh', 'vendor', 'product', 'recipe', 'machine'] },
   { title: 'Production', icon: 'factory', color: '#D97706', modules: ['batching',  'filtering','roasting', 'grinding', 'blending', 'packing'] },
   { title: 'Stock & Reports', icon: 'chart-box', color: '#6D28D9', modules: ['stock', 'finished_goods', 'dashboard', 'reports'] },
   { title: 'Admin', icon: 'shield-account', color: '#BE185D', modules: ['users'] },

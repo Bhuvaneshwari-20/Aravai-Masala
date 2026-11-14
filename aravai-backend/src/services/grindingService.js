@@ -101,4 +101,8 @@ async function machineOptions() {
   return rows;
 }
 
-module.exports = { create, list, batchOptions, machineOptions };
+async function meshOptions() {
+  const [rows] = await pool.query('SELECT id, mesh_size FROM mesh_master ORDER BY CAST(mesh_size AS DECIMAL(10,2))');
+  return rows;
+}
+module.exports = { create, list, batchOptions, machineOptions, meshOptions };

@@ -27,6 +27,7 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
   const [err, setErr] = useState('');
   const [batches, setBatches] = useState([]);
   const [machines, setMachines] = useState([]);
+  const [meshes, setMeshes] = useState([]);
   const set = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
 
   const pickBatch = (id) => {
@@ -49,6 +50,9 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
         if (list.length === 1) setF((p) => ({ ...p, machine_id: list[0].id }));
       })
       .catch((e) => setErr(errMsg(e)));
+    api.get('/grinding/meshes')
+      .then((r) => setMeshes(r.data?.data || r.data || []))
+      .catch((e) => setErr(errMsg(e)));
   }, [visible]);
 
   const ip = Number(f.ip_wt), op = Number(f.op_wt);
@@ -62,7 +66,7 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
     if (!/^\d{2}\/\d{2}\/\d{4}$/.test(f.date)) e.date = 'Use DD/MM/YYYY';
     if (!f.batch_id) e.batch_code = 'Select a batch';
     if (!f.machine_id) e.machine_id = 'Select a machine';
-    if (!f.mesh_size.trim()) e.mesh_size = 'Mesh size is required';
+    if (!f.mesh_size) e.mesh_size = 'Select a mesh size';
     if (!f.ip_wt || ip <= 0) e.ip_wt = 'Enter input weight';
     if (!f.op_wt) e.op_wt = 'Enter output weight';
     if (!TIME_RE.test(f.ip_time)) e.ip_time = 'Use HH:MM (24h)';
@@ -100,7 +104,9 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
         </FormRow>
         <FormRow>
           <FormField label="Product" value={f.product} editable={false} />
-          <FormField label="Mesh size (mm) *" numeric value={f.mesh_size} onChangeText={set('mesh_size')} error={errors.mesh_size} />
+          <SelectField label="Mesh size (mm) *" value={f.mesh_size}
+            options={meshes.map((m) => ({ value: m.mesh_size, label: m.mesh_size }))}
+            onChange={set('mesh_size')} error={errors.mesh_size} />
         </FormRow>
         <FormRow>
           <FormField label="I/P weight (kg) *" numeric value={f.ip_wt} onChangeText={set('ip_wt')} error={errors.ip_wt} />

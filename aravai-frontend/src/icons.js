@@ -7,6 +7,7 @@ export const ICON = {
   "stock": "clipboard-list",
   "product": "tag-multiple",
   "gram": "scale",
+    "mesh": "grid",
   "recipe": "book-open-variant",
   "batching": "scale-balance",
   "filtering": "filter-variant",

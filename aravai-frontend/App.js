@@ -29,7 +29,7 @@ import MachineListScreen from './src/screens/machine/MachineListScreen';
 import BlendingListScreen from './src/screens/production/BlendingListScreen';
 import PackingListScreen from './src/screens/production/PackingListScreen';  
 import GrindingListScreen from './src/screens/grinding/GrindingListScreen';
-
+import MeshListScreen from './src/screens/mesh/MeshListScreen';
 const Stack = createNativeStackNavigator();
 const navRef = createNavigationContainerRef();
 
@@ -65,6 +65,7 @@ function Root() {
         <Stack.Screen name="StockCard" component={StockCardScreen} options={{ title: 'Material Card' }} />
         <Stack.Screen name="ProductList" component={ProductListScreen} options={{ title: 'Products & MRP' }} />
         <Stack.Screen name="GramList" component={GramListScreen} options={{ title: 'Grams' }} />
+        <Stack.Screen name="MeshList" component={MeshListScreen} options={{ title: 'Mesh Size' }} />
         <Stack.Screen name="RecipeList" component={RecipeListScreen} options={{ title: 'Recipes' }} />
         <Stack.Screen name="BatchList" component={BatchListScreen} options={{ title: 'Batches' }} />
         <Stack.Screen name="BatchDetail" component={BatchDetailScreen} options={{ title: 'Batch' }} />
