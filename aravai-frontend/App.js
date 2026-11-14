@@ -30,6 +30,10 @@ import BlendingListScreen from './src/screens/production/BlendingListScreen';
 import PackingListScreen from './src/screens/production/PackingListScreen';  
 import GrindingListScreen from './src/screens/grinding/GrindingListScreen';
 import MeshListScreen from './src/screens/mesh/MeshListScreen';
+
+import MachineQrScreen from './src/screens/machine/MachineQrScreen';
+import { linking } from './src/linking';    
+
 const Stack = createNativeStackNavigator();
 const navRef = createNavigationContainerRef();
 
@@ -54,7 +58,8 @@ function Root() {
       {width >= 900 && <Sidebar navRef={navRef} current={route} />}
       <View style={{ flex: 1, minWidth: 0 }}>
     <View style={{ flex: 1 }}>
-    <NavigationContainer ref={navRef} onStateChange={() => setRoute(navRef.getCurrentRoute()?.name || 'Home')}>
+      <NavigationContainer ref={navRef} linking={linking} onStateChange={() => setRoute(navRef.getCurrentRoute()?.name || 'Home')}>
+
       <Stack.Navigator screenOptions={headerOpts}>
         <Stack.Screen name="Home" component={HomeScreen} options={{ headerShown: false }} />
         <Stack.Screen name="MaterialList" component={MaterialListScreen} options={{ title: 'Material Master' }} />
@@ -76,6 +81,7 @@ function Root() {
       <Stack.Screen name="BlendingList" component={BlendingListScreen} options={{ title: 'Blending' }} />
 <Stack.Screen name="PackingList" component={PackingListScreen} options={{ title: 'Packing' }} /> 
   <Stack.Screen name="GrindingList" component={GrindingListScreen} options={{ title: 'Grinding' }} />
+   <Stack.Screen name="MachineQr" component={MachineQrScreen} options={{ title: 'Machine' }} />
       </Stack.Navigator>
     </NavigationContainer>
     </View>

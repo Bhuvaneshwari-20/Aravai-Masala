@@ -1,14 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View } from 'react-native';
+import { View, TextInput, StyleSheet } from 'react-native';
 import { Text, ActivityIndicator } from 'react-native-paper';
 import api, { errMsg } from '../api';
 import ModalShell from './ModalShell';
 import FormField from './FormField';
 import SelectField from './SelectField';
+import FormRow from './FormRow';
 import useOptions from '../hooks/useOptions';
 import useLayout from '../hooks/useLayout';
 import { useAuth } from '../AuthContext';
-import { ErrorBox, ModalFooter, Label } from './FormBits';
+import { ErrorBox, ModalFooter } from './FormBits';
 import { COLORS, fmt } from '../theme';
 
 const r3 = (n) => Math.round(n * 1000) / 1000;
@@ -17,41 +18,78 @@ const today = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
-// One material row, laid out like the paper "ARAVAI BATCHING PROCESS PLAN" sheet:
-// MATERIAL CODE | MATERIAL NAME | NO OF BAGS | WEIGHT | WEIGHED QTY   (Done by / Checked by are picked once for the sheet)
+// Compact sheet-style table, like the paper "ARAVAI BATCHING PROCESS PLAN":
+// CODE | MATERIAL NAME | NO OF BAGS | WEIGHT | WEIGHED QTY   (Done by / Checked by are picked once below)
 // Lives outside the modal component so the inputs keep focus while typing.
-function SheetRow({ item, row, errors, wide, onChange }) {
-  const cell = (flex) => ({ flex, marginRight: 10 });
-  const bags = <FormField label="No of bags" digits value={row.bags || ''} onChangeText={(t) => onChange('bags', t)} error={errors.bags} />;
-  const wt = <FormField label="Weight (kg/bag)" numeric value={row.wt || ''} onChangeText={(t) => onChange('wt', t)} error={errors.wt} />;
-  const qty = <FormField label="Weighed qty (kg)" numeric value={row.qty || ''} onChangeText={(t) => onChange('qty', t)} error={errors.qty} />;
+const COL = { code: 78, bags: 78, wt: 92, qty: 104 };
+
+function Cell({ value, onChange, placeholder, digits, error, width }) {
+  const clean = (t) => {
+    if (digits) return t.replace(/[^0-9]/g, '');
+    let x = t.replace(/[^0-9.]/g, '');
+    const i = x.indexOf('.');
+    return i === -1 ? x : x.slice(0, i + 1) + x.slice(i + 1).replace(/\./g, '');
+  };
   return (
-    <View style={{ borderWidth: 1, borderColor: COLORS.border, borderRadius: 14, padding: 12, marginBottom: 10, backgroundColor: '#FFFDF9' }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-        <View style={{ backgroundColor: COLORS.greyBg, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3, marginRight: 10 }}>
-          <Text style={{ fontSize: 12, fontWeight: '900', color: COLORS.grey }}>{item.material_code}</Text>
-        </View>
-        <Text style={{ flex: 1, fontSize: 15, fontWeight: '800', color: COLORS.text }}>{item.material_name}</Text>
-        <Text style={{ fontSize: 12, color: COLORS.grey, fontWeight: '700' }}>Stock {fmt(item.current_stock)} kg</Text>
-      </View>
-      {wide ? (
-        <View style={{ flexDirection: 'row' }}>
-          <View style={cell(1)}>{bags}</View>
-          <View style={cell(1)}>{wt}</View>
-          <View style={{ flex: 1 }}>{qty}</View>
-        </View>
-      ) : (
-        <View>
-          <View style={{ flexDirection: 'row' }}>
-            <View style={cell(1)}>{bags}</View>
-            <View style={{ flex: 1 }}>{wt}</View>
-          </View>
-          {qty}
-        </View>
-      )}
+    <TextInput value={value || ''} onChangeText={(t) => onChange(clean(t))} placeholder={placeholder} placeholderTextColor="#B8A99C"
+      keyboardType={digits ? 'number-pad' : 'decimal-pad'} textAlign="center"
+      style={[t.cell, { width }, !!error && { borderColor: COLORS.danger, backgroundColor: COLORS.dangerBg }]} />
+  );
+}
+
+function SheetHeader({ wide }) {
+  if (!wide) return null;
+  return (
+    <View style={t.head}>
+      <Text style={[t.th, { width: COL.code }]}>CODE</Text>
+      <Text style={[t.th, { flex: 1 }]}>MATERIAL NAME</Text>
+      <Text style={[t.th, { width: COL.bags, textAlign: 'center' }]}>NO OF BAGS</Text>
+      <Text style={[t.th, { width: COL.wt, textAlign: 'center' }]}>WEIGHT (KG)</Text>
+      <Text style={[t.th, { width: COL.qty, textAlign: 'center' }]}>WEIGHED QTY</Text>
     </View>
   );
 }
+
+function SheetRow({ item, row, errors, wide, onChange }) {
+  const inputs = (
+    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+      <Cell width={COL.bags} digits placeholder="Bags" value={row.bags} onChange={(x) => onChange('bags', x)} error={errors.bags} />
+      <Text style={t.x}>×</Text>
+      <Cell width={COL.wt} placeholder="kg/bag" value={row.wt} onChange={(x) => onChange('wt', x)} error={errors.wt} />
+      <Text style={t.x}>=</Text>
+      <Cell width={COL.qty} placeholder="Qty kg" value={row.qty} onChange={(x) => onChange('qty', x)} error={errors.qty} />
+    </View>
+  );
+  return (
+    <View style={t.row}>
+      <View style={[t.rowMain, !wide && { flexDirection: 'column', alignItems: 'flex-start' }]}>
+        <View style={[{ flexDirection: 'row', alignItems: 'center' }, wide ? { flex: 1 } : { marginBottom: 6 }]}>
+          <View style={t.code}><Text style={t.codeText}>{item.material_code}</Text></View>
+          <View style={{ flex: 1 }}>
+            <Text style={t.name} numberOfLines={1}>{item.material_name}</Text>
+            <Text style={t.stock}>Stock {fmt(item.current_stock)} kg</Text>
+          </View>
+        </View>
+        {inputs}
+      </View>
+      {!!(errors.bags || errors.wt || errors.qty) && <Text style={t.err}>{errors.qty || errors.bags || errors.wt}</Text>}
+    </View>
+  );
+}
+
+const t = StyleSheet.create({
+  head: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.greyBg, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10, marginBottom: 4 },
+  th: { fontSize: 10.5, fontWeight: '900', letterSpacing: 0.6, color: COLORS.grey },
+  row: { borderBottomWidth: 1, borderBottomColor: COLORS.border, paddingVertical: 7, paddingHorizontal: 4 },
+  rowMain: { flexDirection: 'row', alignItems: 'center' },
+  code: { width: COL.code - 8, marginRight: 8, backgroundColor: COLORS.greyBg, borderRadius: 6, paddingVertical: 3, alignItems: 'center' },
+  codeText: { fontSize: 11.5, fontWeight: '900', color: COLORS.grey },
+  name: { fontSize: 14.5, fontWeight: '800', color: COLORS.text },
+  stock: { fontSize: 11, fontWeight: '600', color: COLORS.grey },
+  cell: { height: 38, borderWidth: 1, borderColor: '#E3D3C8', borderRadius: 8, backgroundColor: '#fff', fontSize: 14, fontWeight: '700', color: COLORS.text, paddingHorizontal: 6, outlineStyle: 'none' },
+  x: { width: 16, textAlign: 'center', color: COLORS.grey, fontWeight: '800' },
+  err: { color: COLORS.danger, fontSize: 11.5, fontWeight: '700', marginTop: 3, marginLeft: 4 },
+});
 
 // New batch (follows the Aravai batching sheet): date, product -> its recipe materials -> bags / weight / weighed qty
 // for each -> done by + checked by -> save.  Saving closes BATCHING; the batch continues at ROASTING.
@@ -59,11 +97,13 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   const { user } = useAuth();
   const { isWide } = useLayout();
   const products = useOptions('/products', { active: 'true' }, (p) => ({ value: p.id, label: p.product_name }), visible);
+  const machines = useOptions('/batches/weighing-machines', {}, (m) => ({ value: m.id, label: `${m.machine_code} - ${m.machine_name}` }), visible);
   const staff = useOptions('/batches/staff', {}, (u) => ({ value: u.id, label: `${u.full_name} (${u.role_name})` }), visible);
   const [date, setDate] = useState(today());
   const [productId, setProductId] = useState(null);
   const [doneBy, setDoneBy] = useState(null);
   const [checkedBy, setCheckedBy] = useState(null);
+  const [machineId, setMachineId] = useState(null);
   const [recipe, setRecipe] = useState(null); // { id, ingredients: [...] }
   const [loadingRecipe, setLoadingRecipe] = useState(false);
   const [rows, setRows] = useState({}); // material_id -> { bags, wt, qty, touched }
@@ -74,12 +114,13 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   useEffect(() => {
     if (visible) {
       setDate(today()); setProductId(null); setRecipe(null); setRows({}); setErrors({}); setErr(''); setSaving(false);
-      setDoneBy(user?.id || null); setCheckedBy(null);
+      setDoneBy(user?.id || null); setCheckedBy(null); setMachineId(null);
     }
   }, [visible]); // eslint-disable-line
 
   useEffect(() => {
     setRecipe(null); setRows({}); setErrors({});
+    setLoadingRecipe(false); // a cancelled request never clears the spinner itself
     if (!visible || !productId) return undefined;
     let live = true;
     (async () => {
@@ -133,7 +174,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
     if (Object.keys(e).length || !recipe) return;
     setSaving(true); setErr('');
     try {
-      const r = await api.post('/batches', { product_id: productId, recipe_id: recipe.id, production_date: date, done_by: doneBy, checked_by: checkedBy,
+      const r = await api.post('/batches', { product_id: productId, recipe_id: recipe.id, production_date: date, done_by: doneBy, checked_by: checkedBy, weighing_machine_id: machineId || undefined,
         ingredients: recipe.ingredients.map((i) => {
           const x = rows[i.material_id] || {};
           return { material_id: i.material_id, no_of_bags: x.bags || undefined, weight_per_bag: x.wt || undefined, weighed_qty: x.qty || 0 };
@@ -144,27 +185,32 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   };
 
   return (
-    <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon="scale-balance" maxWidth={820} title="New Batch"
+    <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon="scale-balance" maxWidth={760} title="New Batch"
       subtitle="Aravai Batching Process Plan"
       footer={<ModalFooter onCancel={onDismiss} onSave={save} saving={saving} disabled={!recipe} label="Save Batch" />}>
       <View>
-        <FormField label="Date (YYYY-MM-DD) *" value={date} onChangeText={setDate} error={errors.date} maxLength={10} />
-        <SelectField label="Product *" value={productId} options={products} onChange={setProductId} error={errors.product} />
+        <FormRow>
+          <FormField label="Date (YYYY-MM-DD) *" value={date} onChangeText={setDate} error={errors.date} maxLength={10} />
+          <SelectField label="Product *" value={productId} options={products} onChange={setProductId} error={errors.product} />
+        </FormRow>
         {loadingRecipe && <ActivityIndicator style={{ margin: 16 }} color={COLORS.primary} />}
         {!!recipe && (
           <View>
-            <Label style={{ marginTop: 6 }}>MATERIALS</Label>
+            <SheetHeader wide={isWide} />
             {recipe.ingredients.map((i) => {
               const k = `m${i.material_id}`;
               return <SheetRow key={i.material_id} item={i} row={rows[i.material_id] || {}} wide={isWide} onChange={change(i.material_id)}
                 errors={{ bags: errors[`${k}bags`], wt: errors[`${k}wt`], qty: errors[`${k}qty`] }} />;
             })}
-            <View style={{ backgroundColor: total > 0 ? COLORS.okBg : COLORS.warnBg, borderRadius: 10, padding: 10, marginBottom: 14 }}>
-              <Text style={{ fontWeight: '800', color: total > 0 ? COLORS.ok : COLORS.warn }}>Total weighed {fmt(total)} kg</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: total > 0 ? COLORS.okBg : COLORS.warnBg, borderRadius: 10, padding: 12, marginTop: 10, marginBottom: 14 }}>
+              <Text style={{ fontWeight: '800', color: total > 0 ? COLORS.ok : COLORS.warn }}>Total weighed</Text>
+              <Text style={{ fontWeight: '900', fontSize: 16, color: total > 0 ? COLORS.ok : COLORS.warn }}>{fmt(total)} kg</Text>
             </View>
-            <Label>SIGN-OFF</Label>
-            <SelectField label="Done by *" value={doneBy} options={staff} onChange={setDoneBy} error={errors.doneBy} />
-            <SelectField label="Checked by *" value={checkedBy} options={staff} onChange={setCheckedBy} error={errors.checkedBy} />
+            <FormRow>
+              <SelectField label="Done by *" value={doneBy} options={staff} onChange={setDoneBy} error={errors.doneBy} />
+              <SelectField label="Checked by *" value={checkedBy} options={staff} onChange={setCheckedBy} error={errors.checkedBy} />
+            </FormRow>
+            <SelectField label="Weighing machine" value={machineId} options={machines} onChange={setMachineId} />
           </View>
         )}
         <ErrorBox text={errors.total || err} />

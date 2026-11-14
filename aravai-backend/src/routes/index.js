@@ -16,4 +16,5 @@ router.use('/blending', require('./blending'));
 router.use('/packing', require('./packing')); 
 router.use('/grinding', require('./grinding'));
 router.use('/mesh', require('./mesh'));
+router.use(require('./batchWeightImage.routes'));
 module.exports = router;

@@ -5,6 +5,7 @@ const api = axios.create({ baseURL: API_URL, timeout: 10000 });
 let token = null;
 
 export const setToken = (t) => { token = t; };
+export const getToken = () => token; // weighing.js imports this for the ?token= image URLs
 
 api.interceptors.request.use((cfg) => {
   if (token) cfg.headers.Authorization = `Bearer ${token}`;

@@ -4,16 +4,20 @@ const { audit } = require('../utils/audit');
 const AppError = require('../utils/AppError');
 const v = require('../utils/validate');
 const stock = require('./stockService');
+const wimg = require('./batchWeightImageService');   // weighing machine photo check
+const machines = require('./machineService');
 
 const r3 = (n) => Math.round(n * 1000) / 1000;
 
 const BATCH_SELECT = `
   SELECT b.*, p.product_code, p.product_name, r.recipe_no, r.version_no, r.base_quantity_kg,
-         r.default_filter_stages AS recipe_filter_stages, u.full_name AS created_by_name
+         r.default_filter_stages AS recipe_filter_stages, u.full_name AS created_by_name,
+         lm.machine_code AS weighing_machine_code, lm.machine_name AS weighing_machine_name
   FROM batch_master b
   JOIN product_master p ON p.id = b.product_id
   LEFT JOIN recipe_master r ON r.id = b.recipe_id
-  JOIN users u ON u.id = b.created_by`;
+  JOIN users u ON u.id = b.created_by
+  LEFT JOIN machine_master lm ON lm.id = b.weighing_machine_id`;
 
 const shape = (b) => ({ ...b, is_locked: b.active_lock === 1 });
 
@@ -48,6 +52,8 @@ async function buildPlan(db, b) {
      LEFT JOIN users cu ON cu.id = bd.checked_by
      WHERE d.recipe_id = ? ORDER BY d.id`, [b.id, b.recipe_id]);
 
+  const photos = await wimg.forBatch(db, b.id); // material_id -> stored weighing machine photo
+
   // Recipes no longer carry quantities (base 0), so nothing is "required" - the weighed quantity is simply recorded.
   const base = Number(b.base_quantity_kg) || 0;
   const scale = base > 0 ? Number(b.planned_qty_kg) / base : null;
@@ -56,6 +62,7 @@ async function buildPlan(db, b) {
     const done = r.batching_id !== null;
     return {
       ...r,
+      weight_image: photos.get(r.material_id) || null,
       required_kg: required,
       is_done: done,
       variance_kg: done && required !== null ? r3(Number(r.weighed_qty) - required) : null,
@@ -114,7 +121,9 @@ async function staff() {
 // Weighing machines usable on the batching sheet (batching role does not need the Machines module permission for this).
 async function weighingMachines() {
   const [rows] = await pool.query(
-    "SELECT id, machine_code, machine_name FROM machine_master WHERE machine_type = 'WEIGHING' AND status IN ('ACTIVE','IDLE') ORDER BY machine_code");
+    `SELECT m.id, m.machine_code, m.machine_name,
+            (SELECT b.batch_no FROM batch_master b WHERE b.weighing_machine_id = m.id AND b.status NOT IN ('COMPLETED','CANCELLED') ORDER BY b.id DESC LIMIT 1) AS locked_batch_no
+     FROM machine_master m WHERE m.machine_type = 'WEIGHING' AND m.status IN ('ACTIVE','IDLE') ORDER BY m.machine_code`);
   return rows;
 }
 
@@ -148,7 +157,8 @@ async function start(body, userId, ip) {
       const weighed = v.positive(i.weighed_qty ?? i.quantity_kg, 'Weighed quantity (kg)', { max: 1000000 });
       const bags = blank(i.no_of_bags) ? 1 : v.intRange(i.no_of_bags, 'No of bags', 1, 100000);
       const perBag = blank(i.weight_per_bag) ? r3(weighed / bags) : v.positive(i.weight_per_bag, 'Weight per bag (kg)', { max: 100000 });
-      return { material_id: v.toId(i.material_id, 'material'), bags, perBag, quantity_kg: weighed, filter: hasPerMaterial ? isTrue(i.needs_filtering) : batchFlag };
+      return { material_id: v.toId(i.material_id, 'material'), bags, perBag, quantity_kg: weighed, filter: hasPerMaterial ? isTrue(i.needs_filtering) : batchFlag,
+        image_id: i.weight_image_id ? v.toId(i.weight_image_id, 'weight photo') : null };
     });
   if (!items.length) throw new AppError('Enter the quantity for at least one material');
   if (new Set(items.map((i) => i.material_id)).size !== items.length) throw new AppError('A material is added twice');
@@ -180,12 +190,29 @@ async function start(body, userId, ip) {
       if (!mc.length) throw new AppError('Selected weighing machine is not available');
     }
 
+    // Batch-wise machine lock: a machine that holds a batch which is not COMPLETED / CANCELLED cannot be used for another batch.
+    if (machineId) {
+      await conn.query('SELECT id FROM machine_master WHERE id = ? FOR UPDATE', [machineId]); // two batches choosing the same machine are handled one after the other
+      const [inUse] = await conn.query("SELECT batch_no FROM batch_master WHERE weighing_machine_id = ? AND status NOT IN ('COMPLETED','CANCELLED') LIMIT 1", [machineId]);
+      if (inUse.length) throw new AppError(`This weighing machine is locked to batch ${inUse[0].batch_no}. Choose another machine`);
+    }
+    // Weighing machine photo of every weighed material: OCR MATCH (or supervisor's manual verification), same material + same weight.
+    for (const i of items) {
+      const name = byId.get(i.material_id).material_name;
+      if (machineId && !i.image_id) throw new AppError(`${name}: take or upload a photo of the weighing machine display and verify the weight`);
+      if (i.image_id) {
+        try { await wimg.claim(conn, { imageId: i.image_id, batchId: null, materialId: i.material_id, weighedQty: i.quantity_kg, userId, allowDraft: true }); }
+        catch (e) { if (e instanceof AppError) e.message = `${name}: ${e.message}`; throw e; }
+      }
+    }
+
     const batchNo = await nextNumber(conn, 'BATCH');
     // Batching is finished -> the batch is IN_PROGRESS at the next process (ROASTING), not COMPLETED.
     const [r] = await conn.query(
       `INSERT INTO batch_master (batch_no, production_date, product_id, recipe_id, planned_qty_kg, current_stage, needs_filtering, status, current_output_kg,
-         created_by, batching_completed_at, active_lock)
-       VALUES (?,?,?,?,?,?,?,'IN_PROGRESS',?,?,NOW(),NULL)`, [batchNo, date, productId, recipeId, total, nextStage, needsFiltering ? 1 : 0, total, userId]);
+         created_by, batching_completed_at, active_lock, weighing_machine_id, machine_locked_at)
+       VALUES (?,?,?,?,?,?,?,'IN_PROGRESS',?,?,NOW(),NULL,?,IF(? IS NULL, NULL, NOW()))`,
+      [batchNo, date, productId, recipeId, total, nextStage, needsFiltering ? 1 : 0, total, userId, machineId, machineId]);
     const id = r.insertId;
 
     const alerts = [];
@@ -197,9 +224,10 @@ async function start(body, userId, ip) {
         batch_id: id, entered_by: userId,
       });
       if (st.low_stock_alert) alerts.push(st.low_stock_alert);
-      await conn.query(
+      const [bd] = await conn.query(
         `INSERT INTO batching_details (batch_id, entry_date, material_id, no_of_bags, weight_per_bag, weighed_qty, weighing_machine_id, stock_txn_id, done_by, checked_by, needs_filtering, status)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,'COMPLETED')`, [id, date, i.material_id, i.bags, i.perBag, i.quantity_kg, machineId, st.txn_id, doneBy, checkedBy, i.filter ? 1 : 0]);
+      if (i.image_id) await wimg.link(conn, i.image_id, bd.insertId, id); // photo is now stored against this batch + material
     }
 
     const created = await getById(id, conn);
@@ -207,6 +235,12 @@ async function start(body, userId, ip) {
       newValues: { batch_no: batchNo, product_id: productId, recipe_id: recipeId, total_kg: total, stage: nextStage, needs_filtering: needsFiltering, materials: items, doneBy, checkedBy }, ip }, conn);
     return { ...created, low_stock_alerts: alerts };
   });
+}
+
+// Machine of the first weighing of a batch (older batches never got batch_master.weighing_machine_id).
+async function firstMachineOfBatch(conn, batchId) {
+  const [r] = await conn.query('SELECT weighing_machine_id FROM batching_details WHERE batch_id = ? AND weighing_machine_id IS NOT NULL ORDER BY id LIMIT 1', [batchId]);
+  return r.length ? r[0].weighing_machine_id : null;
 }
 
 /* ---------- step 7: weigh one material into the batch ---------- */
@@ -221,7 +255,7 @@ async function addBatching(batchIdRaw, body, user, ip) {
   if (!body.checked_by) throw new AppError('Checked by is required');
   const checkedBy = v.toId(body.checked_by, 'checked by');
   if (doneBy === checkedBy) throw new AppError('Checked by must be a different person from Done by');
-  const machineId = body.weighing_machine_id ? v.toId(body.weighing_machine_id, 'weighing machine') : null;
+  let machineId = body.weighing_machine_id ? v.toId(body.weighing_machine_id, 'weighing machine') : null;
 
   return withTransaction(async (conn) => {
     const b = await loadBatch(conn, batchId, true);
@@ -243,6 +277,19 @@ async function addBatching(batchIdRaw, body, user, ip) {
       if (!mc.length) throw new AppError('Selected weighing machine is not available');
     }
 
+    // Batch-wise machine lock: once a batch has a weighing machine, every material must be weighed on it (its QR is scanned),
+    // and the photo of that machine's display must have passed the OCR check (MATCH) or a supervisor's manual verification.
+    const lockedId = b.weighing_machine_id || (await firstMachineOfBatch(conn, batchId));
+    if (lockedId) {
+      if (!body.qr_value) throw new AppError('Scan the QR code of the batch weighing machine first');
+      const scanned = await machines.getByToken(body.qr_value); // 404 for an unknown code
+      if (String(scanned.id) !== String(lockedId)) throw new AppError(`Wrong machine (${scanned.machine_code}). This batch is locked to another weighing machine. Scan that machine to continue`, 403);
+      machineId = lockedId;
+    }
+    const imageId = body.weight_image_id ? v.toId(body.weight_image_id, 'weight photo') : null;
+    if (lockedId && !imageId) throw new AppError('Take or upload a photo of the weighing machine display and verify the weight first');
+    if (imageId) await wimg.claim(conn, { imageId, batchId, materialId, weighedQty: weighed }); // MATCH / MANUAL only, same batch + material + weight, unused
+
     // raw stock goes down here, in the same transaction as the batching row
     const st = await stock.postTxn(conn, {
       material_id: materialId, direction: 'OUT', txn_type: 'ISSUE', qty: weighed, txn_date: v.date(),
@@ -261,8 +308,12 @@ async function addBatching(batchIdRaw, body, user, ip) {
       if (e.code === 'ER_DUP_ENTRY') throw new AppError(`${ing[0].material_name} is already weighed for this batch`, 409);
       throw e;
     }
+    if (imageId) await wimg.link(conn, imageId, entryId); // photo is now stored against this batch + material
+    if (machineId && !b.weighing_machine_id) {            // first weighing locks the machine to the batch
+      await conn.query('UPDATE batch_master SET weighing_machine_id = ?, machine_locked_at = NOW() WHERE id = ? AND weighing_machine_id IS NULL', [machineId, batchId]);
+    }
     await audit({ userId: user.id, action: 'CREATE', table: 'batching_details', recordId: entryId,
-      newValues: { batch_id: batchId, material_id: materialId, bags, perBag, weighed, doneBy, checkedBy, stock_txn_id: st.txn_id }, ip }, conn);
+      newValues: { batch_id: batchId, material_id: materialId, bags, perBag, weighed, doneBy, checkedBy, stock_txn_id: st.txn_id, weighing_machine_id: machineId, weight_image_id: imageId }, ip }, conn);
 
     const fresh = await loadBatch(conn, batchId);
     const plan = await buildPlan(conn, fresh);

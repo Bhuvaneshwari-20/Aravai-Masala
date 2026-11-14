@@ -1,11 +1,12 @@
 import React, { useCallback, useState } from 'react';
-import { View, ScrollView, StyleSheet } from 'react-native';
+import { View, ScrollView, Pressable, StyleSheet } from 'react-native';
 import { Text, Button } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
 import api, { errMsg } from '../../api';
 import { useAuth } from '../../AuthContext';
 import { useUi } from '../../ui';
 import BatchingEntryModal from '../../components/BatchingEntryModal';
+import WeightImageViewer from '../../components/WeightImageViewer';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import ModalShell from '../../components/ModalShell';
 import FormField from '../../components/FormField';
@@ -14,12 +15,13 @@ import LoadingView from '../../components/LoadingView';
 import EmptyView from '../../components/EmptyView';
 import { ErrorBox, ModalFooter } from '../../components/FormBits';
 import { badgeFor, stageLabel } from './BatchListScreen';
+import { isBatchMachineLocked, batchMachineLabel } from '../../batchMachineLock';
 import { COLORS, fmt } from '../../theme';
 
 const SHEET_COLS = [
   { key: 'date', label: 'DATE', w: 100 }, { key: 'code', label: 'MATERIAL CODE', w: 110 }, { key: 'name', label: 'MATERIAL NAME', w: 220 },
   { key: 'bags', label: 'NO OF BAGS', w: 90 }, { key: 'wt', label: 'WEIGHT', w: 110 }, { key: 'qty', label: 'WEIGHED QTY', w: 120 },
-  { key: 'by', label: 'DONE BY', w: 120 }, { key: 'chk', label: 'CHECKED BY', w: 120 },
+  { key: 'by', label: 'DONE BY', w: 120 }, { key: 'chk', label: 'CHECKED BY', w: 120 }, { key: 'img', label: 'PHOTO', w: 80 },
 ];
 
 export default function BatchDetailScreen({ route }) {
@@ -29,6 +31,7 @@ export default function BatchDetailScreen({ route }) {
   const [b, setB] = useState(null);
   const [error, setError] = useState('');
   const [weigh, setWeigh] = useState(null);       // ingredient being weighed
+  const [viewImg, setViewImg] = useState(null);   // ingredient whose weighing machine photo is open
   const [holdOpen, setHoldOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [confirmDone, setConfirmDone] = useState(false);
@@ -64,6 +67,12 @@ export default function BatchDetailScreen({ route }) {
           <Text style={s.sub}>{b.product_name}</Text>
           <Text style={s.meta}>Total {fmt(b.planned_qty_kg)} kg  •  {String(b.production_date).slice(0, 10)}</Text>
           {b.status !== 'COMPLETED' && b.status !== 'CANCELLED' && <Text style={s.meta}>Current process: {stageLabel(b.current_stage)}</Text>}
+          {isBatchMachineLocked(b) && (
+            <View style={{ backgroundColor: COLORS.warnBg, borderRadius: 10, padding: 10, marginTop: 8 }}>
+              <Text style={{ color: COLORS.warn, fontWeight: '800' }}>🔒 Weighing machine locked: {batchMachineLabel(b)}</Text>
+              <Text style={{ color: COLORS.warn, fontWeight: '600', fontSize: 12, marginTop: 2 }}>All materials of this batch must be weighed on this machine. It is released when the batch is completed.</Text>
+            </View>
+          )}
           {b.status === 'ON_HOLD' && <Text style={s.hold}>On hold: {b.hold_reason}. The lock stays on, no other batch can start.</Text>}
           <View style={s.btns}>
             {can('batching', 'approve') && b.status === 'IN_PROGRESS' && (
@@ -82,7 +91,7 @@ export default function BatchDetailScreen({ route }) {
             {/* Sheet: same columns as the paper "ARAVAI BATCHING PROCESS PLAN" */}
             {plan.ingredients.some((i) => i.is_done) && (
               <ScrollView horizontal showsHorizontalScrollIndicator style={{ marginTop: 6 }}>
-                <View style={{ minWidth: 980 }}>
+                <View style={{ minWidth: 1060 }}>
                   <View style={[s.tr, s.trHead]}>
                     {SHEET_COLS.map((c) => <Text key={c.key} style={[s.th, { width: c.w }]}>{c.label}</Text>)}
                   </View>
@@ -96,6 +105,9 @@ export default function BatchDetailScreen({ route }) {
                       <Text style={[s.td, { width: 120, fontWeight: '800' }]}>{fmt(i.weighed_qty)} kg</Text>
                       <Text style={[s.td, { width: 120 }]}>{i.done_by_name || '-'}</Text>
                       <Text style={[s.td, { width: 120 }]}>{i.checked_by_name || '-'}</Text>
+                      {i.weight_image
+                        ? <Pressable style={{ width: 80 }} onPress={() => setViewImg(i)}><Text style={[s.td, { color: COLORS.primary, fontWeight: '800' }]}>View</Text></Pressable>
+                        : <Text style={[s.td, { width: 80 }]}>-</Text>}
                     </View>
                   ))}
                 </View>
@@ -135,6 +147,8 @@ export default function BatchDetailScreen({ route }) {
 
       <BatchingEntryModal visible={!!weigh} batch={b} ingredient={weigh} onDismiss={() => setWeigh(null)}
         onSaved={(r) => { setWeigh(null); load(); toast(r.stock.low_stock_alert || 'Weighing saved'); }} />
+
+      <WeightImageViewer visible={!!viewImg} batchId={b.id} ingredient={viewImg} onDismiss={() => setViewImg(null)} />
 
       <ConfirmDialog visible={confirmDone} title="Complete batching?" message={`${fmt(plan?.total_weighed_kg)} kg will move to the next stage. You cannot add more weighing after this.`}
         confirmText="Complete" onCancel={() => setConfirmDone(false)}

@@ -16,6 +16,12 @@ import { ErrorBox, ModalFooter } from '../../components/FormBits';
 import { badgeFor, stageLabel } from './BatchListScreen';
 import { COLORS, fmt } from '../../theme';
 
+const SHEET_COLS = [
+  { key: 'date', label: 'DATE', w: 100 }, { key: 'code', label: 'MATERIAL CODE', w: 110 }, { key: 'name', label: 'MATERIAL NAME', w: 220 },
+  { key: 'bags', label: 'NO OF BAGS', w: 90 }, { key: 'wt', label: 'WEIGHT', w: 110 }, { key: 'qty', label: 'WEIGHED QTY', w: 120 },
+  { key: 'by', label: 'DONE BY', w: 120 }, { key: 'chk', label: 'CHECKED BY', w: 120 },
+];
+
 export default function BatchDetailScreen({ route }) {
   const { id } = route.params;
   const { can } = useAuth();
@@ -73,19 +79,39 @@ export default function BatchDetailScreen({ route }) {
             <Text style={s.secTitle}>BATCHING</Text>
             <Text style={s.progress}>{batchingOpen ? `${plan.done_count} of ${plan.ingredients.length} materials weighed  •  ` : `${plan.done_count} materials  •  `}{fmt(plan.total_weighed_kg)} kg{plan.total_required_kg != null ? ` of ${fmt(plan.total_required_kg)} kg` : ''}</Text>
 
-            {plan.ingredients.filter((i) => i.is_done || batchingOpen).map((i) => (
+            {/* Sheet: same columns as the paper "ARAVAI BATCHING PROCESS PLAN" */}
+            {plan.ingredients.some((i) => i.is_done) && (
+              <ScrollView horizontal showsHorizontalScrollIndicator style={{ marginTop: 6 }}>
+                <View style={{ minWidth: 980 }}>
+                  <View style={[s.tr, s.trHead]}>
+                    {SHEET_COLS.map((c) => <Text key={c.key} style={[s.th, { width: c.w }]}>{c.label}</Text>)}
+                  </View>
+                  {plan.ingredients.filter((i) => i.is_done).map((i) => (
+                    <View key={i.material_id} style={s.tr}>
+                      <Text style={[s.td, { width: 100 }]}>{String(i.entry_date || '').slice(0, 10)}</Text>
+                      <Text style={[s.td, { width: 110, fontWeight: '800' }]}>{i.material_code}</Text>
+                      <Text style={[s.td, { width: 220, fontWeight: '800' }]}>{i.material_name}</Text>
+                      <Text style={[s.td, { width: 90 }]}>{i.no_of_bags}</Text>
+                      <Text style={[s.td, { width: 110 }]}>{fmt(i.weight_per_bag)} kg</Text>
+                      <Text style={[s.td, { width: 120, fontWeight: '800' }]}>{fmt(i.weighed_qty)} kg</Text>
+                      <Text style={[s.td, { width: 120 }]}>{i.done_by_name || '-'}</Text>
+                      <Text style={[s.td, { width: 120 }]}>{i.checked_by_name || '-'}</Text>
+                    </View>
+                  ))}
+                </View>
+              </ScrollView>
+            )}
+            {plan.ingredients.some((i) => i.weighing_machine_name) && (
+              <Text style={s.small}>Weighing machine: {plan.ingredients.find((i) => i.weighing_machine_name).weighing_machine_name}</Text>)}
+
+            {batchingOpen && plan.ingredients.filter((i) => !i.is_done).map((i) => (
               <View key={i.material_id} style={s.ing}>
                 <View style={{ flex: 1 }}>
-                  <Text style={s.ingName}>{i.is_done ? '✅ ' : '⏳ '}{i.material_name}</Text>
+                  <Text style={s.ingName}>⏳ {i.material_code}  {i.material_name}</Text>
                   {i.required_kg != null && <Text style={s.small}>Required {fmt(i.required_kg)} kg</Text>}
-                  {i.is_done ? (
-                    <Text style={s.small}>
-                      Quantity {fmt(i.weighed_qty)} kg  •  by {i.done_by_name}{i.checked_by_name ? `, checked ${i.checked_by_name}` : ''}
-                      {Number(i.variance_kg) !== 0 ? `  •  ${i.variance_kg > 0 ? '+' : ''}${fmt(i.variance_kg)} kg vs recipe` : ''}
-                    </Text>
-                  ) : (i.stock_short && <Text style={[s.small, { color: COLORS.danger }]}>Stock {fmt(i.current_stock)} kg is not enough</Text>)}
+                  {i.stock_short && <Text style={[s.small, { color: COLORS.danger }]}>Stock {fmt(i.current_stock)} kg is not enough</Text>}
                 </View>
-                {!i.is_done && batchingOpen && can('batching', 'create') && (
+                {can('batching', 'create') && (
                   <Button mode="contained" compact buttonColor={COLORS.primary} style={{ borderRadius: 10 }} onPress={() => setWeigh(i)}>Weigh</Button>)}
               </View>
             ))}
@@ -148,5 +174,9 @@ const s = StyleSheet.create({
   small: { fontSize: 12.5, color: COLORS.grey, fontWeight: '600', marginTop: 2 },
   done: { backgroundColor: COLORS.okBg, borderRadius: 12, padding: 12, marginTop: 14 },
   doneTitle: { color: COLORS.ok, fontWeight: '900', fontSize: 15 },
+  tr: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: COLORS.border, paddingVertical: 10, paddingHorizontal: 6 },
+  trHead: { backgroundColor: COLORS.greyBg, borderRadius: 8, borderBottomWidth: 0 },
+  th: { fontSize: 11, fontWeight: '900', letterSpacing: 0.6, color: COLORS.grey },
+  td: { fontSize: 14, color: COLORS.text, fontWeight: '600', paddingRight: 8 },
   doneText: { color: COLORS.text, marginTop: 3, fontWeight: '600' },
 });
