@@ -79,7 +79,8 @@ export function packingHtml(d) {
       ['Batch', esc(d.batch_no)], ['Product', esc(d.product_name)],
       ['Pack size', esc(`${d.sku_code} · ${d.packing_size_label}`)], ['Date', esc(d.packing_date)],
       ['Machine', esc(`${d.machine_code} · ${d.machine_name}`)], ['Operator', esc(d.operator_name)],
-      ['Status', status(d.status)], ['', ''],
+      ['Status', status(d.status)], ['Use by date', esc(d.use_by_date || '—')],
+      ['Packing code', esc(d.packing_code || '—')], ['', ''],
     ])}
     <h3>Packets</h3>
     <table><tr><th>Total packets</th><th>Accepted packets</th><th>Rejected packets</th></tr>

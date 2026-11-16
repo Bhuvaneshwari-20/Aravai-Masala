@@ -14,7 +14,7 @@ import { todayStr, nowHHmm, DATE_RE, TIME_RE, num, r3, nextKey } from '../produc
 
 const GROUND = 'GROUND';
 const newLine = () => ({ key: nextKey(), material_id: null, no_of_bags: '', weight_per_bag: '', ingredient_weight: '' });
-const initial = (uid) => ({ batch_id: null, recipe_id: null, machine_id: null, entry_date: todayStr(), start_time: nowHHmm(),
+const initial = (uid) => ({ batch_id: null, recipe_id: null, machine_id: null, entry_date: todayStr(), start_time: '',
   mixing_duration_min: '', output_weight: '', done_by: uid, checked_by: null, remarks: '' });
 const effWeight = (l) => num(l.ingredient_weight) || r3(num(l.no_of_bags) * num(l.weight_per_bag));
 const Label = ({ children, style }) => <Text style={[{ fontSize: 11, fontWeight: '900', letterSpacing: 1.4, color: COLORS.grey, marginBottom: 8 }, style]}>{children}</Text>;
@@ -58,9 +58,8 @@ export default function BlendingFormModal({ visible, onDismiss, onSaved }) {
   const batch = lk?.batches.find((b) => b.id === f.batch_id);
   const batchOptions = (lk?.batches || []).map((b) => ({ value: b.id, label: `${b.batch_no} · ${b.product_name}` }));
   const machineOptions = (lk?.machines || []).map((m) => ({ value: m.id, label: `${m.machine_code} · ${m.machine_name}` }));
-  const recipeOptions = (lk?.recipes || []).filter((r) => !batch || r.product_id === batch.product_id)
-    .map((r) => ({ value: r.id, label: `${r.recipe_no} (v${r.version_no})` }));
-  const userOptions = (lk?.users || []).map((u) => ({ value: u.id, label: u.full_name }));
+const recipeOptions = !batch ? [] : (lk?.recipes || []).filter((r) => r.product_id === batch.product_id)
+  .map((r) => ({ value: r.id, label: `${r.recipe_no} (v${r.version_no})` }));  const userOptions = (lk?.users || []).map((u) => ({ value: u.id, label: u.full_name }));
   const checkedOptions = [{ value: 0, label: '— None —' }, ...userOptions];
    const materialOptions = useMemo(() => (lk?.materials || []).map((m) => ({ value: m.id, label: `${m.material_code} · ${m.material_name}` })), [lk]);
   const pickBatch = (id) => {
@@ -81,7 +80,8 @@ export default function BlendingFormModal({ visible, onDismiss, onSaved }) {
     if (!f.recipe_id) e.recipe_id = 'Select a recipe';
     if (!f.machine_id) e.machine_id = 'Select a machine';
     if (!DATE_RE.test(f.entry_date)) e.entry_date = 'Use YYYY-MM-DD';
-    if (!TIME_RE.test(f.start_time)) e.start_time = 'Use HH:mm (24 hour)';
+if (!f.start_time) e.start_time = 'Enter the start time (HH:mm)';
+else if (!TIME_RE.test(f.start_time)) e.start_time = 'Use HH:mm (24 hour), e.g. 16:30';
     if (f.mixing_duration_min !== '' && Number(f.mixing_duration_min) < 0) e.mixing_duration_min = 'Enter minutes';
     if (f.batch_id && !lines.length) e.batch_id = 'This batch has no ingredient weights';
     if (!(out > 0)) e.output_weight = 'Enter the total blended weight';
@@ -129,8 +129,9 @@ export default function BlendingFormModal({ visible, onDismiss, onSaved }) {
           <Label>BATCH DETAILS</Label>
           <FormRow>
             <SelectField label="Batch *" value={f.batch_id} options={batchOptions} onChange={pickBatch} error={errors.batch_id} />
-            <SelectField label="Recipe *" value={f.recipe_id} options={recipeOptions} onChange={set('recipe_id')} error={errors.recipe_id} />
-          </FormRow>
+<SelectField label="Recipe *" value={batch ? f.recipe_id : null} options={recipeOptions} onChange={set('recipe_id')}
+  error={errors.recipe_id} disabled={!batch} />
+            </FormRow>
           <FormRow>
             <SelectField label="Blending machine *" value={f.machine_id} options={machineOptions} onChange={set('machine_id')} error={errors.machine_id} />
             <FormField label="Date * (YYYY-MM-DD)" value={f.entry_date} onChangeText={set('entry_date')} error={errors.entry_date} maxLength={10} />

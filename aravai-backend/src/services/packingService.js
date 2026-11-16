@@ -29,6 +29,8 @@ function cleanInput(body) {
     packing_rate_id: v.toId(body.packing_rate_id, 'pack size'),
     machine_id: v.toId(body.machine_id, 'machine'),
     packing_date: h.reqDate(body.packing_date, 'Packing date'),
+    use_by_date: h.reqDate(body.use_by_date, 'Use by date'),
+    packing_code: v.optStr(body.packing_code, 'Packing code', 50),
     overall_weight_kg: v.num(body.overall_weight_kg, 'Overall packet weight', { max: 100000, decimals: 3 }),
     total_bag_count: h.wholeNum(body.total_bag_count, 'Total bag count', { max: 100000000 }),
     rejected_bag_count: h.wholeNum(body.rejected_bag_count, 'Rejected bag count', { max: 100000000 }),
@@ -39,6 +41,7 @@ function cleanInput(body) {
     close_batch: body.close_batch === undefined ? false : v.toBool(body.close_batch, 'close_batch'),
   };
   if (d.overall_weight_kg <= 0) throw new AppError('Enter the overall weight of the packets (kg)');
+  if (d.use_by_date <= d.packing_date) throw new AppError('Use by date must be after the packing date');
   if (d.total_bag_count <= 0) throw new AppError('Total bag count must be more than 0');
   if (d.rejected_bag_count > d.total_bag_count) throw new AppError('Rejected bags cannot be more than total bags');
   return d;
@@ -84,12 +87,12 @@ async function create(body, userId, ip) {
     }
 
     const [pk] = await conn.query(
-      `INSERT INTO packing_details (packing_date, batch_id, product_id, packing_rate_id, machine_id, bag_size_grams, mrp_snapshot,
+      `INSERT INTO packing_details (packing_date, use_by_date, packing_code, batch_id, product_id, packing_rate_id, machine_id, bag_size_grams, mrp_snapshot,
          bag_rate_snapshot, bag_material_cost_snapshot, production_rate_snapshot, target_weight, actual_weight, total_bag_count,
          rejected_bag_count, accepted_bag_count, total_packing_weight, rejected_weight, accepted_weight, total_bag_material_cost,
          production_cost, auger_count, puller_count, production_count, operator_id, status, remarks)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'COMPLETED',?)`,
-      [d.packing_date, batch.id, batch.product_id, rate.id, d.machine_id, rate.weight_grams, rate.mrp, rate.bag_rate,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'COMPLETED',?)`,
+      [d.packing_date, d.use_by_date, d.packing_code, batch.id, batch.product_id, rate.id, d.machine_id, rate.weight_grams, rate.mrp, rate.bag_rate,
         rate.bag_material_cost, rate.production_rate, target, avgGrams, d.total_bag_count,
         d.rejected_bag_count, accepted, totalKg, rejectedKg, acceptedKg, bagCost,
         productionCost, d.auger_count, d.puller_count, d.production_count, userId, d.remarks]);

@@ -95,6 +95,7 @@ export function packingPdfBytes(d) {
     ['Batch', d.batch_no], ['Product', d.product_name, { hl: AMBER_BG, bar: MAROON, color: MAROON }],
     ['Pack size', `${d.sku_code} · ${d.packing_size_label}`], ['Date', d.packing_date],
     ['Machine', `${d.machine_code} · ${d.machine_name}`], ['Operator', d.operator_name], ['Status', cap(d.status)],
+    ['Use by date', d.use_by_date || '—'], ['Packing code', d.packing_code || '—'],
   ]);
   section('Packets', [
     ['Total packets', num(d.total_bag_count)], ['Accepted packets', num(d.accepted_bag_count), { color: GREEN }],

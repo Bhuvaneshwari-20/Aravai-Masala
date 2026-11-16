@@ -78,6 +78,8 @@ export default function PackingDetailModal({ visible, id, onDismiss }) {
 <Row label="Product" value={d.product_name} hl={HL_KEY} color={COLORS.primary} />
               <Row label="Pack size" value={`${d.sku_code} · ${d.packing_size_label}`} />
               <Row label="Date" value={d.packing_date} />
+              <Row label="Use by date" value={d.use_by_date || '—'} />
+              <Row label="Packing code" value={d.packing_code || '—'} />
               <Row label="Machine" value={`${d.machine_code} · ${d.machine_name}`} />
               <Row label="Operator" value={d.operator_name} />
               <Row label="Status" value={String(d.status).replace('_', ' ')} color={d.status === 'COMPLETED' ? COLORS.ok : undefined} last />
