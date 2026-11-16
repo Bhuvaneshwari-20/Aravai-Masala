@@ -103,13 +103,11 @@ export function packingPdfBytes(d) {
   ]);
   section('Weight', [
     ['Pack size (per packet)', d.bag_size_grams ? `${num(d.bag_size_grams)} g` : '—'], ['Packed (packets × pack size)', kg(d.total_packing_weight)],
-    ['Overall packet weight (entered)', kg(d.overall_weight_kg)], ['Average per packet', d.actual_weight ? `${num(d.actual_weight)} g` : '—'],
+    ['Overall packet weight (entered)', kg(d.overall_weight_kg)],
     ['Accepted weight', kg(d.accepted_weight)], ['Rejected weight', kg(d.rejected_weight)],
   ]);
-  section('Price and cost (at the time of packing)', [
+  section('Price (at the time of packing)', [
     ['MRP per packet', rs(d.mrp_snapshot)], ['Packet rate', rs(d.bag_rate_snapshot)],
-    ['Pouch material cost per packet', rs(d.bag_material_cost_snapshot)], ['Production rate per packet', rs(d.production_rate_snapshot)],
-    ['Total pouch material cost', rs(d.total_bag_material_cost)], ['Production cost', rs(d.production_cost), { hl: AMBER_BG, bar: ORANGE, color: MAROON }],
   ]);
   section('Machine counters', [['Auger count', num(d.auger_count)], ['Puller count', num(d.puller_count)], ['Production count', num(d.production_count)]]);
   section('Batch weight', [

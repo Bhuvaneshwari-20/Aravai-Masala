@@ -6,16 +6,17 @@ import api, { errMsg } from '../api';
 import ModalShell from './ModalShell';
 import ConfirmDialog from './ConfirmDialog';
 import FormField from './FormField';
+import DateField, { addDays } from './DateField';
 import FormRow from './FormRow';
 import SelectField from './SelectField';
 import { COLORS, fmt } from '../theme';
-import { todayStr, DATE_RE, num, r3 } from '../productionUtils';
+import { DATE_RE, num, r3 } from '../productionUtils';
 
 // Counter check: a counter may differ from Total packets by this share before a warning shows (warnings never block submit)
 const COUNTER_TOLERANCE = 0.02;
 const tol = (n) => Math.max(1, Math.ceil(n * COUNTER_TOLERANCE));
 const OVERALL_TOLERANCE = 0.02;   // 2 % allowed difference (scale/over-fill). Use 0 for an exact match.
-const EMPTY = { batch_id: null, packing_rate_id: null, machine_id: null, packing_date: todayStr(), use_by_date: '', packing_code: '', target_weight: '', overall_weight_kg: '',
+const EMPTY = { batch_id: null, packing_rate_id: null, machine_id: null, packing_date: '', use_by_date: '', packing_code: '', target_weight: '', overall_weight_kg: '',
   total_bag_count: '', rejected_bag_count: '0', auger_count: '', puller_count: '', production_count: '', remarks: '', close_batch: false };
 const Label = ({ children, style }) => <Text style={[{ fontSize: 11, fontWeight: '900', letterSpacing: 1.4, color: COLORS.grey, marginBottom: 8 }, style]}>{children}</Text>;
 
@@ -32,7 +33,7 @@ export default function PackingFormModal({ visible, onDismiss, onSaved }) {
 
   useEffect(() => {
     if (!visible) return;
-    setF({ ...EMPTY, packing_date: todayStr() }); setErrors({}); setErr(''); setSaving(false); setLoading(true);
+    setF({ ...EMPTY }); setErrors({}); setErr(''); setSaving(false); setLoading(true);
     api.get('/packing/lookups')
       .then((r) => setLk(r.data.data))
       .catch((e) => setErr(errMsg(e)))
@@ -87,8 +88,8 @@ const mismatchMsg = `Packed weight is ${fmt(totalKg)} kg (${fmt(total)} packets 
     if (!f.batch_id) e.batch_id = 'Select a batch';
     if (!f.packing_rate_id) e.packing_rate_id = 'Select a pack size';
     if (!f.machine_id) e.machine_id = 'Select a machine';
-    if (!DATE_RE.test(f.packing_date)) e.packing_date = 'Use YYYY-MM-DD';
-    if (!DATE_RE.test(f.use_by_date)) e.use_by_date = 'Use YYYY-MM-DD';
+    if (!DATE_RE.test(f.packing_date)) e.packing_date = 'Pick the packing date';
+    if (!DATE_RE.test(f.use_by_date)) e.use_by_date = 'Pick the use by date';
     else if (DATE_RE.test(f.packing_date) && f.use_by_date <= f.packing_date) e.use_by_date = 'Must be after the packing date';
     if (!(overallKg > 0)) e.overall_weight_kg = 'Enter the overall weight of the packets (kg)';
 else if (mismatch) e.overall_weight_kg = mismatchMsg;
@@ -145,11 +146,11 @@ else if (mismatch) e.overall_weight_kg = mismatchMsg;
           )}
           <FormRow>
             <SelectField label="Packing machine *" value={f.machine_id} options={machineOptions} onChange={set('machine_id')} error={errors.machine_id} />
-            <FormField label="Packing date * (YYYY-MM-DD)" value={f.packing_date} onChangeText={set('packing_date')} error={errors.packing_date} maxLength={10} />
+            <DateField label="Packing date *" value={f.packing_date} onChange={set('packing_date')} error={errors.packing_date} />
           </FormRow>
           <FormRow>
-            <FormField label="Use by date * (YYYY-MM-DD)" value={f.use_by_date} onChangeText={set('use_by_date')} error={errors.use_by_date}
-              maxLength={10} hint="Date printed on the packet" />
+            <DateField label="Use by date *" value={f.use_by_date} onChange={set('use_by_date')} error={errors.use_by_date}
+              min={addDays(f.packing_date, 1)} hint="Pick the date printed on the packet" />
             <FormField label="Packing code" value={f.packing_code} onChangeText={set('packing_code')} maxLength={50}
               hint="Code or label text printed on the packet" />
           </FormRow>

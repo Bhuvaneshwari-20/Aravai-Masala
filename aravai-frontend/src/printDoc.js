@@ -88,14 +88,12 @@ export function packingHtml(d) {
     <h3>Weight</h3>
     ${grid([
       ['Pack size (per packet)', d.bag_size_grams ? `${n(d.bag_size_grams)} g` : '—'], ['Packed (packets × pack size)', kg(d.total_packing_weight)],
-      ['Overall packet weight (entered)', kg(d.overall_weight_kg)], ['Average per packet', d.actual_weight ? `${n(d.actual_weight)} g` : '—'],
-      ['Accepted weight', kg(d.accepted_weight)], ['Rejected weight', kg(d.rejected_weight)],
+      ['Overall packet weight (entered)', kg(d.overall_weight_kg)], ['Accepted weight', kg(d.accepted_weight)],
+      ['Rejected weight', kg(d.rejected_weight)],
     ])}
-    <h3>Price and cost (at the time of packing)</h3>
+    <h3>Price (at the time of packing)</h3>
     ${grid([
       ['MRP per packet', money(d.mrp_snapshot)], ['Packet rate', money(d.bag_rate_snapshot)],
-      ['Pouch material cost per packet', money(d.bag_material_cost_snapshot)], ['Production rate per packet', money(d.production_rate_snapshot)],
-      ['Total pouch material cost', money(d.total_bag_material_cost)], ['Production cost', money(d.production_cost)],
     ])}
     <h3>Machine counters</h3>
     ${grid([['Auger count', n(d.auger_count)], ['Puller count', n(d.puller_count)], ['Production count', n(d.production_count)], ['', '']])}

@@ -95,18 +95,14 @@ export default function PackingDetailModal({ visible, id, onDismiss }) {
               <Row label="Pack size (per packet)" value={dash(d.bag_size_grams, ' g')} />
               <Row label="Packed (packets × pack size)" value={dash(d.total_packing_weight, ' kg')} bold />
               <Row label="Overall packet weight (entered)" value={dash(d.overall_weight_kg, ' kg')} />
-              <Row label="Average per packet (from overall weight)" value={dash(d.actual_weight, ' g')} />
               <Row label="Accepted weight" value={dash(d.accepted_weight, ' kg')} />
               <Row label="Rejected weight" value={dash(d.rejected_weight, ' kg')} last />
             </Section>
 
-            <Section title="PRICE AND COST (AT THE TIME OF PACKING)">
+            <Section title="PRICE (AT THE TIME OF PACKING)">
               <Row label="MRP per packet" value={money(d.mrp_snapshot)} />
-              <Row label="Packet rate" value={money(d.bag_rate_snapshot)} />
-              <Row label="Pouch material cost per packet" value={money(d.bag_material_cost_snapshot)} />
-              <Row label="Production rate per packet" value={money(d.production_rate_snapshot)} />
-              <Row label="Total pouch material cost" value={money(d.total_bag_material_cost)} />
-<Row label="Production cost" value={money(d.production_cost)} hl={{ bg: COLORS.warnBg, bar: COLORS.warn }} color={COLORS.primary} last />            </Section>
+              <Row label="Packet rate" value={money(d.bag_rate_snapshot)} last />
+            </Section>
 
             <Section title="MACHINE COUNTERS">
               <Row label="Auger count" value={dash(d.auger_count)} />
