@@ -29,6 +29,11 @@ import MachineListScreen from './src/screens/machine/MachineListScreen';
 import BlendingListScreen from './src/screens/production/BlendingListScreen';
 import PackingListScreen from './src/screens/production/PackingListScreen';  
 import GrindingListScreen from './src/screens/grinding/GrindingListScreen';
+import TrackingBoardScreen from './src/screens/tracking/TrackingBoardScreen';
+import TrackingDetailScreen from './src/screens/tracking/TrackingDetailScreen';
+import OverviewListScreen from './src/screens/overview/OverviewListScreen';
+import OverviewMaterialScreen from './src/screens/overview/OverviewMaterialScreen';
+import OverviewBatchScreen from './src/screens/overview/OverviewBatchScreen';
 import MeshListScreen from './src/screens/mesh/MeshListScreen';
 
 import MachineQrScreen from './src/screens/machine/MachineQrScreen';
@@ -81,6 +86,11 @@ function Root() {
       <Stack.Screen name="BlendingList" component={BlendingListScreen} options={{ title: 'Blending' }} />
 <Stack.Screen name="PackingList" component={PackingListScreen} options={{ title: 'Packing' }} /> 
   <Stack.Screen name="GrindingList" component={GrindingListScreen} options={{ title: 'Grinding' }} />
+   <Stack.Screen name="TrackingList" component={TrackingBoardScreen} options={{ title: 'Batch Tracking' }} />
+   <Stack.Screen name="TrackingDetail" component={TrackingDetailScreen} options={{ title: 'Batch Timeline' }} />
+   <Stack.Screen name="OverviewList" component={OverviewListScreen} options={{ title: 'Material Overview' }} />
+   <Stack.Screen name="OverviewMaterial" component={OverviewMaterialScreen} options={{ title: 'Material Trace' }} />
+   <Stack.Screen name="OverviewBatch" component={OverviewBatchScreen} options={{ title: 'Batch Materials' }} />
    <Stack.Screen name="MachineQr" component={MachineQrScreen} options={{ title: 'Machine' }} />
       </Stack.Navigator>
     </NavigationContainer>

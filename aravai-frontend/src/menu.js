@@ -15,7 +15,9 @@ export const MENU = [
   { module: 'blending', label: 'Blending', icon: '🥣', color: '#D946EF',screen: 'BlendingList'  },
     { module: 'machine', label: 'Machines', icon: '🛠️', color: '#475569', screen: 'MachineList' },
  { module: 'packing', label: 'Packing', icon: '📫', color: '#06B6D4' , screen: 'PackingList'},
-   { module: 'finished_goods', label: 'Finished Goods', icon: '✅', color: '#22C55E' },
+   { module: 'tracking', label: 'Batch Tracking', icon: '🧭', color: '#0E7490', screen: 'TrackingList' },
+  { module: 'material_overview', label: 'Material Overview', icon: '🔎', color: '#B45309', screen: 'OverviewList' },
+  { module: 'finished_goods', label: 'Finished Goods', icon: '✅', color: '#22C55E' },
   { module: 'reports', label: 'Reports', icon: '📈', color: '#6366F1' },
   { module: 'users', label: 'Users', icon: '👤', color: '#0F766E', screen: 'AccountList' },
 ];
@@ -24,6 +26,6 @@ export const MENU = [
 export const GROUPS = [
   { title: 'Masters', icon: 'database', color: '#C62828', modules: ['material', 'gram', 'mesh', 'vendor', 'product', 'recipe', 'machine'] },
   { title: 'Production', icon: 'factory', color: '#D97706', modules: ['batching',  'filtering','roasting', 'grinding', 'blending', 'packing'] },
-  { title: 'Stock & Reports', icon: 'chart-box', color: '#6D28D9', modules: ['stock', 'finished_goods', 'dashboard', 'reports'] },
+  { title: 'Stock & Reports', icon: 'chart-box', color: '#6D28D9', modules: ['stock', 'tracking', 'material_overview', 'finished_goods', 'dashboard', 'reports'] },
   { title: 'Admin', icon: 'shield-account', color: '#BE185D', modules: ['users'] },
 ];

@@ -18,6 +18,8 @@ export const ICON = {
   "packing": "package-variant-closed",
   "finished_goods": "warehouse",
   "reports": "chart-line",
+  "tracking": "map-marker-path",
+  "material_overview": "magnify",
   "users": "account-group",
   "materials": "package-variant",
   "low": "alert-circle",

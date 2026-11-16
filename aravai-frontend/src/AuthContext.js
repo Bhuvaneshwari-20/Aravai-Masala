@@ -41,7 +41,10 @@ export function AuthProvider({ children }) {
   const can = (module, action = 'view') => {
     if (!user) return false;
     if (user.permissions === 'ALL') return true;
-    const p = user.permissions.find((x) => x.module === module);
+    // Read-only screens that follow an existing permission (no extra permission row needed)
+    const FOLLOWS = { tracking: 'batching', material_overview: 'material' };
+    const mod = FOLLOWS[module] || module;
+    const p = user.permissions.find((x) => x.module === mod);
     return !!(p && p[`can_${action}`]);
   };
 
