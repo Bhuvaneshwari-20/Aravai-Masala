@@ -12,7 +12,11 @@ import GrindingFormModal from '../../components/GrindingFormModal';
 import { COLORS } from '../../theme';
 
 const fmtDate = (d) => { const [y, m, day] = String(d).split('-'); return `${day}/${m}/${y}`; };
-const fmtTime = (t) => String(t).slice(0, 5);
+// API gives "2026-11-16 03:00:00" (date + time) -> show only HH:MM
+const fmtTime = (t) => {
+  const m = /(\d{1,2}):(\d{2})/.exec(String(t || ''));
+  return m ? `${m[1].padStart(2, '0')}:${m[2]}` : '-';
+};
 
 function Cell({ label, value }) {
   return (

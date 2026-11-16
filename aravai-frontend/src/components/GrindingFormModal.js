@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Pressable } from 'react-native';
+import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import { Button, Text } from 'react-native-paper';
 import api, { errMsg } from '../api';
 import ModalShell from './ModalShell';
@@ -14,8 +15,8 @@ const today = () => {
   return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`;
 };
 const EMPTY = () => ({
-  date: today(), product: '', batch_id: '', machine_id: '', batch_code: '', mesh_size: '',
-  ip_wt: '', op_wt: '', sieved: 'NO', ip_time: '', op_time: '', sign: '',
+  date: today(), product: '', batch_id: '', machine_id: '', batch_code: '', mesh_size: '', mesh_id: '',
+  ip_wt: '', op_wt: '', sieved: 'NO', ip_time: '', op_time: '', sign: '', finish_grinding: true,
 });
 const YESNO = [{ value: 'YES', label: 'Yes' }, { value: 'NO', label: 'No' }];
 const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
@@ -28,12 +29,27 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
   const [batches, setBatches] = useState([]);
   const [machines, setMachines] = useState([]);
   const [meshes, setMeshes] = useState([]);
+  const meshRef = useRef([]); // always the latest list (also right after a new mesh is added)
   const set = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
 
   const pickBatch = (id) => {
     const b = batches.find((x) => x.id === id);
     if (!b) return;
-    setF((p) => ({ ...p, batch_id: b.id, batch_code: b.batch_no, product: b.product_name }));
+    setF((p) => ({ ...p, batch_id: b.id, batch_code: b.batch_no, product: b.product_name, ip_wt: String(b.available_kg) })); // I/P = roasted weight
+  };
+
+  const pickMesh = (id) => {
+    const m = meshRef.current.find((x) => x.id === id);
+    if (m) setF((p) => ({ ...p, mesh_id: m.id, mesh_size: String(m.mesh_size) }));
+  };
+  const addMesh = async (name) => {
+    try {
+      const r = await api.post('/grinding/meshes', { mesh_size: name });
+      const m = r.data?.data || r.data;
+      meshRef.current = [...meshRef.current, m];
+      setMeshes(meshRef.current);
+      return { value: m.id, label: `${m.mesh_size} mm` };
+    } catch (e) { throw new Error(errMsg(e)); }
   };
 
   useEffect(() => { if (visible) { setF(EMPTY()); setErrors({}); setSaving(false); setErr(''); } }, [visible]);
@@ -43,15 +59,15 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
     api.get('/grinding/batches')
       .then((r) => setBatches(r.data?.data || r.data || []))
       .catch((e) => setErr(errMsg(e)));
+    api.get('/grinding/meshes')
+      .then((r) => { const list = r.data?.data || r.data || []; meshRef.current = list; setMeshes(list); })
+      .catch((e) => setErr(errMsg(e)));
     api.get('/grinding/machines')
       .then((r) => {
         const list = r.data?.data || r.data || [];
         setMachines(list);
         if (list.length === 1) setF((p) => ({ ...p, machine_id: list[0].id }));
       })
-      .catch((e) => setErr(errMsg(e)));
-    api.get('/grinding/meshes')
-      .then((r) => setMeshes(r.data?.data || r.data || []))
       .catch((e) => setErr(errMsg(e)));
   }, [visible]);
 
@@ -66,7 +82,7 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
     if (!/^\d{2}\/\d{2}\/\d{4}$/.test(f.date)) e.date = 'Use DD/MM/YYYY';
     if (!f.batch_id) e.batch_code = 'Select a batch';
     if (!f.machine_id) e.machine_id = 'Select a machine';
-    if (!f.mesh_size) e.mesh_size = 'Select a mesh size';
+    if (!f.mesh_id) e.mesh_size = 'Select the mesh size';
     if (!f.ip_wt || ip <= 0) e.ip_wt = 'Enter input weight';
     if (!f.op_wt) e.op_wt = 'Enter output weight';
     if (!TIME_RE.test(f.ip_time)) e.ip_time = 'Use HH:MM (24h)';
@@ -99,14 +115,14 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
         <FormRow>
           <FormField label="Date *" value={f.date} onChangeText={set('date')} error={errors.date} />
           <SelectField label="Batch code *" value={f.batch_id}
-            options={batches.map((b) => ({ value: b.id, label: b.batch_no }))}
+            options={batches.map((b) => ({ value: b.id, label: `${b.batch_no} · ${b.available_kg} kg` }))}
             onChange={pickBatch} error={errors.batch_code} />
         </FormRow>
         <FormRow>
           <FormField label="Product" value={f.product} editable={false} />
-          <SelectField label="Mesh size (mm) *" value={f.mesh_size}
-            options={meshes.map((m) => ({ value: m.mesh_size, label: m.mesh_size }))}
-            onChange={set('mesh_size')} error={errors.mesh_size} />
+          <SelectField label="Mesh size (mm) *" value={f.mesh_id || null}
+            options={meshes.map((m) => ({ value: m.id, label: `${m.mesh_size} mm` }))}
+            onChange={pickMesh} error={errors.mesh_size} onCreate={addMesh} createLabel="Add new mesh size (mm)" />
         </FormRow>
         <FormRow>
           <FormField label="I/P weight (kg) *" numeric value={f.ip_wt} onChangeText={set('ip_wt')} error={errors.ip_wt} />
@@ -131,6 +147,21 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
           <View style={{ flex: 1 }} />
         </FormRow>
         <FormField label="Operator sign *" value={f.sign} onChangeText={set('sign')} error={errors.sign} />
+        {!batches.length && (
+          <Text style={{ fontSize: 12, color: COLORS.danger, marginBottom: 8 }}>
+            No batch is waiting for Grinding. Finish Roasting first (tick "Roasting finished for this batch").
+          </Text>
+        )}
+        <Pressable onPress={() => setF((p) => ({ ...p, finish_grinding: !p.finish_grinding }))}
+          style={{ flexDirection: 'row', alignItems: 'center', padding: 12, marginBottom: 8, borderRadius: 14, borderWidth: 1, borderColor: f.finish_grinding ? COLORS.primary : COLORS.border }}>
+          <MCI name={f.finish_grinding ? 'checkbox-marked' : 'checkbox-blank-outline'} size={26} color={f.finish_grinding ? COLORS.primary : COLORS.grey} />
+          <View style={{ flex: 1, marginLeft: 10 }}>
+            <Text style={{ fontWeight: '800', color: COLORS.text }}>Grinding finished for this batch</Text>
+            <Text style={{ fontSize: 12, color: COLORS.grey, marginTop: 2 }}>
+              {f.finish_grinding ? 'After saving, this batch goes to Blending.' : 'Not ticked: more grinding runs can be added for this batch.'}
+            </Text>
+          </View>
+        </Pressable>
         {!!err && <Text style={{ color: COLORS.danger, fontWeight: '600' }}>{err}</Text>}
       </View>
     </ModalShell>

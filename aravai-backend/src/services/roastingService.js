@@ -1,4 +1,5 @@
-const { pool } = require('../config/db');
+const { pool, withTransaction } = require('../config/db');
+const h = require('../utils/productionHelpers');
 const AppError = require('../utils/AppError');
 const { audit } = require('../utils/audit');
 const v = require('../utils/validate');
@@ -47,31 +48,39 @@ async function clean(body, old = null, selfId = 0) {
   const [[m]] = await pool.query("SELECT id FROM machine_master WHERE id = ? AND machine_type = 'ROASTING'", [machine_id]);
   if (!m) throw new AppError('Select a valid roasting machine');
 
-  const code_no = v.reqStr(body.code_no, 'Code no', 30).toUpperCase();
-  // Code no = a recipe code (RCP001 ...). Old free-text entries can still be saved unchanged.
-  let recipeId = null;
-  if (!old || code_no !== old.code_no) {
-    const [[rc]] = await pool.query('SELECT id FROM recipe_master WHERE recipe_no = ? AND is_active = 1', [code_no]);
-    if (!rc) throw new AppError('Select a valid recipe code');
-    recipeId = rc.id;
-  } else {
-    const [[rc]] = await pool.query('SELECT id FROM recipe_master WHERE recipe_no = ?', [code_no]);
-    recipeId = rc ? rc.id : null;
-  }
-
   // Batch no + material (taken from Batching). Old entries without a batch can still be saved unchanged.
   const batch_id = v.clean(body.batch_id) === null ? null : v.toId(body.batch_id, 'batch');
   const material_id = v.clean(body.material_id) === null ? null : v.toId(body.material_id, 'material');
   const unchanged = !!old && (old.batch_id ?? null) === batch_id && (old.material_id ?? null) === material_id;
+
+  // The recipe code always comes from the selected batch (the form shows it, it is never typed)
+  let code_no;
+  let batchRow = null;
+  if (batch_id) {
+    const [[b]] = await pool.query(
+      `SELECT b.id, b.batch_no, b.recipe_id, b.status, b.current_stage, r.recipe_no
+         FROM batch_master b LEFT JOIN recipe_master r ON r.id = b.recipe_id WHERE b.id = ?`, [batch_id]);
+    if (!b) throw new AppError('Batch not found');
+    if (!b.recipe_no) throw new AppError(`Batch ${b.batch_no} has no recipe`);
+    batchRow = b;
+    code_no = String(b.recipe_no).toUpperCase();
+  } else {
+    if (!old) throw new AppError('Select the batch code');
+    // old free-text entries (no batch) keep their code
+    code_no = v.reqStr(body.code_no, 'Code no', 30).toUpperCase();
+    if (!old || code_no !== old.code_no) {
+      const [[rc]] = await pool.query('SELECT id FROM recipe_master WHERE recipe_no = ? AND is_active = 1', [code_no]);
+      if (!rc) throw new AppError('Select a valid recipe code');
+    }
+  }
+
   if (!unchanged) {
+    if (!batch_id) throw new AppError('Select the batch code');
     if (!material_id) throw new AppError('Select the material');
-    if (!batch_id) throw new AppError('Select the batch no');
   }
   let weighedInfo = null;
-  if (batch_id && material_id) {
-    const [[b]] = await pool.query('SELECT id, batch_no, recipe_id, status, current_stage FROM batch_master WHERE id = ?', [batch_id]);
-    if (!b) throw new AppError('Batch not found');
-    if (recipeId && b.recipe_id !== recipeId) throw new AppError(`Batch ${b.batch_no} was not made with recipe ${code_no}`);
+  if (batchRow && material_id) {
+    const b = batchRow;
     if (!unchanged) {
       if (b.status !== 'IN_PROGRESS') throw new AppError(`Batch ${b.batch_no} is ${b.status.toLowerCase().replace('_', ' ')}`);
       if (b.current_stage !== 'ROASTING') throw new AppError(`Batch ${b.batch_no} is not at the Roasting stage (it is at ${b.current_stage})`);
@@ -172,7 +181,39 @@ async function options() {
   return { machines, incharges, recipes, loss_alert_percent: LOSS_ALERT };
 }
 
-// Dropdown 2: materials of the selected recipe
+// Dropdown 1: batches (from Batching) that are waiting at the Roasting stage; the recipe comes with each batch.
+// current_batch_id is sent when an existing entry is being edited.
+async function batchOptions(q) {
+  const currentBatch = v.clean(q.current_batch_id) === null ? 0 : v.toId(q.current_batch_id, 'batch');
+  const [rows] = await pool.query(
+    `SELECT b.id AS batch_id, b.batch_no, b.production_date, p.product_name, r.recipe_no
+       FROM batch_master b
+       JOIN product_master p ON p.id = b.product_id
+       LEFT JOIN recipe_master r ON r.id = b.recipe_id
+      WHERE (b.current_stage = 'ROASTING' AND b.status = 'IN_PROGRESS') OR b.id = ?
+      ORDER BY b.id DESC`, [currentBatch]);
+  return { items: rows };
+}
+
+// Dropdown 2: the materials weighed in the selected batch, with the weight still left to roast
+async function batchMaterials(q) {
+  const batchId = v.toId(q.batch_id, 'batch');
+  const excludeId = v.clean(q.exclude_id) === null ? 0 : v.toId(q.exclude_id, 'entry');
+  const currentMaterial = v.clean(q.current_material_id) === null ? 0 : v.toId(q.current_material_id, 'material');
+  const [rows] = await pool.query(
+    `SELECT m.id AS material_id, m.material_code, m.material_name, SUM(bd.weighed_qty) AS weighed_qty,
+            (SELECT COALESCE(SUM(x.input_weight), 0) FROM roasting_details x
+              WHERE x.batch_id = bd.batch_id AND x.material_id = m.id AND x.status <> 'REJECTED' AND x.id <> ?) AS roasted_qty
+       FROM batching_details bd JOIN materials m ON m.id = bd.material_id
+      WHERE bd.batch_id = ?
+      GROUP BY m.id, m.material_code, m.material_name, bd.batch_id
+      ORDER BY MIN(bd.id)`, [excludeId, batchId]);
+  const items = rows.map((m) => ({ ...m, remaining_qty: r3(Number(m.weighed_qty) - Number(m.roasted_qty)) }))
+    .filter((m) => m.remaining_qty > 0 || m.material_id === currentMaterial);
+  return { items };
+}
+
+// (older lookup, still available) materials of a recipe
 async function recipeMaterials(q) {
   const recipeNo = v.reqStr(q.recipe_no, 'Recipe code', 30).toUpperCase();
   const [rows] = await pool.query(
@@ -206,13 +247,43 @@ async function batchesFor(q) {
 
 async function create(body, user, ip) {
   const d = await clean(body);
-  const [r] = await pool.query(
-    `INSERT INTO roasting_details (batch_id, material_id, roast_date, machine_id, code_no, input_weight, output_weight, temp_before, std_temp, temp_after,
-       start_time, end_time, running_hours, wastage_weight, loss_percent, incharge_id, remarks, status, operator_id)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [...cols(d), user.id]);
-  await audit({ userId: user.id, action: 'CREATE', table: 'roasting_details', recordId: r.insertId,
-    newValues: { code_no: d.code_no, batch_id: d.batch_id, material_id: d.material_id, input_weight: d.input_weight, output_weight: d.output_weight, loss_percent: d.loss_percent }, ip });
-  return getOne(r.insertId);
+  // "Roasting finished for this batch": hands the batch over to GRINDING
+  const finish = body.finish_roasting === true || body.finish_roasting === 'true';
+  if (finish) {
+    if (!d.batch_id) throw new AppError('Select the batch to finish roasting');
+    if (d.status !== 'COMPLETED') throw new AppError('Enter O/P weight and End time (complete this entry) before finishing roasting for the batch');
+  }
+  const out = await withTransaction(async (conn) => {
+    if (finish) await h.lockBatch(conn, d.batch_id, 'ROASTING');
+    const [r] = await conn.query(
+      `INSERT INTO roasting_details (batch_id, material_id, roast_date, machine_id, code_no, input_weight, output_weight, temp_before, std_temp, temp_after,
+         start_time, end_time, running_hours, wastage_weight, loss_percent, incharge_id, remarks, status, operator_id)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [...cols(d), user.id]);
+    let moved = null;
+    if (finish) {
+      const [[open]] = await conn.query(
+        "SELECT COUNT(*) AS n FROM roasting_details WHERE batch_id = ? AND status = 'IN_PROGRESS'", [d.batch_id]);
+      if (open.n > 0) throw new AppError('Some roasting entries of this batch are still in progress. Complete them first');
+      // powder handed to grinding = what the batch had minus the roasting loss of all its roasting entries
+      const [[w]] = await conn.query(
+        "SELECT COALESCE(SUM(wastage_weight), 0) AS loss FROM roasting_details WHERE batch_id = ? AND status = 'COMPLETED'", [d.batch_id]);
+      const loss = r3(Number(w.loss));
+      const [[bm]] = await conn.query('SELECT current_output_kg FROM batch_master WHERE id = ?', [d.batch_id]);
+      const toGrinding = Math.max(r3(Number(bm.current_output_kg) - loss), 0);
+      await conn.query(
+        "UPDATE batch_master SET current_stage = 'GRINDING', current_output_kg = ?, total_wastage_kg = total_wastage_kg + ? WHERE id = ?",
+        [toGrinding, loss, d.batch_id]);
+      moved = { to: 'GRINDING', weight_kg: toGrinding, roasting_loss_kg: loss };
+      await audit({ userId: user.id, action: 'UPDATE', table: 'batch_master', recordId: d.batch_id,
+        oldValues: { current_stage: 'ROASTING', current_output_kg: Number(bm.current_output_kg) },
+        newValues: { current_stage: 'GRINDING', current_output_kg: toGrinding }, ip }, conn);
+    }
+    await audit({ userId: user.id, action: 'CREATE', table: 'roasting_details', recordId: r.insertId,
+      newValues: { code_no: d.code_no, batch_id: d.batch_id, material_id: d.material_id, input_weight: d.input_weight, output_weight: d.output_weight, loss_percent: d.loss_percent }, ip }, conn);
+    return { id: r.insertId, moved };
+  });
+  const row = await getOne(out.id);
+  return out.moved ? { ...row, batch_moved: out.moved } : row;
 }
 
 async function update(id, body, user, ip) {
@@ -231,4 +302,4 @@ async function update(id, body, user, ip) {
   return getOne(id);
 }
 
-module.exports = { list, options, recipeMaterials, batchesFor, create, update };
+module.exports = { list, options, recipeMaterials, batchesFor, batchOptions, batchMaterials, create, update };

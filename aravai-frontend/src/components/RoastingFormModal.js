@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View } from 'react-native';
+import { View, Pressable } from 'react-native';
 import { Text, Button, ActivityIndicator } from 'react-native-paper';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import api, { errMsg } from '../api';
@@ -15,7 +15,7 @@ const today = () => {
 };
 const EMPTY = () => ({
   roast_date: today(), machine_id: null, code_no: '', material_id: null, batch_id: null, input_weight: '', output_weight: '',
-  temp_before: '', std_temp: '', temp_after: '', start_time: '', end_time: '', incharge_id: 0, remarks: '',
+  temp_before: '', std_temp: '', temp_after: '', start_time: '', end_time: '', incharge_id: 0, remarks: '', finish_roasting: false,
 });
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const Label = ({ children, style }) => <Text style={[{ fontSize: 11, fontWeight: '900', letterSpacing: 1.4, color: COLORS.grey, marginBottom: 8 }, style]}>{children}</Text>;
@@ -30,11 +30,9 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
   const isEdit = !!item;
   const [f, setF] = useState(EMPTY());
   const [machines, setMachines] = useState([]);
-  const [recipes, setRecipes] = useState([]);
-  const [materialOpts, setMaterialOpts] = useState([]); // materials of the selected recipe
-  const [batchRows, setBatchRows] = useState([]); // batches (from Batching) for recipe + material
+  const [batchList, setBatchList] = useState([]); // batches (from Batching) waiting at Roasting, each with its recipe
+  const [materialRows, setMaterialRows] = useState([]); // materials weighed in the selected batch
   const [loadingMat, setLoadingMat] = useState(false);
-  const [loadingBat, setLoadingBat] = useState(false);
   const [incharges, setIncharges] = useState([{ value: 0, label: '— None —' }]);
   const [alertAt, setAlertAt] = useState(12);
   const [loading, setLoading] = useState(false);
@@ -62,47 +60,48 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
     api.get('/roasting/options').then((r) => {
       const d = r.data.data;
       setMachines(d.machines.map((m) => ({ value: m.id, label: `${m.machine_code} · ${m.machine_name}` })));
-      setRecipes((d.recipes || []).map((r) => ({ value: r.recipe_no, label: `${r.recipe_no} · ${r.product_name}` })));
+      if (!item && d.machines.length === 1) setF((p) => ({ ...p, machine_id: d.machines[0].id })); // only one roasting machine -> pre-select
       setIncharges([{ value: 0, label: '— None —' }, ...d.incharges.map((u) => ({ value: u.id, label: u.full_name }))]);
       setAlertAt(d.loss_alert_percent);
     }).catch((e) => setErr(errMsg(e))).finally(() => setLoading(false));
   }, [visible, item]); // eslint-disable-line
 
-  // Recipe selected -> its materials load automatically
+  // Batch codes (from Batching) waiting at the Roasting stage
   useEffect(() => {
-    if (!visible || !f.code_no) { setMaterialOpts([]); return undefined; }
+    if (!visible) return undefined;
+    let off = false;
+    api.get('/roasting/batch-options', { params: { current_batch_id: item?.batch_id || undefined } })
+      .then((r) => { if (!off) setBatchList(r.data.data.items); })
+      .catch(() => { if (!off) setBatchList([]); });
+    return () => { off = true; };
+  }, [visible, item]);
+
+  // Batch selected -> the materials of that batch load automatically
+  useEffect(() => {
+    if (!visible || !f.batch_id) { setMaterialRows([]); return undefined; }
     let off = false; setLoadingMat(true);
-    api.get('/roasting/recipe-materials', { params: { recipe_no: f.code_no } })
-      .then((r) => { if (!off) setMaterialOpts(r.data.data.items.map((m) => ({ value: m.material_id, label: `${m.material_code} · ${m.material_name}` }))); })
-      .catch(() => { if (!off) setMaterialOpts([]); })
+    api.get('/roasting/batch-materials', { params: { batch_id: f.batch_id, exclude_id: item?.id || undefined, current_material_id: item?.material_id || undefined } })
+      .then((r) => { if (!off) setMaterialRows(r.data.data.items); })
+      .catch(() => { if (!off) setMaterialRows([]); })
       .finally(() => { if (!off) setLoadingMat(false); });
     return () => { off = true; };
-  }, [visible, f.code_no]);
+  }, [visible, f.batch_id, item]);
 
-  // Material selected -> batch nos from Batching load automatically
-  useEffect(() => {
-    if (!visible || !f.code_no || !f.material_id) { setBatchRows([]); return undefined; }
-    let off = false; setLoadingBat(true);
-    api.get('/roasting/batches', { params: { recipe_no: f.code_no, material_id: f.material_id, current_batch_id: item?.batch_id || undefined, exclude_id: item?.id || undefined } })
-      .then((r) => { if (!off) setBatchRows(r.data.data.items); })
-      .catch(() => { if (!off) setBatchRows([]); })
-      .finally(() => { if (!off) setLoadingBat(false); });
-    return () => { off = true; };
-  }, [visible, f.code_no, f.material_id, item]);
-
-  const onRecipe = (v) => setF((p) => ({ ...p, code_no: v, material_id: null, batch_id: null, input_weight: '' }));
-  const onMaterial = (v) => setF((p) => ({ ...p, material_id: v, batch_id: null, input_weight: '' }));
-  const onBatch = (v) => {
-    const b = batchRows.find((x) => x.batch_id === v);
-    setF((p) => ({ ...p, batch_id: v, input_weight: b ? String(b.remaining_qty) : p.input_weight })); // I/P = weight from Batching
+  // Pick the batch -> recipe is filled from the batch; material and I/P are chosen next
+  const onBatch = (id) => {
+    const b = batchList.find((x) => x.batch_id === id);
+    setF((p) => ({ ...p, batch_id: id, code_no: b ? (b.recipe_no || '') : '', material_id: null, input_weight: '' }));
   };
-  const batchOpts = useMemo(() => batchRows.map((b) => ({ value: b.batch_id, label: `${b.batch_no} · ${b.production_date} · ${b.remaining_qty} kg` })), [batchRows]);
-  const pickedBatch = batchRows.find((b) => b.batch_id === f.batch_id);
+  const onMaterial = (id) => {
+    const m = materialRows.find((x) => x.material_id === id);
+    setF((p) => ({ ...p, material_id: id, input_weight: m ? String(m.remaining_qty) : p.input_weight })); // I/P = weight from Batching
+  };
+  const batchOpts = useMemo(() => batchList.map((b) => ({ value: b.batch_id, label: `${b.batch_no} · ${b.product_name}` })), [batchList]);
+  const materialOpts = useMemo(() => materialRows.map((m) => ({ value: m.material_id, label: `${m.material_code} · ${m.material_name} · ${m.remaining_qty} kg` })), [materialRows]);
+  const pickedMaterial = materialRows.find((m) => m.material_id === f.material_id);
 
-  // recipe codes for the dropdown (an old free-text code is kept visible when editing)
-  const codeOptions = useMemo(() => (f.code_no && !recipes.some((r) => r.value === f.code_no)
-    ? [{ value: f.code_no, label: f.code_no }, ...recipes] : recipes), [recipes, f.code_no]);
-
+   const pickedBatch = batchList.find((b) => b.batch_id === f.batch_id);
+  const recipeLabel = pickedBatch ? `${pickedBatch.recipe_no || ''} · ${pickedBatch.product_name}` : f.code_no;
   // live preview of the calculated columns
   const calc = useMemo(() => {
     const inp = Number(f.input_weight); const out = Number(f.output_weight);
@@ -120,9 +119,9 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
     const e = {};
     if (!/^\d{4}-\d{2}-\d{2}$/.test(f.roast_date)) e.roast_date = 'Use YYYY-MM-DD';
     if (!f.machine_id) e.machine_id = 'Select a machine';
-    if (!f.code_no.trim()) e.code_no = 'Select the recipe code';
-    if ((!isEdit || item.batch_id) && f.code_no && !f.material_id) e.material_id = 'Select the material';
-    if ((!isEdit || item.batch_id) && f.material_id && !f.batch_id) e.batch_id = 'Select the batch no';
+    if ((!isEdit || item.batch_id) && !f.batch_id) e.batch_id = 'Select the batch code';
+    if ((!isEdit || item.batch_id) && f.batch_id && !f.material_id) e.material_id = 'Select the material';
+    if (!f.batch_id && !f.code_no.trim()) e.code_no = 'Select the batch code';
     if (!(Number(f.input_weight) > 0)) e.input_weight = 'Enter I/P weight';
     if (f.output_weight !== '' && !(Number(f.output_weight) > 0)) e.output_weight = 'Enter a valid O/P weight';
     if (Number(f.output_weight) > Number(f.input_weight)) e.output_weight = 'O/P cannot be more than I/P';
@@ -149,7 +148,7 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
 
   return (
     <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon="fire" maxWidth={720}
-      title={isEdit ? 'Edit Roasting Entry' : 'Add Roasting Entry'} subtitle={isEdit ? `${item.batch_no ? `${item.batch_no} · ` : ''}${item.code_no}` : 'Recipe → Material → Batch no'}
+      title={isEdit ? 'Edit Roasting Entry' : 'Add Roasting Entry'} subtitle={isEdit ? `${item.batch_no ? `${item.batch_no} · ` : ''}${item.code_no}` : 'Batch code → Recipe → Material'}
       footer={(
         <View style={{ flexDirection: 'row' }}>
           <Button mode="outlined" onPress={onDismiss} disabled={saving} textColor={COLORS.text} style={{ borderRadius: 10, borderColor: COLORS.border, marginRight: 10 }}>Cancel</Button>
@@ -163,29 +162,31 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
           <Label>BATCH</Label>
           <FormRow>
             <FormField label="Date * (YYYY-MM-DD)" value={f.roast_date} onChangeText={(t) => set('roast_date')(fmtDate(t))} error={errors.roast_date} keyboardType="number-pad" maxLength={10} />
-            <SelectField label="Machine *" value={f.machine_id} options={machines} onChange={set('machine_id')} error={errors.machine_id} />
+            <SelectField label="Batch code *" value={f.batch_id} options={batchOpts} onChange={onBatch} error={errors.batch_id || errors.code_no} />
           </FormRow>
-          <SelectField label="Recipe code *" value={f.code_no || null} options={codeOptions} onChange={onRecipe} error={errors.code_no} />
-          <FormRow>
-            <SelectField label="Material *" value={f.material_id} options={materialOpts} onChange={onMaterial} error={errors.material_id}
-              disabled={!f.code_no || loadingMat} />
-            <SelectField label="Batch no *" value={f.batch_id} options={batchOpts} onChange={onBatch} error={errors.batch_id}
-              disabled={!f.material_id || loadingBat} />
-          </FormRow>
-          {!!f.material_id && !loadingBat && !batchOpts.length && (
+          {!batchOpts.length && (
             <Text style={{ fontSize: 12, color: COLORS.danger, marginBottom: 8 }}>
-              No batch is waiting for Roasting with this material. Complete Batching (and Filtering, if ticked) first.
+              No batch is waiting for Roasting. Complete Batching (and Filtering, if ticked) first.
             </Text>
           )}
+          <FormRow>
+            <FormField label="Recipe code & name (from batch)" value={recipeLabel} editable={false} />
+            <SelectField label="Material *" value={f.material_id} options={materialOpts} onChange={onMaterial} error={errors.material_id}
+              disabled={!f.batch_id || loadingMat} />
+          </FormRow>
+          <FormRow>
+            <SelectField label="Machine *" value={f.machine_id} options={machines} onChange={set('machine_id')} error={errors.machine_id} />
+            <View style={{ flex: 1 }} />
+          </FormRow>
 
           <Label style={{ marginTop: 6 }}>WEIGHT</Label>
           <FormRow>
             <FormField label="I/P (Kg) *" numeric value={f.input_weight} onChangeText={set('input_weight')} error={errors.input_weight} />
             <FormField label="O/P (Kg)" numeric value={f.output_weight} onChangeText={set('output_weight')} error={errors.output_weight} />
           </FormRow>
-          {!!pickedBatch && (
+          {!!pickedMaterial && (
             <Text style={{ fontSize: 12, color: COLORS.grey, marginBottom: 8 }}>
-              Weighed in Batching: {pickedBatch.weighed_qty} kg · Already roasted: {pickedBatch.roasted_qty} kg · Available: {pickedBatch.remaining_qty} kg
+              Weighed in Batching: {pickedMaterial.weighed_qty} kg · Already roasted: {pickedMaterial.roasted_qty} kg · Available: {pickedMaterial.remaining_qty} kg
             </Text>
           )}
 
@@ -217,6 +218,19 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
           <Label style={{ marginTop: 4 }}>SIGN-OFF</Label>
           <SelectField label="Incharge" value={f.incharge_id} options={incharges} onChange={set('incharge_id')} />
           <FormField label="Remarks" multiline value={f.remarks} onChangeText={set('remarks')} maxLength={255} />
+          {!isEdit && (
+            <Pressable onPress={() => setF((p) => ({ ...p, finish_roasting: !p.finish_roasting }))}
+              style={{ flexDirection: 'row', alignItems: 'center', padding: 12, marginBottom: 8, borderRadius: 14, borderWidth: 1, borderColor: f.finish_roasting ? COLORS.primary : COLORS.border }}>
+              <MCI name={f.finish_roasting ? 'checkbox-marked' : 'checkbox-blank-outline'} size={26} color={f.finish_roasting ? COLORS.primary : COLORS.grey} />
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={{ fontWeight: '800', color: COLORS.text }}>Roasting finished for this batch</Text>
+                <Text style={{ fontSize: 12, color: COLORS.grey, marginTop: 2 }}>
+                  {f.finish_roasting ? 'After saving, this batch goes to Grinding (needs O/P weight and End time).'
+                    : 'Tick this on the LAST roasting entry of the batch. Not ticked: the batch stays in Roasting.'}
+                </Text>
+              </View>
+            </Pressable>
+          )}
 
           {!!err && (
             <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.dangerBg, borderRadius: 10, padding: 10, marginTop: 8 }}>
