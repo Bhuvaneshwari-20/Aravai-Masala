@@ -39,8 +39,8 @@ async function list(q) {
 
 /*
  * A recipe is just the product + the list of materials used. No quantities are stored here any more
- * (quantities are weighed in Batching). Recipes are never edited in place (batches point at them):
- * a change = a new version; creating it switches the older versions of that product off.
+ * (quantities are weighed in Batching). One product = one recipe: if the product already has a recipe,
+ * the new materials are added to it (nothing is removed, no new recipe / version is created).
  */
 async function create(body, userId, ip) {
   const productId = v.toId(body.product_id, 'product');
@@ -62,6 +62,26 @@ async function create(body, userId, ip) {
     for (const m of mats) {
       if (!m.is_active) throw new AppError(`${m.material_name} is inactive`);
       if (m.unit !== 'KG') throw new AppError(`${m.material_name} is in ${m.unit}. Only KG materials can be used in a recipe`);
+    }
+
+    // Product already has a recipe -> do NOT create another one. Just add the materials that are not in it yet.
+    const [existing] = await conn.query(
+      'SELECT id, is_active FROM recipe_master WHERE product_id = ? ORDER BY is_active DESC, version_no DESC LIMIT 1 FOR UPDATE', [productId]);
+    if (existing.length) {
+      const rid = existing[0].id;
+      const before = await getById(rid, conn);
+      const have = new Set(before.ingredients.map((i) => i.material_id));
+      const fresh = ids.filter((id) => !have.has(id));
+      if (!fresh.length) throw new AppError('These materials are already in this product\'s recipe');
+      await conn.query('INSERT INTO recipe_details (recipe_id, material_id, quantity_kg, percentage) VALUES ?',
+        [fresh.map((id) => [rid, id, 0, 0])]);
+      if (!existing[0].is_active) {
+        await conn.query('UPDATE recipe_master SET is_active = 0 WHERE product_id = ? AND id <> ?', [productId, rid]);
+        await conn.query('UPDATE recipe_master SET is_active = 1 WHERE id = ?', [rid]);
+      }
+      const updated = await getById(rid, conn);
+      await audit({ userId, action: 'UPDATE', table: 'recipe_master', recordId: rid, oldValues: before, newValues: updated, ip }, conn);
+      return updated;
     }
 
     const [[{ maxV }]] = await conn.query('SELECT COALESCE(MAX(version_no), 0) AS maxV FROM recipe_master WHERE product_id = ?', [productId]);

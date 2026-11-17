@@ -2,6 +2,7 @@
 //
 // Provider is chosen with WEIGHING_OCR_PROVIDER:
 //   tesseract (default) - tesseract.js, runs inside this Node process, no external service
+//   anthropic           - Claude vision reads the display (needs ANTHROPIC_API_KEY). Best for LED/7-segment digits
 //   none                - OCR disabled: every image becomes UNREADABLE and goes to manual review
 // To plug in another engine (Google Vision, AWS Textract ...) add a provider below that returns
 // the same shape as readWeight(): { value, unit, confidence, text, engine, reason }.
@@ -140,9 +141,45 @@ async function readTesseract(buffer) {
   return { value: top.value, unit: top.unit, confidence: Math.round((top.conf / top.n) * 100) / 100, text: top.text.slice(0, 250), engine: ENGINE, reason: null };
 }
 
+
+/* ---------- Claude vision provider (reads LED / 7-segment displays reliably) ---------- */
+async function readAnthropic(buffer) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return { value: null, unit: null, confidence: null, text: null, engine: 'anthropic', reason: 'ANTHROPIC_API_KEY is not set' };
+  const model = process.env.WEIGHING_OCR_MODEL || 'claude-sonnet-5-5';
+  // normalise orientation + size; phone photos can be huge
+  const jpeg = await sharp(buffer, { limitInputPixels: 60e6 }).rotate().resize({ width: 1600, withoutEnlargement: true }).jpeg({ quality: 90 }).toBuffer();
+  const prompt =
+    'This is a photo of an industrial weighing machine indicator. Read ONLY the main weight number shown on the digital display ' +
+    '(the large LED / 7-segment digits). Ignore printed labels, stickers, "Max"/"Min" capacity text and QR codes. ' +
+    'Include the decimal point exactly as shown. If the display is not visible, blank, or you are not sure about every digit, say so. ' +
+    'Reply with JSON only, no other text: {"readable": true|false, "value": <number or null>, "unit": "kg"|"g"|null}';
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model, max_tokens: 100,
+      messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: jpeg.toString('base64') } },
+        { type: 'text', text: prompt },
+      ] }],
+    }),
+  });
+  if (!res.ok) return { value: null, unit: null, confidence: null, text: null, engine: 'anthropic', reason: `Vision API error ${res.status}` };
+  const data = await res.json();
+  const text = (data.content || []).map((c) => c.text || '').join('').trim();
+  let j;
+  try { j = JSON.parse(text.replace(/```json|```/g, '').trim()); } catch (e) { j = null; }
+  const value = j && j.readable && Number.isFinite(Number(j.value)) && Number(j.value) > 0 ? Number(j.value) : null;
+  if (value === null) return { value: null, unit: null, confidence: null, text: text.slice(0, 250), engine: 'anthropic', reason: 'No reliable number found in the image' };
+  const unit = j.unit === 'g' || j.unit === 'kg' ? j.unit : 'kg';
+  return { value, unit, confidence: null, text: text.slice(0, 250), engine: 'anthropic:' + model, reason: null };
+}
+
 async function readWeight(buffer) {
   const provider = (process.env.WEIGHING_OCR_PROVIDER || 'tesseract').toLowerCase();
   if (provider === 'none') return { value: null, unit: null, confidence: null, text: null, engine: 'none', reason: 'OCR is disabled' };
+  if (provider === 'anthropic') return readAnthropic(buffer);
   if (provider === 'tesseract') return readTesseract(buffer);
   throw new Error(`Unknown WEIGHING_OCR_PROVIDER "${provider}"`);
 }

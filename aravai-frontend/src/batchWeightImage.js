@@ -28,10 +28,11 @@ export const batchWeightImageUri = (batchId, image) => (image && image.id
   : null);
 
 // Photo -> server: stores it, reads the weight (OCR) and compares. Resolves { id, status, entered_weight, detected_weight, difference, tolerance }.
+// enteredWeight left out (null / undefined / '') = auto-fill: the weight read from the photo is used, nothing is compared.
 export async function uploadWeightImage(batchId, { uri, materialId, enteredWeight }) {
   const fd = await buildImageForm(uri);
   fd.append('material_id', String(materialId));
-  fd.append('entered_weight', String(enteredWeight));
+  if (enteredWeight !== null && enteredWeight !== undefined && enteredWeight !== '') fd.append('entered_weight', String(enteredWeight));
   const url = batchId ? `/batches/${batchId}/batching/weight-image` : '/batches/weight-image'; // no batchId = New Batch form (batch not saved yet)
   const r = await api.post(url, fd, uploadCfg);
   return r.data.data;

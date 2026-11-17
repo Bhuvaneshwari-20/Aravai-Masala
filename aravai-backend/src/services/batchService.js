@@ -41,7 +41,7 @@ function assertBatchingOpen(b) {
  */
 async function buildPlan(db, b) {
   if (!b.recipe_id) return null;
-  const [rows] = await db.query(
+  const [recipeRows] = await db.query(
     `SELECT d.material_id, m.material_code, m.material_name, m.unit, d.quantity_kg AS recipe_qty_kg, m.current_stock,
             m.default_filter_stages, bd.id AS batching_id, bd.entry_date, bd.no_of_bags, bd.weight_per_bag, bd.required_qty,
             bd.weighed_qty, bd.needs_filtering AS material_needs_filtering, bd.weighing_machine_id, wm.machine_name AS weighing_machine_name, bd.done_by, du.full_name AS done_by_name, bd.checked_by, cu.full_name AS checked_by_name, bd.stock_txn_id
@@ -52,6 +52,20 @@ async function buildPlan(db, b) {
      LEFT JOIN users du ON du.id = bd.done_by
      LEFT JOIN users cu ON cu.id = bd.checked_by
      WHERE d.recipe_id = ? ORDER BY d.id`, [b.id, b.recipe_id]);
+
+  // Extra materials added to the batch from the Edit option (not part of the recipe). They are always "done" (already weighed).
+  const [extraRows] = await db.query(
+    `SELECT bd.material_id, m.material_code, m.material_name, m.unit, 0 AS recipe_qty_kg, m.current_stock,
+            m.default_filter_stages, bd.id AS batching_id, bd.entry_date, bd.no_of_bags, bd.weight_per_bag, bd.required_qty,
+            bd.weighed_qty, bd.needs_filtering AS material_needs_filtering, bd.weighing_machine_id, wm.machine_name AS weighing_machine_name,
+            bd.done_by, du.full_name AS done_by_name, bd.checked_by, cu.full_name AS checked_by_name
+     FROM batching_details bd
+     JOIN materials m ON m.id = bd.material_id
+     LEFT JOIN machine_master wm ON wm.id = bd.weighing_machine_id
+     LEFT JOIN users du ON du.id = bd.done_by
+     LEFT JOIN users cu ON cu.id = bd.checked_by
+     WHERE bd.batch_id = ? AND bd.material_id NOT IN (SELECT material_id FROM recipe_details WHERE recipe_id = ?) ORDER BY bd.id`, [b.id, b.recipe_id]);
+  const rows = [...recipeRows, ...extraRows.map((x) => ({ ...x, is_extra: true }))];
 
   const photos = await wimg.forBatch(db, b.id); // material_id -> stored weighing machine photo
 
@@ -217,16 +231,11 @@ async function start(body, userId, ip) {
       if (!mc.length) throw new AppError('Selected weighing machine is not available');
     }
 
-    // Batch-wise machine lock: a machine that holds a batch which is not COMPLETED / CANCELLED cannot be used for another batch.
-    if (machineId) {
-      await conn.query('SELECT id FROM machine_master WHERE id = ? FOR UPDATE', [machineId]); // two batches choosing the same machine are handled one after the other
-      const [inUse] = await conn.query("SELECT batch_no FROM batch_master WHERE weighing_machine_id = ? AND status NOT IN ('COMPLETED','CANCELLED') LIMIT 1", [machineId]);
-      if (inUse.length) throw new AppError(`This weighing machine is locked to batch ${inUse[0].batch_no}. Choose another machine`);
-    }
+    // (No cross-batch machine lock any more: the same weighing machine can be chosen for any number of batches.)
     // Weighing machine photo of every weighed material: OCR MATCH (or supervisor's manual verification), same material + same weight.
     for (const i of items) {
       const name = byId.get(i.material_id).material_name;
-      if (REQUIRE_WEIGHT_PHOTO && machineId && !i.image_id) throw new AppError(`${name}: take or upload a photo of the weighing machine display and verify the weight`);
+      if (REQUIRE_WEIGHT_PHOTO && !i.image_id) throw new AppError(`${name}: take or upload a photo of the weighing machine display and verify the weight`);
       if (i.image_id) {
         try { await wimg.claim(conn, { imageId: i.image_id, batchId: null, materialId: i.material_id, weighedQty: i.quantity_kg, userId, allowDraft: true }); }
         catch (e) { if (e instanceof AppError) e.message = `${name}: ${e.message}`; throw e; }
@@ -375,6 +384,55 @@ async function completeBatching(batchIdRaw, userId, ip) {
   });
 }
 
+/* ---------- Edit batch: add an extra material that is not in the recipe ---------- */
+// Allowed while the batch is running and nothing has consumed its weight yet: Batching, or Roasting before the first roasting entry.
+// (Filtering is left out on purpose: its input is the whole batch weight, an extra material would be filtered too.)
+// Stock of the material goes down, planned qty and the weight the batch holds go up by the weighed qty.
+async function addExtraMaterial(batchIdRaw, body, user, ip) {
+  const batchId = v.toId(batchIdRaw, 'batch id');
+  const materialId = v.toId(body.material_id, 'material');
+  const blank = (x) => x === undefined || x === null || String(x).trim() === '';
+  const weighed = v.positive(body.weighed_qty, 'Weighed quantity (kg)', { max: 1000000 });
+  const bags = blank(body.no_of_bags) ? 1 : v.intRange(body.no_of_bags, 'No of bags', 1, 100000);
+  const perBag = blank(body.weight_per_bag) ? r3(weighed / bags) : v.positive(body.weight_per_bag, 'Weight per bag (kg)', { max: 100000 });
+
+  return withTransaction(async (conn) => {
+    const b = await loadBatch(conn, batchId, true);
+    if (b.status !== 'IN_PROGRESS') throw new AppError(`Batch ${b.batch_no} is ${b.status.toLowerCase().replace('_', ' ')}. Materials can be added to a running batch only`);
+    if (!['BATCHING', 'ROASTING'].includes(b.current_stage)) throw new AppError(`Batch ${b.batch_no} is at ${b.current_stage}. Materials can be added only before Roasting starts`);
+    if (b.current_stage === 'ROASTING') {
+      const [started] = await conn.query('SELECT id FROM roasting_details WHERE batch_id = ? LIMIT 1', [batchId]);
+      if (started.length) throw new AppError('Roasting has already started for this batch. Materials can no longer be added');
+    }
+
+    const [m] = await conn.query('SELECT id, material_name, unit, is_active FROM materials WHERE id = ?', [materialId]);
+    if (!m.length) throw new AppError('Material not found', 404);
+    if (!m[0].is_active) throw new AppError(`${m[0].material_name} is inactive`);
+    if (m[0].unit !== 'KG') throw new AppError(`${m[0].material_name} is in ${m[0].unit}; only KG materials can be batched`);
+    const [dup] = await conn.query('SELECT id FROM batching_details WHERE batch_id = ? AND material_id = ?', [batchId, materialId]);
+    if (dup.length) throw new AppError(`${m[0].material_name} is already in this batch`, 409);
+
+    // raw stock goes down here, in the same transaction (short stock is rejected by stock.postTxn)
+    const st = await stock.postTxn(conn, {
+      material_id: materialId, direction: 'OUT', txn_type: 'ISSUE', qty: weighed, txn_date: v.date(),
+      issue_type: 'PRODUCTION', purpose: `Batch ${b.batch_no} - extra material`, reference_type: 'BATCH', reference_no: b.batch_no,
+      batch_id: batchId, entered_by: user.id,
+    });
+    const [r] = await conn.query(
+      `INSERT INTO batching_details (batch_id, entry_date, material_id, no_of_bags, weight_per_bag, weighed_qty, weighing_machine_id, stock_txn_id, done_by, checked_by, needs_filtering, status)
+       VALUES (?,CURDATE(),?,?,?,?,?,?,?,NULL,0,'COMPLETED')`, [batchId, materialId, bags, perBag, weighed, b.weighing_machine_id || null, st.txn_id, user.id]);
+
+    // the batch now holds more weight (Roasting reads current_output_kg as "what the batch holds")
+    await conn.query(
+      `UPDATE batch_master SET planned_qty_kg = planned_qty_kg + ?, current_output_kg = IF(current_stage = 'BATCHING', current_output_kg, current_output_kg + ?) WHERE id = ?`,
+      [weighed, weighed, batchId]);
+    await audit({ userId: user.id, action: 'CREATE', table: 'batching_details', recordId: r.insertId,
+      newValues: { batch_id: batchId, material_id: materialId, extra_material: true, bags, perBag, weighed, stock_txn_id: st.txn_id }, ip }, conn);
+    const updated = await getById(batchId, conn);
+    return { ...updated, low_stock_alerts: st.low_stock_alert ? [st.low_stock_alert] : [] };
+  });
+}
+
 /* ---------- hold / resume (the lock is NOT released on hold) ---------- */
 async function hold(batchIdRaw, body, userId, ip) {
   const batchId = v.toId(batchIdRaw, 'batch id');
@@ -401,4 +459,4 @@ async function resume(batchIdRaw, userId, ip) {
   });
 }
 
-module.exports = { list, active, getById, staff, weighingMachines, start, addBatching, completeBatching, hold, resume };
+module.exports = { list, active, getById, staff, weighingMachines, start, addBatching, addExtraMaterial, completeBatching, hold, resume };

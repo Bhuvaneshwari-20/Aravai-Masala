@@ -7,3 +7,4 @@ exports.create = wrap((req) => svc.create(req.body, req.user.id, req.ip), 201);
 exports.update = wrap((req) => svc.update(req.params.id, req.body, req.user.id, req.ip));
 exports.addPack = wrap((req) => svc.addPack(req.params.id, req.body, req.user.id, req.ip), 201);
 exports.updatePack = wrap((req) => svc.updatePack(req.params.id, req.params.packId, req.body, req.user.id, req.ip));
+exports.remove = wrap((req) => svc.remove(req.params.id, req.user.id, req.ip));

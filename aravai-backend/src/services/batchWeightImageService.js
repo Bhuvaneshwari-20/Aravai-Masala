@@ -33,6 +33,17 @@ function compare(enteredKg, res, cfg) {
   return { status: ok ? 'MATCH' : 'MISMATCH', detected, difference: r3(detected - enteredKg), tolerance: tol, reason: null };
 }
 
+// Auto-fill mode (no weight typed): the OCR value IS the weight. Readable photo -> MATCH with detected = entered. Unreadable / zero -> UNREADABLE.
+function readOnly(res, cfg) {
+  const lowConf = res.confidence !== null && res.confidence !== undefined && res.confidence < cfg.minConfidence;
+  if (res.value === null || res.value === undefined || lowConf) {
+    return { status: 'UNREADABLE', detected: null, difference: null, tolerance: null, reason: lowConf ? `OCR confidence ${res.confidence} is below ${cfg.minConfidence}` : res.reason };
+  }
+  const detected = r3(String(res.unit || '').toLowerCase() === 'g' ? res.value / 1000 : res.value); // no unit on the display = kg
+  if (!(detected > 0)) return { status: 'UNREADABLE', detected: null, difference: null, tolerance: null, reason: 'The weight read from the display is zero' };
+  return { status: 'MATCH', detected, difference: 0, tolerance: r3(cfg.toleranceKg), reason: null };
+}
+
 const ROW_SQL = `SELECT w.*, uu.full_name AS uploaded_by_name, vu.full_name AS verified_by_name
   FROM batch_weight_images w JOIN users uu ON uu.id = w.uploaded_by LEFT JOIN users vu ON vu.id = w.verified_by`;
 
@@ -62,7 +73,9 @@ async function upload(batchIdRaw, file, body, user, ip) {
   const draft = batchIdRaw === null || batchIdRaw === undefined;
   const batchId = draft ? null : v.toId(batchIdRaw, 'batch id');
   const materialId = v.toId(body.material_id, 'material');
-  const entered = v.positive(body.entered_weight, 'Weighed quantity (kg)', { max: 1000000 });
+  // entered_weight is optional: when it is not sent, the weight read from the photo is used (auto-fill)
+  const auto = body.entered_weight === undefined || body.entered_weight === null || String(body.entered_weight).trim() === '';
+  const typed = auto ? null : v.positive(body.entered_weight, 'Weighed quantity (kg)', { max: 1000000 });
   if (!file || !file.buffer || !file.buffer.length) throw new AppError('Attach the photo of the weighing machine display');
 
   if (draft) {
@@ -96,7 +109,8 @@ async function upload(batchIdRaw, file, body, user, ip) {
   let res;
   try { res = await ocr.readWeight(jpeg); }
   catch (e) { console.error('Batch weight OCR failed:', e.message); res = { value: null, unit: null, confidence: null, text: null, engine: 'error', reason: 'OCR engine error' }; } // never approve on an error
-  const d = compare(entered, res, config());
+  const d = auto ? readOnly(res, config()) : compare(typed, res, config());
+  const entered = auto ? (d.detected === null ? 0 : d.detected) : typed; // column is NOT NULL: 0 = nothing could be read
 
   const rel = await images.save(jpeg);
   try {

@@ -9,4 +9,5 @@ router.get('/:id', authorize('product', 'view'), c.get);
 router.put('/:id', authorize('product', 'edit'), c.update);
 router.post('/:id/packs', authorize('product', 'create'), c.addPack);
 router.put('/:id/packs/:packId', authorize('product', 'edit'), c.updatePack);
+router.delete('/:id', authorize('product', 'delete'), c.remove);
 module.exports = router;

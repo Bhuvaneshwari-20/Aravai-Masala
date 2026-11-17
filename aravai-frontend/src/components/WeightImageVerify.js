@@ -15,7 +15,8 @@ import { COLORS } from '../theme';
 // Reports { imageId, passed } to the parent through onChange. Entered weight changed after the check => result is stale (not passed).
 // uploadOnly: no camera button, the operator only uploads an existing image
 // cameraOnly: no upload button, only a live photo taken right now with the camera is accepted (not used by the New Batch form any more)
-export default function WeightImageVerify({ batchId, materialId, enteredWeight, required, canManual, error, onChange, uploadOnly = false, cameraOnly = false }) {
+// autoFill: the weight on the photo is read and sent to the parent through onDetected(kg) (fills "Weighed Qty"); nothing has to be typed first.
+export default function WeightImageVerify({ batchId, materialId, enteredWeight, required, canManual, error, onChange, onDetected, autoFill = false, uploadOnly = false, cameraOnly = false }) {
   const [mode, setMode] = useState('idle'); // idle | camera | picked
   const [photo, setPhoto] = useState(null);     // { uri } waiting to be verified
   const [lastUri, setLastUri] = useState(null); // last photo sent, so a corrected weight can be checked against the same photo
@@ -34,20 +35,30 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
 
   useEffect(() => { onChange && onChange({ imageId: current ? current.id : null, passed, status: current ? current.status : null, stale }); }, [current && current.id, current && current.status, passed, stale]); // eslint-disable-line
 
-  const verify = async (uri) => {
+  // compare = true: check the photo against the typed weighed quantity (old behaviour, also used by "Verify again with the same photo")
+  const verify = async (uri, compare = false) => {
     if (busy) return;
-    if (!(entered > 0)) { setErr('Enter the weighed quantity first, then verify it with the photo.'); return; }
+    const auto = autoFill && !compare;
+    if (!auto && !(entered > 0)) { setErr('Enter the weighed quantity first, then verify it with the photo.'); return; }
     setBusy(true); setErr('');
     try {
-      const r = await uploadWeightImage(batchId, { uri, materialId, enteredWeight: entered });
+      const r = await uploadWeightImage(batchId, { uri, materialId, enteredWeight: auto ? null : entered });
       if (!live.current) return;
-      setResult(r); setLastUri(uri); setPhoto(null); setMode('idle'); setReason(''); setReasonErr('');
+      setLastUri(uri); setPhoto(null); setMode('idle'); setReason(''); setReasonErr('');
+      if (auto && r.status !== 'MATCH') {
+        // nothing could be read: do not fill anything. The operator retakes the photo, or types the weight and verifies it against this photo.
+        setResult(null);
+        setErr('The weight could not be read from the photo. Retake a clearer photo (hold steady, avoid glare, whole display in view), or type the weighed quantity and tap "Verify again with the same photo".');
+      } else {
+        setResult(r);
+        if (auto && onDetected) onDetected(Number(r.detected_weight));
+      }
     } catch (e) { if (live.current) setErr(errMsg(e)); }
     if (live.current) setBusy(false);
   };
 
   const openCamera = () => {
-    if (!(entered > 0)) { setErr('Enter the weighed quantity first, then take the photo.'); return; }
+    if (!autoFill && !(entered > 0)) { setErr('Enter the weighed quantity first, then take the photo.'); return; }
     setErr(''); setMode('camera');
   };
 
@@ -74,7 +85,7 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
 
   const st = current ? bwStatus(current.status) : null;
   const note = !current ? '' : {
-    MATCH: 'The weight on the machine display is the same as the weight you entered.',
+    MATCH: autoFill ? 'The weight was read from the machine display and filled in as the weighed quantity.' : 'The weight on the machine display is the same as the weight you entered.',
     MANUAL: `Verified manually${current.manual_reason ? `: ${current.manual_reason}` : '.'}`,
     MISMATCH: `The machine display shows ${fmtW(current.detected_weight)} but you entered ${fmtW(current.entered_weight)}. Saving is blocked. Check the weight you entered, or weigh again and take a new photo.`,
     UNREADABLE: 'The weight could not be read from the photo. Retake a clearer photo (hold steady, avoid glare, whole display in view) or ask for manual verification.',
@@ -113,7 +124,7 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
 
       {!current && mode === 'camera' && (
         <View>
-          <PhotoCapture onUpload={(p) => verify(p.uri)} uploading={busy} error={err} uploadLabel="Verify weight" />
+          <PhotoCapture onUpload={(p) => verify(p.uri)} uploading={busy} error={err} uploadLabel={autoFill ? 'Read weight' : 'Verify weight'} />
           {!busy && <Button compact textColor={COLORS.grey} onPress={() => { setMode('idle'); setErr(''); }}>Cancel</Button>}
         </View>
       )}
@@ -125,7 +136,7 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
           <ErrorBox text={err} />
           <View style={s.row}>
             <Button mode="outlined" icon="image-edit" textColor={COLORS.text} style={[s.half, { borderColor: COLORS.border }]} disabled={busy} onPress={upload}>Change</Button>
-            <Button mode="contained" icon="shield-check" buttonColor={COLORS.green} style={s.half} loading={busy} disabled={busy} onPress={() => verify(photo.uri)}>Verify weight</Button>
+            <Button mode="contained" icon="shield-check" buttonColor={COLORS.green} style={s.half} loading={busy} disabled={busy} onPress={() => verify(photo.uri)}>{autoFill ? 'Read weight' : 'Verify weight'}</Button>
           </View>
         </View>
       )}
@@ -133,14 +144,14 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
       {!current && mode === 'idle' && (
         <View>
           {stale && <InfoBox text="The weighed quantity changed after the photo was checked. Verify it again." />}
-          <Text style={s.help}>{uploadOnly ? 'Upload an image of the weighing machine display. The weight on it is read and compared with the weighed quantity.' : cameraOnly ? 'Take a live photo of the weighing machine display. The weight on it is read and compared with the weighed quantity.' : 'Take a photo of the weighing machine display, or upload one. The weight on it is read and compared with the weighed quantity.'}</Text>
+          <Text style={s.help}>{autoFill ? 'Take a photo of the weighing machine display, or upload one. The weight on it is read and filled in as the weighed quantity.' : uploadOnly ? 'Upload an image of the weighing machine display. The weight on it is read and compared with the weighed quantity.' : cameraOnly ? 'Take a live photo of the weighing machine display. The weight on it is read and compared with the weighed quantity.' : 'Take a photo of the weighing machine display, or upload one. The weight on it is read and compared with the weighed quantity.'}</Text>
           <View style={s.row}>
             {!uploadOnly && <Button mode="contained" icon="camera" buttonColor={COLORS.primary} style={s.half} disabled={busy} onPress={openCamera}>Take photo</Button>}
             {!cameraOnly && <Button mode={uploadOnly ? 'contained' : 'outlined'} icon="upload" buttonColor={uploadOnly ? COLORS.primary : undefined} textColor={uploadOnly ? undefined : COLORS.text}
               style={[s.half, !uploadOnly && { borderColor: COLORS.border }]} disabled={busy} onPress={upload}>Upload image</Button>}
           </View>
           {!!lastUri && entered > 0 && (
-            <Button mode="outlined" icon="refresh" textColor={COLORS.primary} style={[s.btn, { borderColor: COLORS.primary }]} loading={busy} disabled={busy} onPress={() => verify(lastUri)}>Verify again with the same photo</Button>)}
+            <Button mode="outlined" icon="refresh" textColor={COLORS.primary} style={[s.btn, { borderColor: COLORS.primary }]} loading={busy} disabled={busy} onPress={() => verify(lastUri, true)}>Verify again with the same photo</Button>)}
           <ErrorBox text={err} />
         </View>
       )}

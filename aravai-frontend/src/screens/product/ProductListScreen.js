@@ -4,6 +4,8 @@ import { Text, ActivityIndicator } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../../AuthContext';
 import { useUi } from '../../ui';
+import api, { errMsg } from '../../api';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import ProductFormModal from '../../components/ProductFormModal';
 import PageToolbar from '../../components/PageToolbar';
 import usePagedList from '../../hooks/usePagedList';
@@ -23,9 +25,18 @@ export default function ProductListScreen() {
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [edit, setEdit] = useState(null); // product being edited
+  const [del, setDel] = useState(null); // product waiting for delete confirmation
+  const [busy, setBusy] = useState(false);
   const dSearch = useDebounce(search, 400);
   const list = usePagedList('/products', { search: dSearch || undefined });
   const canEdit = can('product', 'edit');
+  const canDelete = can('product', 'delete');
+
+  const remove = async () => {
+    setBusy(true);
+    try { await api.delete(`/products/${del.id}`); setDel(null); toast('Product deleted'); list.reload(); } catch (e) { setDel(null); toast(errMsg(e)); }
+    setBusy(false);
+  };
 
   const first = useRef(true);
   useFocusEffect(useCallback(() => {
@@ -47,8 +58,12 @@ export default function ProductListScreen() {
             renderItem={(item, i) => (
               <InfoCard index={i} icon="tag-multiple" color={AMBER} value={item.product_name} size="md"
                 caption={`${item.product_code}${item.category ? `  •  ${item.category}` : ''}`}
-                dim={!item.is_active}
-                right={canEdit ? <RoundBtn icon="pencil" color={COLORS.primary} bg={COLORS.primarySoft} onPress={() => setEdit(item)} label={`Edit ${item.product_name}`} /> : null}
+                right={(canEdit || canDelete) ? (
+                  <View style={s.actions}>
+                    {canEdit && <RoundBtn icon="pencil" color={COLORS.primary} bg={COLORS.primarySoft} onPress={() => setEdit(item)} label={`Edit ${item.product_name}`} />}
+                    {canDelete && <View style={canEdit && { marginLeft: 8 }}><RoundBtn icon="trash-can-outline" color={COLORS.danger} bg={COLORS.dangerBg} hoverBg="#F9D3CE" onPress={() => setDel(item)} label={`Delete ${item.product_name}`} /></View>}
+                  </View>
+                ) : null}
                 onPress={canEdit ? () => setEdit(item) : undefined}
                 >
                 <View style={s.packs}>
@@ -65,6 +80,9 @@ export default function ProductListScreen() {
         )}
       </Container>
       <ProductFormModal visible={showForm} onDismiss={() => setShowForm(false)} onSaved={() => { setShowForm(false); list.reload(); toast('Product added'); }} />
+      <ConfirmDialog visible={!!del} busy={busy} title="Delete product?"
+        message={`${del?.product_name || ''} and all its pack sizes / MRP history will be permanently deleted.`}
+        confirmText="Delete" onConfirm={remove} onCancel={() => setDel(null)} />
       <ProductFormModal visible={!!edit} product={edit} onDismiss={() => setEdit(null)} onSaved={() => { setEdit(null); list.reload(); toast('Product updated'); }} />
     </View>
   );
@@ -72,6 +90,7 @@ export default function ProductListScreen() {
 
 const s = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: COLORS.bg },
+  actions: { flexDirection: 'row', alignItems: 'center' },
   packs: { flexDirection: 'row', flexWrap: 'wrap' },
   pack: { backgroundColor: '#FBE9DD', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, marginRight: 8, marginBottom: 8, alignItems: 'center' },
   packSize: { fontSize: 12, fontWeight: '800', color: COLORS.primaryDark },

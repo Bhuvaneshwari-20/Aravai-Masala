@@ -11,6 +11,7 @@ router.get('/weighing-machines', authorize('batching', 'view'), c.weighingMachin
 router.post('/', authorize('batching', 'create'), c.start);
 router.get('/:id', authorize('batching', 'view'), c.get);
 router.post('/:id/batching', authorize('batching', 'create'), c.addBatching);
+router.post('/:id/extra-material', authorize('batching', 'edit'), c.addExtraMaterial);
 router.post('/:id/batching/complete', authorize('batching', 'edit'), c.completeBatching);
 router.patch('/:id/hold', authorize('batching', 'approve'), c.hold);
 router.patch('/:id/resume', authorize('batching', 'approve'), c.resume);

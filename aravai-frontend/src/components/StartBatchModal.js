@@ -87,7 +87,7 @@ function PhotoBtn({ photo, onPress }) {
   );
 }
 
-function SheetRow({ item, row, errors, wide, onChange, onLine, onAddLine, onRemoveLine, filter, onToggleFilter, photo, panel, onTogglePhoto, onPhoto, canManual }) {
+function SheetRow({ item, row, errors, wide, onChange, onLine, onAddLine, onRemoveLine, filter, onToggleFilter, photo, panel, onTogglePhoto, onPhoto, onDetected, canManual }) {
   const extra = row.extra || [];
   const inputs = (
     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -139,7 +139,8 @@ function SheetRow({ item, row, errors, wide, onChange, onLine, onAddLine, onRemo
       {/* kept mounted once opened, so a verified photo is not lost when the panel is closed */}
       {panel !== undefined && (
         <View style={panel === 'open' ? { marginTop: 8 } : { display: 'none' }}>
-          <WeightImageVerify batchId={null} materialId={item.material_id} enteredWeight={row.qty} required={REQUIRE_WEIGHT_PHOTO} canManual={canManual} error={errors.photo} onChange={onPhoto} />
+          <WeightImageVerify batchId={null} materialId={item.material_id} enteredWeight={row.qty} required={REQUIRE_WEIGHT_PHOTO} canManual={canManual} error={errors.photo} onChange={onPhoto}
+            autoFill={extra.length === 0} onDetected={onDetected} />
         </View>
       )}
     </View>
@@ -176,7 +177,8 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   const { can } = useAuth();
   const { isWide } = useLayout();
   const products = useOptions('/products', { active: 'true' }, (p) => ({ value: p.id, label: p.product_name }), visible);
-  const machines = useOptions('/batches/weighing-machines', {}, (m) => ({ value: m.id, label: `${m.machine_code} - ${m.machine_name}${m.locked_batch_no ? `  (in use: ${m.locked_batch_no})` : ''}`, lockedBatch: m.locked_batch_no || '' }), visible);
+  // any active weighing machine can be chosen, also one that was used for an earlier batch (no "in use" lock)
+  const machines = useOptions('/batches/weighing-machines', {}, (m) => ({ value: m.id, label: `${m.machine_code} - ${m.machine_name}` }), visible);
   const [date, setDate] = useState(today());
   const [productId, setProductId] = useState(null);
   const [machineId, setMachineId] = useState(null);
@@ -247,6 +249,9 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
     if (st.stale) setPanels((p) => (p[id] === 'open' ? p : { ...p, [id]: 'open' })); // weighed qty changed (e.g. bag size added): ask for the photo check again
   };
 
+  // photo of the weighing machine display was read -> its weight becomes the weighed qty (bags x kg/bag no longer overwrites it)
+  const onDetected = (id) => (kg) => setRows((p) => ({ ...p, [id]: { ...(p[id] || {}), qty: String(r3(kg)), touched: true } }));
+
   const toggleFilter = (id) => () => setFilterIds((p) => ({ ...p, [id]: !p[id] }));
   const allFilter = !!recipe && recipe.ingredients.length > 0 && recipe.ingredients.every((i) => filterIds[i.material_id]);
   const toggleAllFilter = () => setFilterIds(() => {
@@ -266,7 +271,6 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) e.date = 'Use YYYY-MM-DD';
     if (!productId) e.product = 'Select the product';
     if (!machineId) e.machine = 'Select the weighing machine';
-    else if (machines.find((o) => o.value === machineId)?.lockedBatch) e.machine = `This machine is locked to batch ${machines.find((o) => o.value === machineId).lockedBatch}. Choose another machine.`;
     if (recipe) {
       recipe.ingredients.forEach((i) => {
         const x = rows[i.material_id] || {};
@@ -283,7 +287,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
       });
       if (!(total > 0)) e.total = 'Enter the quantity for at least one material';
       // every weighed material needs its weighing machine photo to MATCH (or be verified manually) - checked again by the server
-      if (REQUIRE_WEIGHT_PHOTO && machineId) {
+      if (REQUIRE_WEIGHT_PHOTO) {
         const missing = recipe.ingredients.filter((i) => Number(rows[i.material_id]?.qty) > 0 && !(photos[i.material_id] && photos[i.material_id].passed));
         if (missing.length) {
           e.photo = `Weighing machine photo is not verified for: ${missing.map((i) => i.material_name).join(', ')}`;
@@ -319,7 +323,6 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
           <SelectField label="Product *" value={productId} options={products} onChange={setProductId} error={errors.product} />
           <SelectField label="Weighing machine *" value={machineId} options={machines} onChange={setMachineId} error={errors.machine} />
         </FormRow>
-        <Text style={{ fontSize: 12, color: COLORS.grey, fontWeight: '600', marginTop: -6, marginBottom: 12 }}>The machine is locked to the batch when the first weight is saved. Every other material of this batch must be weighed on it.</Text>
         {loadingRecipe && <ActivityIndicator style={{ margin: 16 }} color={COLORS.primary} />}
         {!!recipe && (
           <View>
@@ -330,7 +333,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
                 onLine={changeLine(i.material_id)} onAddLine={addLine(i.material_id)} onRemoveLine={removeLine(i.material_id)}
                 filter={!!filterIds[i.material_id]} onToggleFilter={toggleFilter(i.material_id)}
                 errors={{ bags: errors[`${k}bags`], wt: errors[`${k}wt`], qty: errors[`${k}qty`], lines: errors[`${k}lines`], photo: errors[`${k}photo`] }}
-                photo={photos[i.material_id]} panel={panels[i.material_id]} onTogglePhoto={togglePhoto(i.material_id)} onPhoto={onPhoto(i.material_id)} canManual={can('batching', 'approve')} />;
+                photo={photos[i.material_id]} panel={panels[i.material_id]} onTogglePhoto={togglePhoto(i.material_id)} onPhoto={onPhoto(i.material_id)} onDetected={onDetected(i.material_id)} canManual={can('batching', 'approve')} />;
             })}
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: total > 0 ? COLORS.okBg : COLORS.warnBg, borderRadius: 10, padding: 12, marginTop: 10, marginBottom: 14 }}>
               <Text style={{ fontWeight: '800', color: total > 0 ? COLORS.ok : COLORS.warn }}>Total weighed</Text>

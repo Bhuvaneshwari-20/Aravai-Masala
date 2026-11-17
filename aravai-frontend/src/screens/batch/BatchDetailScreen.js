@@ -6,16 +6,14 @@ import api, { errMsg } from '../../api';
 import { useAuth } from '../../AuthContext';
 import { useUi } from '../../ui';
 import BatchingEntryModal from '../../components/BatchingEntryModal';
+import BatchEditModal from '../../components/BatchEditModal';
 import WeightImageViewer from '../../components/WeightImageViewer';
 import ConfirmDialog from '../../components/ConfirmDialog';
-import ModalShell from '../../components/ModalShell';
-import FormField from '../../components/FormField';
 import Container from '../../components/Container';
 import LoadingView from '../../components/LoadingView';
 import EmptyView from '../../components/EmptyView';
-import { ErrorBox, ModalFooter } from '../../components/FormBits';
+import { ErrorBox } from '../../components/FormBits';
 import { badgeFor, stageLabel } from './BatchListScreen';
-import { isBatchMachineLocked, batchMachineLabel } from '../../batchMachineLock';
 import { COLORS, fmt } from '../../theme';
 
 const SHEET_COLS = [
@@ -32,8 +30,7 @@ export default function BatchDetailScreen({ route }) {
   const [error, setError] = useState('');
   const [weigh, setWeigh] = useState(null);       // ingredient being weighed
   const [viewImg, setViewImg] = useState(null);   // ingredient whose weighing machine photo is open
-  const [holdOpen, setHoldOpen] = useState(false);
-  const [reason, setReason] = useState('');
+  const [editOpen, setEditOpen] = useState(false);   // Edit = add an extra material
   const [confirmDone, setConfirmDone] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -55,6 +52,8 @@ export default function BatchDetailScreen({ route }) {
   const plan = b.plan;
   const batchingOpen = b.status === 'IN_PROGRESS' && b.current_stage === 'BATCHING';
   const batchingDone = b.current_stage !== 'BATCHING';
+  // Edit (add a material) is possible on a running batch until Roasting starts. The server checks the roasting entries again.
+  const canEdit = can('batching', 'edit') && b.status === 'IN_PROGRESS' && (b.current_stage === 'BATCHING' || b.current_stage === 'ROASTING');
 
   return (
     <ScrollView style={s.wrap} contentContainerStyle={{ paddingBottom: 60 }}>
@@ -67,16 +66,11 @@ export default function BatchDetailScreen({ route }) {
           <Text style={s.sub}>{b.product_name}</Text>
           <Text style={s.meta}>Total {fmt(b.planned_qty_kg)} kg  •  {String(b.production_date).slice(0, 10)}</Text>
           {b.status !== 'COMPLETED' && b.status !== 'CANCELLED' && <Text style={s.meta}>Current process: {stageLabel(b.current_stage)}</Text>}
-          {isBatchMachineLocked(b) && (
-            <View style={{ backgroundColor: COLORS.warnBg, borderRadius: 10, padding: 10, marginTop: 8 }}>
-              <Text style={{ color: COLORS.warn, fontWeight: '800' }}>🔒 Weighing machine locked: {batchMachineLabel(b)}</Text>
-              <Text style={{ color: COLORS.warn, fontWeight: '600', fontSize: 12, marginTop: 2 }}>All materials of this batch must be weighed on this machine. It is released when the batch is completed.</Text>
-            </View>
-          )}
-          {b.status === 'ON_HOLD' && <Text style={s.hold}>On hold: {b.hold_reason}. The lock stays on, no other batch can start.</Text>}
+          {b.status === 'ON_HOLD' && <Text style={s.hold}>On hold: {b.hold_reason}</Text>}
           <View style={s.btns}>
-            {can('batching', 'approve') && b.status === 'IN_PROGRESS' && (
-              <Button mode="outlined" icon="pause" textColor={COLORS.warn} style={[s.btn, { borderColor: COLORS.warn }]} onPress={() => { setReason(''); setErr(''); setHoldOpen(true); }}>Hold</Button>)}
+            {/* Hold button removed. Batches that are already on hold can still be resumed. */}
+            {canEdit && (
+              <Button mode="outlined" icon="pencil" textColor={COLORS.primary} style={[s.btn, { borderColor: COLORS.primary }]} onPress={() => setEditOpen(true)}>Edit</Button>)}
             {can('batching', 'approve') && b.status === 'ON_HOLD' && (
               <Button mode="contained" icon="play" buttonColor={COLORS.green} style={s.btn} loading={busy} disabled={busy}
                 onPress={() => run(() => api.patch(`/batches/${id}/resume`), 'Batch resumed')}>Resume</Button>)}
@@ -146,23 +140,14 @@ export default function BatchDetailScreen({ route }) {
       <BatchingEntryModal visible={!!weigh} batch={b} ingredient={weigh} onDismiss={() => setWeigh(null)}
         onSaved={(r) => { setWeigh(null); load(); toast(r.stock.low_stock_alert || 'Weighing saved'); }} />
 
+      <BatchEditModal visible={editOpen} batch={b} onDismiss={() => setEditOpen(false)}
+        onSaved={(r) => { setEditOpen(false); load(); toast((r.low_stock_alerts && r.low_stock_alerts[0]) || 'Material added to the batch'); }} />
+
       <WeightImageViewer visible={!!viewImg} batchId={b.id} ingredient={viewImg} onDismiss={() => setViewImg(null)} />
 
       <ConfirmDialog visible={confirmDone} title="Complete batching?" message={`${fmt(plan?.total_weighed_kg)} kg will move to the next stage. You cannot add more weighing after this.`}
         confirmText="Complete" onCancel={() => setConfirmDone(false)}
         onConfirm={async () => { setConfirmDone(false); await run(() => api.post(`/batches/${id}/batching/complete`), 'Batching completed'); }} />
-
-      <ModalShell visible={holdOpen} onDismiss={() => setHoldOpen(false)} busy={busy} icon="pause-circle" maxWidth={440} title="Put batch on hold"
-        footer={<ModalFooter onCancel={() => setHoldOpen(false)} saving={busy} label="Hold Batch" icon="pause" color={COLORS.warn}
-          onSave={async () => {
-            if (!reason.trim()) return setErr('Reason is required');
-            if (await run(() => api.patch(`/batches/${id}/hold`, { reason: reason.trim() }), 'Batch on hold')) setHoldOpen(false);
-          }} />}>
-        <View>
-          <FormField label="Reason *" value={reason} onChangeText={setReason} maxLength={255} />
-          <ErrorBox text={err} />
-        </View>
-      </ModalShell>
     </ScrollView>
   );
 }

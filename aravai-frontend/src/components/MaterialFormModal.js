@@ -33,7 +33,7 @@ export default function MaterialFormModal({ visible, id, onDismiss, onSaved }) {
       try {
         if (isEdit) {
           const r = (await api.get(`/materials/${id}`)).data.data;
-          setF({ ...EMPTY, material_name: r.material_name, short_code: r.sku || '', unit: r.unit,
+          setF({ ...EMPTY, material_name: r.material_name, short_code: r.material_code || '', unit: r.unit,
             specifications: Array.isArray(r.specifications) ? r.specifications : [] });
           setStock(r);
         }
@@ -54,7 +54,8 @@ export default function MaterialFormModal({ visible, id, onDismiss, onSaved }) {
     if (!validate()) return;
     setSaving(true); setErr('');
     try {
-      const body = { material_name: f.material_name.trim(), sku: f.short_code.trim().toUpperCase(), unit: f.unit,
+      const code = f.short_code.trim().toUpperCase();
+      const body = { material_name: f.material_name.trim(), material_code: code, sku: code, unit: f.unit,
         specifications: f.specifications.map((x) => x.trim()).filter(Boolean) };
       if (isEdit) await api.put(`/materials/${id}`, body);
       else await api.post('/materials', body);

@@ -185,9 +185,7 @@ export default function MaterialListScreen({ navigation, route }) {
             <View style={{ width: 12 }} />
             <StatCard icon="alert-circle" color="#DC2626" value={counts.low === undefined ? undefined : fmt(counts.low)} label="Low stock" active={filter === 'low'} onPress={() => pick('low')} />
             <View style={{ width: 12 }} />
-            <StatCard icon="check-circle" color="#16A34A" value={counts.active === undefined ? undefined : fmt(counts.active)} label="Active" active={filter === 'active'} onPress={() => pick('active')} />
-            <View style={{ width: 12 }} />
-            <StatCard icon="pause-circle" color="#85786F" value={counts.inactive === undefined ? undefined : fmt(counts.inactive)} label="Inactive" active={filter === 'inactive'} onPress={() => pick('inactive')} />
+          
           </View>
         )}
         {isPhone && <FilterChips options={chips} value={filter} onChange={setFilter} style={{ marginTop: 6, marginHorizontal: -pad }} />}

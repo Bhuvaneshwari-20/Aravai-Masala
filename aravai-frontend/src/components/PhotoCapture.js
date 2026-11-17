@@ -1,10 +1,14 @@
 import React, { useRef, useState } from 'react';
-import { View, Image, StyleSheet, Linking } from 'react-native';
+import { View, Image, StyleSheet, Linking, Platform } from 'react-native';
 import { Text, Button } from 'react-native-paper';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import { ErrorBox } from './FormBits';
 import { COLORS } from '../theme';
+
+// Browsers only give the live camera to https:// pages (or localhost). The app is opened over http://<PC-IP>:8081 on the LAN, so there
+// the live preview can never be allowed. Then the phone's own camera app is opened instead (<input capture>, works on http too).
+const insecureWeb = Platform.OS === 'web' && typeof window !== 'undefined' && window.isSecureContext === false;
 
 // Live camera -> preview -> Retake / Upload. Only a photo taken right now is accepted (no gallery picker).
 // onUpload(photo) must return a promise; errors are shown by the parent through `error`.
@@ -23,15 +27,42 @@ export default function PhotoCapture({ onUpload, uploading, error, uploadLabel =
     setTaking(false);
   };
 
-  if (!perm) return <View style={s.box} />;
-  if (!perm.granted) {
+  // phone camera app (native camera screen on a phone, <input capture> on the web) -> same preview / upload step below
+  const openPhoneCamera = async () => {
+    setLocalErr('');
+    try {
+      const ImagePicker = require('expo-image-picker'); // eslint-disable-line global-require
+      const r = await ImagePicker.launchCameraAsync({ quality: 0.7 });
+      if (!r.canceled && r.assets && r.assets.length) setPhoto({ uri: r.assets[0].uri });
+    } catch (e) { setLocalErr('Could not open the camera. Please allow camera access in the browser / phone settings.'); }
+  };
+
+  if (!photo && insecureWeb) {
     return (
-      <View style={[s.box, s.center]}>
-        <MCI name="camera-off" size={44} color="#fff" />
-        <Text style={s.msg}>Camera permission is needed to photograph the weighing machine display.</Text>
-        <Button mode="contained" buttonColor={COLORS.accent} textColor="#2B1B14" onPress={perm.canAskAgain ? request : () => Linking.openSettings()}>
-          {perm.canAskAgain ? 'Allow camera' : 'Open settings'}
-        </Button>
+      <View>
+        <View style={[s.box, s.center]}>
+          <MCI name="camera" size={44} color="#fff" />
+          <Text style={s.msg}>Tap below to open your phone camera and photograph the weighing machine display.</Text>
+          <Button mode="contained" icon="camera" buttonColor={COLORS.accent} textColor="#2B1B14" onPress={openPhoneCamera}>Open camera</Button>
+        </View>
+        <ErrorBox text={localErr} />
+      </View>
+    );
+  }
+
+  if (!perm && !photo) return <View style={s.box} />;
+  if (perm && !perm.granted && !photo) {
+    return (
+      <View>
+        <View style={[s.box, s.center]}>
+          <MCI name="camera-off" size={44} color="#fff" />
+          <Text style={s.msg}>Camera permission is needed to photograph the weighing machine display.</Text>
+          <Button mode="contained" buttonColor={COLORS.accent} textColor="#2B1B14" onPress={perm.canAskAgain ? request : () => Linking.openSettings()}>
+            {perm.canAskAgain ? 'Allow camera' : 'Open settings'}
+          </Button>
+          <Button compact icon="camera" textColor="#fff" style={{ marginTop: 8 }} onPress={openPhoneCamera}>Use phone camera app instead</Button>
+        </View>
+        <ErrorBox text={localErr} />
       </View>
     );
   }

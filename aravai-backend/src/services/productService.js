@@ -222,4 +222,46 @@ async function updatePack(productIdRaw, packIdRaw, body, userId, ip) {
   });
 }
 
-module.exports = { list, getById, create, update, addPack, updatePack };
+// Delete a product with all its pack sizes / MRP history. Blocked when production data already refers to it.
+async function remove(idRaw, userId, ip) {
+  const id = v.toId(idRaw, 'product id');
+  return withTransaction(async (conn) => {
+    const [rows] = await conn.query('SELECT * FROM product_master WHERE id = ? FOR UPDATE', [id]);
+    if (!rows.length) throw new AppError('Product not found', 404);
+    const before = await getById(id, conn);
+    const uses = [
+      ['batch_master', 'batch', 'batches', 'SELECT COUNT(*) AS n FROM batch_master WHERE product_id = ?'],
+      ['recipe_master', 'recipe', 'recipes', 'SELECT COUNT(*) AS n FROM recipe_master WHERE product_id = ?'],
+      ['packing_details', 'packing entry', 'packing entries', 'SELECT COUNT(*) AS n FROM packing_details WHERE product_id = ?'],
+      ['weighing_transactions', 'weighing entry', 'weighing entries', 'SELECT COUNT(*) AS n FROM weighing_transactions WHERE product_id = ?'],
+      ['finished_goods_stock', 'finished stock record', 'finished stock records',
+        'SELECT COUNT(*) AS n FROM finished_goods_stock WHERE packing_rate_id IN (SELECT id FROM product_packing_rates WHERE product_id = ?)'],
+    ];
+    for (const [, one, many, sql] of uses) {
+      let n = 0;
+      try { [[{ n }]] = await conn.query(sql, [id]); }
+      catch (e) { if (e.code === 'ER_NO_SUCH_TABLE' || e.code === 'ER_BAD_FIELD_ERROR') continue; throw e; } // table/column not in this database
+      if (n > 0) throw new AppError(`${rows[0].product_name} is used in ${n} ${n > 1 ? many : one} and cannot be deleted. Deactivate it instead`, 409);
+    }
+    const [packs] = await conn.query('SELECT id FROM product_packing_rates WHERE product_id = ?', [id]);
+    const packIds = packs.map((x) => x.id);
+    if (packIds.length) {
+      await conn.query('DELETE FROM product_mrp WHERE packing_rate_id IN (?)', [packIds]);
+      await conn.query('DELETE FROM product_rate_history WHERE packing_rate_id IN (?)', [packIds]);
+      try { await conn.query('DELETE FROM product_packing_rates WHERE product_id = ?', [id]); }
+      catch (e) {
+        if (e.code === 'ER_ROW_IS_REFERENCED_2' || e.code === 'ER_ROW_IS_REFERENCED') throw new AppError(`${rows[0].product_name} pack sizes are used in other records and cannot be deleted`, 409);
+        throw e;
+      }
+    }
+    try { await conn.query('DELETE FROM product_master WHERE id = ?', [id]); }
+    catch (e) {
+      if (e.code === 'ER_ROW_IS_REFERENCED_2' || e.code === 'ER_ROW_IS_REFERENCED') throw new AppError(`${rows[0].product_name} is used in other records and cannot be deleted`, 409);
+      throw e;
+    }
+    await audit({ userId, action: 'DELETE', table: 'product_master', recordId: id, oldValues: before, ip }, conn);
+    return { id };
+  });
+}
+
+module.exports = { list, getById, create, update, addPack, updatePack, remove };
