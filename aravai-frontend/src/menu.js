@@ -1,5 +1,4 @@
 export const MENU = [
-  { module: 'dashboard', label: 'Dashboard', icon: '📊', color: '#2574f5' },
   { module: 'material', label: 'Material Master', icon: '📦', color: '#B45309', screen: 'MaterialList' },
   { module: 'vendor', label: 'Vendor Master', icon: '🏭', color: '#7C3AED', screen: 'VendorList' },
   { module: 'stock', label: 'Material Stock Card', icon: '🗂️', color: '#F59E0B', screen: 'StockList' },
@@ -26,6 +25,6 @@ export const MENU = [
 export const GROUPS = [
   { title: 'Masters', icon: 'database', color: '#C62828', modules: ['material', 'gram', 'mesh', 'vendor', 'product', 'recipe', 'machine'] },
   { title: 'Production', icon: 'factory', color: '#D97706', modules: ['batching',  'filtering','roasting', 'grinding', 'blending', 'packing'] },
-  { title: 'Stock & Reports', icon: 'chart-box', color: '#6D28D9', modules: ['stock', 'tracking', 'material_overview', 'finished_goods', 'dashboard', 'reports'] },
+  { title: 'Stock & Reports', icon: 'chart-box', color: '#6D28D9', modules: ['stock', 'tracking', 'material_overview', 'finished_goods', 'reports'] },
   { title: 'Admin', icon: 'shield-account', color: '#BE185D', modules: ['users'] },
 ];

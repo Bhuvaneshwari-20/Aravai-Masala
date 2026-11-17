@@ -9,7 +9,7 @@ import SelectField from './SelectField';
 import { COLORS } from '../theme';
 
 const UNITS = ['KG', 'GRAM', 'NOS', 'LITRE', 'BAGS'].map((u) => ({ value: u, label: u }));
-const EMPTY = { material_name: '', unit: null, specifications: [] };
+const EMPTY = { material_name: '', short_code: '', unit: null, specifications: [] };
 const Label = ({ children, style }) => <Text style={[{ fontSize: 11, fontWeight: '900', letterSpacing: 1.4, color: COLORS.grey, marginBottom: 8 }, style]}>{children}</Text>;
 
 // Add (no id) or Edit (id) material, as a popup on the same page.
@@ -33,7 +33,7 @@ export default function MaterialFormModal({ visible, id, onDismiss, onSaved }) {
       try {
         if (isEdit) {
           const r = (await api.get(`/materials/${id}`)).data.data;
-          setF({ ...EMPTY, material_name: r.material_name, unit: r.unit,
+          setF({ ...EMPTY, material_name: r.material_name, short_code: r.sku || '', unit: r.unit,
             specifications: Array.isArray(r.specifications) ? r.specifications : [] });
           setStock(r);
         }
@@ -54,7 +54,7 @@ export default function MaterialFormModal({ visible, id, onDismiss, onSaved }) {
     if (!validate()) return;
     setSaving(true); setErr('');
     try {
-      const body = { material_name: f.material_name.trim(), unit: f.unit,
+      const body = { material_name: f.material_name.trim(), sku: f.short_code.trim().toUpperCase(), unit: f.unit,
         specifications: f.specifications.map((x) => x.trim()).filter(Boolean) };
       if (isEdit) await api.put(`/materials/${id}`, body);
       else await api.post('/materials', body);
@@ -65,7 +65,7 @@ export default function MaterialFormModal({ visible, id, onDismiss, onSaved }) {
 
   return (
     <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon={isEdit ? 'pencil' : 'package-variant'}
-      title={isEdit ? 'Edit Material' : 'Add Material'} subtitle={isEdit ? stock?.material_code : 'Name, unit and specifications'}
+      title={isEdit ? 'Edit Material' : 'Add Material'} subtitle={isEdit ? stock?.material_code : 'Name, code, unit and specifications'}
       footer={(
         <View style={{ flexDirection: 'row' }}>
           <Button mode="outlined" onPress={onDismiss} disabled={saving} textColor={COLORS.text} style={{ borderRadius: 10, borderColor: COLORS.border, marginRight: 10 }}>Cancel</Button>
@@ -78,6 +78,7 @@ export default function MaterialFormModal({ visible, id, onDismiss, onSaved }) {
         <View>
           <Label>BASIC DETAILS</Label>
           <FormField label="Material name *" value={f.material_name} onChangeText={set('material_name')} error={errors.material_name} />
+          <FormField label="Material code (e.g. AST, CUM)" value={f.short_code} onChangeText={(t) => set('short_code')(t.toUpperCase().replace(/[^A-Z0-9-]/g, ''))} maxLength={10} autoCapitalize="characters" />
           <SelectField label="Unit *" value={f.unit} options={UNITS} onChange={set('unit')} error={errors.unit} />
 
           <Label style={{ marginTop: 6 }}>SPECIFICATIONS</Label>

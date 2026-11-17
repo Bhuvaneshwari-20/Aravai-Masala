@@ -8,10 +8,12 @@ const h = require('../utils/productionHelpers');
 async function lookups() {
   const [batches] = await pool.query(
     `SELECT b.id, b.batch_no, b.product_id, p.product_name, b.current_output_kg,
+            wm.id AS weighing_machine_id, wm.machine_code AS weighing_machine_code, wm.machine_name AS weighing_machine_name,
             COALESCE((SELECT SUM(pd.total_packing_weight) FROM packing_details pd
                        WHERE pd.batch_id = b.id AND pd.status <> 'CANCELLED'), 0) AS packed_kg,
             COALESCE((SELECT SUM(bd.weighed_qty) FROM batching_details bd WHERE bd.batch_id = b.id), 0) AS batching_kg
        FROM batch_master b JOIN product_master p ON p.id = b.product_id
+       LEFT JOIN machine_master wm ON wm.id = b.weighing_machine_id
       WHERE b.current_stage = 'PACKING' AND b.status IN ('OPEN','IN_PROGRESS')
      HAVING b.current_output_kg - packed_kg > 0.001   -- nothing left to pack = not offered
       ORDER BY b.id DESC`);
@@ -27,7 +29,7 @@ function cleanInput(body) {
   const d = {
     batch_id: v.toId(body.batch_id, 'batch'),
     packing_rate_id: v.toId(body.packing_rate_id, 'pack size'),
-    machine_id: v.toId(body.machine_id, 'machine'),
+    machine_id: body.machine_id ? v.toId(body.machine_id, 'machine') : null,
     packing_date: h.reqDate(body.packing_date, 'Packing date'),
     use_by_date: h.reqDate(body.use_by_date, 'Use by date'),
     packing_code: v.optStr(body.packing_code, 'Packing code', 50),
@@ -52,7 +54,7 @@ async function create(body, userId, ip) {
   const d = cleanInput(body);
   return withTransaction(async (conn) => {
     const batch = await h.lockBatch(conn, d.batch_id, 'PACKING');
-    await h.checkMachine(conn, d.machine_id, 'PACKING');
+    d.machine_id = await h.stageMachine(conn, batch.id, d.machine_id, 'PACKING');
 
     const [rr] = await conn.query('SELECT * FROM product_packing_rates WHERE id = ? AND is_active = 1', [d.packing_rate_id]);
     if (!rr.length) throw new AppError('Selected pack size does not exist or is inactive');

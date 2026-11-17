@@ -13,8 +13,9 @@ import { COLORS } from '../theme';
 // Photo check of the weighing machine display for one batching entry.
 //   capture (camera) or upload (gallery / file)  ->  server reads the weight  ->  compared with the entered weight.
 // Reports { imageId, passed } to the parent through onChange. Entered weight changed after the check => result is stale (not passed).
-// uploadOnly: no camera button, the operator only uploads an existing image (New Batch form)
-export default function WeightImageVerify({ batchId, materialId, enteredWeight, required, canManual, error, onChange, uploadOnly = false }) {
+// uploadOnly: no camera button, the operator only uploads an existing image
+// cameraOnly: no upload button, only a live photo taken right now with the camera is accepted (not used by the New Batch form any more)
+export default function WeightImageVerify({ batchId, materialId, enteredWeight, required, canManual, error, onChange, uploadOnly = false, cameraOnly = false }) {
   const [mode, setMode] = useState('idle'); // idle | camera | picked
   const [photo, setPhoto] = useState(null);     // { uri } waiting to be verified
   const [lastUri, setLastUri] = useState(null); // last photo sent, so a corrected weight can be checked against the same photo
@@ -31,7 +32,7 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
   const current = result && !stale ? result : null;
   const passed = !!current && bwPassed(current.status);
 
-  useEffect(() => { onChange && onChange({ imageId: current ? current.id : null, passed, status: current ? current.status : null }); }, [current && current.id, current && current.status, passed]); // eslint-disable-line
+  useEffect(() => { onChange && onChange({ imageId: current ? current.id : null, passed, status: current ? current.status : null, stale }); }, [current && current.id, current && current.status, passed, stale]); // eslint-disable-line
 
   const verify = async (uri) => {
     if (busy) return;
@@ -43,6 +44,11 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
       setResult(r); setLastUri(uri); setPhoto(null); setMode('idle'); setReason(''); setReasonErr('');
     } catch (e) { if (live.current) setErr(errMsg(e)); }
     if (live.current) setBusy(false);
+  };
+
+  const openCamera = () => {
+    if (!(entered > 0)) { setErr('Enter the weighed quantity first, then take the photo.'); return; }
+    setErr(''); setMode('camera');
   };
 
   const upload = async () => {
@@ -127,11 +133,11 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
       {!current && mode === 'idle' && (
         <View>
           {stale && <InfoBox text="The weighed quantity changed after the photo was checked. Verify it again." />}
-          <Text style={s.help}>{uploadOnly ? 'Upload an image of the weighing machine display. The weight on it is read and compared with the weighed quantity.' : 'Take a photo of the weighing machine display, or upload one. The weight on it is read and compared with the weighed quantity.'}</Text>
+          <Text style={s.help}>{uploadOnly ? 'Upload an image of the weighing machine display. The weight on it is read and compared with the weighed quantity.' : cameraOnly ? 'Take a live photo of the weighing machine display. The weight on it is read and compared with the weighed quantity.' : 'Take a photo of the weighing machine display, or upload one. The weight on it is read and compared with the weighed quantity.'}</Text>
           <View style={s.row}>
-            {!uploadOnly && <Button mode="contained" icon="camera" buttonColor={COLORS.primary} style={s.half} disabled={busy} onPress={() => { setErr(''); setMode('camera'); }}>Take photo</Button>}
-            <Button mode={uploadOnly ? 'contained' : 'outlined'} icon="upload" buttonColor={uploadOnly ? COLORS.primary : undefined} textColor={uploadOnly ? undefined : COLORS.text}
-              style={[s.half, !uploadOnly && { borderColor: COLORS.border }]} disabled={busy} onPress={upload}>Upload image</Button>
+            {!uploadOnly && <Button mode="contained" icon="camera" buttonColor={COLORS.primary} style={s.half} disabled={busy} onPress={openCamera}>Take photo</Button>}
+            {!cameraOnly && <Button mode={uploadOnly ? 'contained' : 'outlined'} icon="upload" buttonColor={uploadOnly ? COLORS.primary : undefined} textColor={uploadOnly ? undefined : COLORS.text}
+              style={[s.half, !uploadOnly && { borderColor: COLORS.border }]} disabled={busy} onPress={upload}>Upload image</Button>}
           </View>
           {!!lastUri && entered > 0 && (
             <Button mode="outlined" icon="refresh" textColor={COLORS.primary} style={[s.btn, { borderColor: COLORS.primary }]} loading={busy} disabled={busy} onPress={() => verify(lastUri)}>Verify again with the same photo</Button>)}

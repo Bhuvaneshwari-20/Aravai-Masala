@@ -1,4 +1,3 @@
-
 const { pool, withTransaction } = require('../config/db');
 const { nextNumber } = require('../utils/numbering');
 const { audit } = require('../utils/audit');
@@ -29,7 +28,8 @@ const shape = (m) => ({
   ...m,
   installation_date: fmtDate(m.installation_date),
   last_maintenance_date: fmtDate(m.last_maintenance_date),
-  next_maintenance_date: fmtDate(m.next_maintenance_date)
+  next_maintenance_date: fmtDate(m.next_maintenance_date),
+  calibration_due_date: fmtDate(m.calibration_due_date)
 });
 
 // Optional date: blank -> null
@@ -168,6 +168,19 @@ async function parse(body, db) {
       })
     : null;
 
+  const intervalDays = v.clean(body.maintenance_interval_days)
+    ? v.intRange(body.maintenance_interval_days, 'Maintenance interval (days)', 1, 3650)
+    : null;
+
+  const lastMaint = optDate(body.last_maintenance_date, 'Last maintenance date');
+  let nextMaint = optDate(body.next_maintenance_date, 'Next maintenance date');
+  // Next maintenance left blank -> last maintenance + interval
+  if (!nextMaint && lastMaint && intervalDays) {
+    const x = new Date(`${lastMaint}T00:00:00Z`);
+    x.setUTCDate(x.getUTCDate() + intervalDays);
+    nextMaint = x.toISOString().slice(0, 10);
+  }
+
   return {
     machine_name: v.reqStr(body.machine_name, 'Machine name', 100),
     machine_type: type,
@@ -177,9 +190,15 @@ async function parse(body, db) {
       v.optStr(body.capacity_unit, 'Capacity unit', 20) || 'KG/HR',
     status,
     installation_date: optDate(body.installation_date, 'Installation date'),
-    last_maintenance_date: optDate(body.last_maintenance_date, 'Last maintenance date'),
-    next_maintenance_date: optDate(body.next_maintenance_date, 'Next maintenance date'),
-    operator_id: operatorId
+    last_maintenance_date: lastMaint,
+    next_maintenance_date: nextMaint,
+    operator_id: operatorId,
+    location: v.optStr(body.location, 'Location', 100),
+    model_no: v.optStr(body.model_no, 'Model no', 50),
+    serial_no: v.optStr(body.serial_no, 'Serial no', 50),
+    calibration_due_date: optDate(body.calibration_due_date, 'Calibration due date'),
+    maintenance_interval_days: intervalDays,
+    remarks: v.optStr(body.remarks, 'Remarks', 255)
   };
 }
 
@@ -215,8 +234,14 @@ async function create(body, userId, ip) {
             last_maintenance_date,
             next_maintenance_date,
             operator_id,
+            location,
+            model_no,
+            serial_no,
+            calibration_due_date,
+            maintenance_interval_days,
+            remarks,
             qr_token
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [
             code,
             d.machine_name,
@@ -229,6 +254,12 @@ async function create(body, userId, ip) {
             d.last_maintenance_date,
             d.next_maintenance_date,
             d.operator_id,
+            d.location,
+            d.model_no,
+            d.serial_no,
+            d.calibration_due_date,
+            d.maintenance_interval_days,
+            d.remarks,
             token
           ]
         );
@@ -289,7 +320,13 @@ async function update(idRaw, body, userId, ip) {
         installation_date = ?,
         last_maintenance_date = ?,
         next_maintenance_date = ?,
-        operator_id = ?
+        operator_id = ?,
+        location = ?,
+        model_no = ?,
+        serial_no = ?,
+        calibration_due_date = ?,
+        maintenance_interval_days = ?,
+        remarks = ?
        WHERE id = ?`,
       [
         d.machine_name,
@@ -302,6 +339,12 @@ async function update(idRaw, body, userId, ip) {
         d.last_maintenance_date,
         d.next_maintenance_date,
         d.operator_id,
+        d.location,
+        d.model_no,
+        d.serial_no,
+        d.calibration_due_date,
+        d.maintenance_interval_days,
+        d.remarks,
         id
       ]
     );

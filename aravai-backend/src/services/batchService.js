@@ -4,6 +4,7 @@ const { audit } = require('../utils/audit');
 const AppError = require('../utils/AppError');
 const v = require('../utils/validate');
 const stock = require('./stockService');
+const REQUIRE_WEIGHT_PHOTO = process.env.REQUIRE_WEIGHT_PHOTO === 'true'; // photo optional unless .env has REQUIRE_WEIGHT_PHOTO=true (demo: optional)
 const wimg = require('./batchWeightImageService');   // weighing machine photo check
 const machines = require('./machineService');
 
@@ -54,6 +55,16 @@ async function buildPlan(db, b) {
 
   const photos = await wimg.forBatch(db, b.id); // material_id -> stored weighing machine photo
 
+  // bag-size breakdown (3 x 10 kg + 4 x 5 kg) of each weighed material
+  const bagMap = new Map();
+  const bdIds = rows.map((r) => r.batching_id).filter((x) => x !== null);
+  if (bdIds.length) {
+    try {
+      const [bl] = await db.query('SELECT batching_detail_id, bags, weight_per_bag, qty_kg FROM batching_detail_bags WHERE batching_detail_id IN (?) ORDER BY sort_order, id', [bdIds]);
+      bl.forEach((x) => { if (!bagMap.has(x.batching_detail_id)) bagMap.set(x.batching_detail_id, []); bagMap.get(x.batching_detail_id).push({ bags: x.bags, weight_per_bag: Number(x.weight_per_bag), qty_kg: Number(x.qty_kg) }); });
+    } catch (e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; } // table not created yet -> no breakdown
+  }
+
   // Recipes no longer carry quantities (base 0), so nothing is "required" - the weighed quantity is simply recorded.
   const base = Number(b.base_quantity_kg) || 0;
   const scale = base > 0 ? Number(b.planned_qty_kg) / base : null;
@@ -63,6 +74,7 @@ async function buildPlan(db, b) {
     return {
       ...r,
       weight_image: photos.get(r.material_id) || null,
+      bag_lines: bagMap.get(r.batching_id) || [],
       required_kg: required,
       is_done: done,
       variance_kg: done && required !== null ? r3(Number(r.weighed_qty) - required) : null,
@@ -136,10 +148,10 @@ async function start(body, userId, ip) {
   const recipeId = v.toId(body.recipe_id, 'recipe');
   const date = v.date(body.production_date, 'Production date');
   if (!Array.isArray(body.ingredients)) throw new AppError('Enter the quantity of the materials');
+  // Done by = the logged-in user. Checked by is optional (not asked in the New Batch form any more).
   const doneBy = body.done_by ? v.toId(body.done_by, 'done by') : userId;
-  if (!body.checked_by) throw new AppError('Checked by is required');
-  const checkedBy = v.toId(body.checked_by, 'checked by');
-  if (doneBy === checkedBy) throw new AppError('Checked by must be a different person from Done by');
+  const checkedBy = body.checked_by ? v.toId(body.checked_by, 'checked by') : null;
+  if (checkedBy && doneBy === checkedBy) throw new AppError('Checked by must be a different person from Done by');
   const machineId = body.weighing_machine_id ? v.toId(body.weighing_machine_id, 'weighing machine') : null;
 
   // "Filter" checkbox on each material row of the batching form. If any weighed material is ticked the batch goes to
@@ -154,10 +166,24 @@ async function start(body, userId, ip) {
   const items = body.ingredients
     .filter((i) => i && !blank(i.weighed_qty ?? i.quantity_kg) && Number(i.weighed_qty ?? i.quantity_kg) !== 0)
     .map((i) => {
-      const weighed = v.positive(i.weighed_qty ?? i.quantity_kg, 'Weighed quantity (kg)', { max: 1000000 });
-      const bags = blank(i.no_of_bags) ? 1 : v.intRange(i.no_of_bags, 'No of bags', 1, 100000);
-      const perBag = blank(i.weight_per_bag) ? r3(weighed / bags) : v.positive(i.weight_per_bag, 'Weight per bag (kg)', { max: 100000 });
-      return { material_id: v.toId(i.material_id, 'material'), bags, perBag, quantity_kg: weighed, filter: hasPerMaterial ? isTrue(i.needs_filtering) : batchFlag,
+      let weighed = v.positive(i.weighed_qty ?? i.quantity_kg, 'Weighed quantity (kg)', { max: 1000000 });
+      // Several bag sizes for one material, e.g. 3 bags x 10 kg + 4 bags x 5 kg = 50 kg
+      let lines = null;
+      if (Array.isArray(i.bag_lines) && i.bag_lines.length > 1) {
+        if (i.bag_lines.length > 20) throw new AppError('Too many bag sizes for one material');
+        lines = i.bag_lines.map((l) => {
+          const lb = Number(l && l.bags);
+          if (!Number.isInteger(lb) || lb < 1 || lb > 100000) throw new AppError('No of bags must be a whole number of at least 1 in every bag size line');
+          const lw = v.positive(l && l.weight, 'Weight per bag (kg)', { max: 100000 });
+          return { bags: lb, perBag: lw, qty: r3(lb * lw) };
+        });
+        const sum = r3(lines.reduce((a, l) => a + l.qty, 0));
+        if (Math.abs(sum - weighed) > 0.001) throw new AppError(`Weighed quantity (${weighed} kg) does not match the bag lines (${sum} kg)`);
+        weighed = sum;
+      }
+      const bags = lines ? lines.reduce((a, l) => a + l.bags, 0) : (blank(i.no_of_bags) ? 1 : v.intRange(i.no_of_bags, 'No of bags', 1, 100000));
+      const perBag = lines ? r3(weighed / bags) : (blank(i.weight_per_bag) ? r3(weighed / bags) : v.positive(i.weight_per_bag, 'Weight per bag (kg)', { max: 100000 }));
+      return { material_id: v.toId(i.material_id, 'material'), bags, perBag, lines, quantity_kg: weighed, filter: hasPerMaterial ? isTrue(i.needs_filtering) : batchFlag,
         image_id: i.weight_image_id ? v.toId(i.weight_image_id, 'weight photo') : null };
     });
   if (!items.length) throw new AppError('Enter the quantity for at least one material');
@@ -175,8 +201,9 @@ async function start(body, userId, ip) {
     if (rec[0].product_id !== productId) throw new AppError('This recipe does not belong to the selected product');
     if (!rec[0].is_active) throw new AppError('This recipe version is not active');
 
-    const [users] = await conn.query('SELECT id FROM users WHERE id IN (?) AND is_active = 1', [[doneBy, checkedBy]]);
-    if (users.length !== 2) throw new AppError('Done by / Checked by must be active users');
+    const userIds = [doneBy, checkedBy].filter(Boolean);
+    const [users] = await conn.query('SELECT id FROM users WHERE id IN (?) AND is_active = 1', [userIds]);
+    if (users.length !== userIds.length) throw new AppError('Done by / Checked by must be active users');
 
     const [inRecipe] = await conn.query('SELECT d.material_id, m.material_name, m.unit FROM recipe_details d JOIN materials m ON m.id = d.material_id WHERE d.recipe_id = ?', [recipeId]);
     const byId = new Map(inRecipe.map((r) => [r.material_id, r]));
@@ -199,7 +226,7 @@ async function start(body, userId, ip) {
     // Weighing machine photo of every weighed material: OCR MATCH (or supervisor's manual verification), same material + same weight.
     for (const i of items) {
       const name = byId.get(i.material_id).material_name;
-      if (machineId && !i.image_id) throw new AppError(`${name}: take or upload a photo of the weighing machine display and verify the weight`);
+      if (REQUIRE_WEIGHT_PHOTO && machineId && !i.image_id) throw new AppError(`${name}: take or upload a photo of the weighing machine display and verify the weight`);
       if (i.image_id) {
         try { await wimg.claim(conn, { imageId: i.image_id, batchId: null, materialId: i.material_id, weighedQty: i.quantity_kg, userId, allowDraft: true }); }
         catch (e) { if (e instanceof AppError) e.message = `${name}: ${e.message}`; throw e; }
@@ -227,6 +254,10 @@ async function start(body, userId, ip) {
       const [bd] = await conn.query(
         `INSERT INTO batching_details (batch_id, entry_date, material_id, no_of_bags, weight_per_bag, weighed_qty, weighing_machine_id, stock_txn_id, done_by, checked_by, needs_filtering, status)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,'COMPLETED')`, [id, date, i.material_id, i.bags, i.perBag, i.quantity_kg, machineId, st.txn_id, doneBy, checkedBy, i.filter ? 1 : 0]);
+      if (i.lines) {
+        await conn.query('INSERT INTO batching_detail_bags (batching_detail_id, bags, weight_per_bag, qty_kg, sort_order) VALUES ?',
+          [i.lines.map((l, n) => [bd.insertId, l.bags, l.perBag, l.qty, n])]);
+      }
       if (i.image_id) await wimg.link(conn, i.image_id, bd.insertId, id); // photo is now stored against this batch + material
     }
 
@@ -287,7 +318,7 @@ async function addBatching(batchIdRaw, body, user, ip) {
       machineId = lockedId;
     }
     const imageId = body.weight_image_id ? v.toId(body.weight_image_id, 'weight photo') : null;
-    if (lockedId && !imageId) throw new AppError('Take or upload a photo of the weighing machine display and verify the weight first');
+    if (REQUIRE_WEIGHT_PHOTO && lockedId && !imageId) throw new AppError('Take or upload a photo of the weighing machine display and verify the weight first');
     if (imageId) await wimg.claim(conn, { imageId, batchId, materialId, weighedQty: weighed }); // MATCH / MANUAL only, same batch + material + weight, unused
 
     // raw stock goes down here, in the same transaction as the batching row

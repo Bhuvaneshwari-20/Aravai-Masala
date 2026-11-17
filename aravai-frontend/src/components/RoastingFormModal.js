@@ -7,6 +7,8 @@ import ModalShell from './ModalShell';
 import FormField from './FormField';
 import FormRow from './FormRow';
 import SelectField from './SelectField';
+import TimeField from './TimeField';
+import WeighingMachineInfo from './WeighingMachineInfo';
 import { COLORS } from '../theme';
 
 const today = () => {
@@ -15,7 +17,7 @@ const today = () => {
 };
 const EMPTY = () => ({
   roast_date: today(), machine_id: null, code_no: '', material_id: null, batch_id: null, input_weight: '', output_weight: '',
-  temp_before: '', std_temp: '', temp_after: '', start_time: '', end_time: '', incharge_id: 0, remarks: '', finish_roasting: false,
+  temp_before: '', std_temp: '', temp_after: '', start_time: '', end_time: '', remarks: '', finish_roasting: false,
 });
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const Label = ({ children, style }) => <Text style={[{ fontSize: 11, fontWeight: '900', letterSpacing: 1.4, color: COLORS.grey, marginBottom: 8 }, style]}>{children}</Text>;
@@ -33,7 +35,6 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
   const [batchList, setBatchList] = useState([]); // batches (from Batching) waiting at Roasting, each with its recipe
   const [materialRows, setMaterialRows] = useState([]); // materials weighed in the selected batch
   const [loadingMat, setLoadingMat] = useState(false);
-  const [incharges, setIncharges] = useState([{ value: 0, label: '— None —' }]);
   const [alertAt, setAlertAt] = useState(12);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
@@ -54,14 +55,13 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
         temp_after: item.temp_after == null ? '' : String(item.temp_after),
         start_time: item.start_time ? item.start_time.slice(11, 16) : '',
         end_time: item.end_time ? item.end_time.slice(11, 16) : '',
-        incharge_id: item.incharge_id || 0, remarks: item.remarks || '',
+        remarks: item.remarks || '',
       });
     } else setF(EMPTY());
     api.get('/roasting/options').then((r) => {
       const d = r.data.data;
       setMachines(d.machines.map((m) => ({ value: m.id, label: `${m.machine_code} · ${m.machine_name}` })));
       if (!item && d.machines.length === 1) setF((p) => ({ ...p, machine_id: d.machines[0].id })); // only one roasting machine -> pre-select
-      setIncharges([{ value: 0, label: '— None —' }, ...d.incharges.map((u) => ({ value: u.id, label: u.full_name }))]);
       setAlertAt(d.loss_alert_percent);
     }).catch((e) => setErr(errMsg(e))).finally(() => setLoading(false));
   }, [visible, item]); // eslint-disable-line
@@ -97,11 +97,13 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
     setF((p) => ({ ...p, material_id: id, input_weight: m ? String(m.remaining_qty) : p.input_weight })); // I/P = weight from Batching
   };
   const batchOpts = useMemo(() => batchList.map((b) => ({ value: b.batch_id, label: `${b.batch_no} · ${b.product_name}` })), [batchList]);
-  const materialOpts = useMemo(() => materialRows.map((m) => ({ value: m.material_id, label: `${m.material_code} · ${m.material_name} · ${m.remaining_qty} kg` })), [materialRows]);
+  const materialOpts = useMemo(() => materialRows.map((m) => ({ value: m.material_id, label: `${m.material_name} · ${m.remaining_qty} kg` })), [materialRows]);
   const pickedMaterial = materialRows.find((m) => m.material_id === f.material_id);
 
    const pickedBatch = batchList.find((b) => b.batch_id === f.batch_id);
-  const recipeLabel = pickedBatch ? `${pickedBatch.recipe_no || ''} · ${pickedBatch.product_name}` : f.code_no;
+  // The machine is the weighing machine chosen in Batching (older batches without one still pick a roasting machine)
+  const batchMachine = pickedBatch && pickedBatch.weighing_machine_id && (!isEdit || String(item.machine_id) === String(pickedBatch.weighing_machine_id)) ? pickedBatch : null;
+  const recipeLabel = pickedBatch ? pickedBatch.product_name : f.code_no;
   // live preview of the calculated columns
   const calc = useMemo(() => {
     const inp = Number(f.input_weight); const out = Number(f.output_weight);
@@ -118,7 +120,7 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
   const validate = () => {
     const e = {};
     if (!/^\d{4}-\d{2}-\d{2}$/.test(f.roast_date)) e.roast_date = 'Use YYYY-MM-DD';
-    if (!f.machine_id) e.machine_id = 'Select a machine';
+    if (!batchMachine && !f.machine_id) e.machine_id = 'Select a machine';
     if ((!isEdit || item.batch_id) && !f.batch_id) e.batch_id = 'Select the batch code';
     if ((!isEdit || item.batch_id) && f.batch_id && !f.material_id) e.material_id = 'Select the material';
     if (!f.batch_id && !f.code_no.trim()) e.code_no = 'Select the batch code';
@@ -137,7 +139,7 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
     if (!validate()) return;
     setSaving(true); setErr('');
     try {
-      const body = { ...f, code_no: f.code_no.trim().toUpperCase(), incharge_id: f.incharge_id || null };
+      const body = { ...f, code_no: f.code_no.trim().toUpperCase(), machine_id: batchMachine ? batchMachine.weighing_machine_id : f.machine_id };
       if (isEdit) await api.put(`/roasting/${item.id}`, body); else await api.post('/roasting', body);
       setSaving(false);
       onSaved && onSaved(isEdit);
@@ -148,7 +150,7 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
 
   return (
     <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon="fire" maxWidth={720}
-      title={isEdit ? 'Edit Roasting Entry' : 'Add Roasting Entry'} subtitle={isEdit ? `${item.batch_no ? `${item.batch_no} · ` : ''}${item.code_no}` : 'Batch code → Recipe → Material'}
+      title={isEdit ? 'Edit Roasting Entry' : 'Add Roasting Entry'} subtitle={isEdit ? `${item.batch_no ? `${item.batch_no} · ` : ''}${item.material_name || ''}` : 'Batch code → Recipe → Material'}
       footer={(
         <View style={{ flexDirection: 'row' }}>
           <Button mode="outlined" onPress={onDismiss} disabled={saving} textColor={COLORS.text} style={{ borderRadius: 10, borderColor: COLORS.border, marginRight: 10 }}>Cancel</Button>
@@ -170,12 +172,12 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
             </Text>
           )}
           <FormRow>
-            <FormField label="Recipe code & name (from batch)" value={recipeLabel} editable={false} />
+            <FormField label="Recipe (from batch)" value={recipeLabel} editable={false} />
             <SelectField label="Material *" value={f.material_id} options={materialOpts} onChange={onMaterial} error={errors.material_id}
               disabled={!f.batch_id || loadingMat} />
           </FormRow>
           <FormRow>
-            <SelectField label="Machine *" value={f.machine_id} options={machines} onChange={set('machine_id')} error={errors.machine_id} />
+            {batchMachine ? <WeighingMachineInfo batch={batchMachine} label="MACHINE (FROM BATCHING)" /> : <SelectField label="Machine *" value={f.machine_id} options={machines} onChange={set('machine_id')} error={errors.machine_id} />}
             <View style={{ flex: 1 }} />
           </FormRow>
 
@@ -197,10 +199,10 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
             <FormField label="After roasting" numeric value={f.temp_after} onChangeText={set('temp_after')} />
           </FormRow>
 
-          <Label style={{ marginTop: 6 }}>TIME (24 hour, e.g. 0930)</Label>
+          <Label style={{ marginTop: 6 }}>TIME</Label>
           <FormRow>
-            <FormField label="Start time *" value={f.start_time} onChangeText={(t) => set('start_time')(fmtTime(t))} error={errors.start_time} keyboardType="number-pad" maxLength={5} />
-            <FormField label="End time" value={f.end_time} onChangeText={(t) => set('end_time')(fmtTime(t))} error={errors.end_time} keyboardType="number-pad" maxLength={5} />
+            <TimeField label="Start time *" value={f.start_time} onChangeText={set('start_time')} error={errors.start_time} />
+            <TimeField label="End time" value={f.end_time} onChangeText={set('end_time')} error={errors.end_time} />
           </FormRow>
 
           {/* calculated by the system */}
@@ -215,8 +217,6 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
             </View>
           </View>
 
-          <Label style={{ marginTop: 4 }}>SIGN-OFF</Label>
-          <SelectField label="Incharge" value={f.incharge_id} options={incharges} onChange={set('incharge_id')} />
           <FormField label="Remarks" multiline value={f.remarks} onChangeText={set('remarks')} maxLength={255} />
           {!isEdit && (
             <Pressable onPress={() => setF((p) => ({ ...p, finish_roasting: !p.finish_roasting }))}

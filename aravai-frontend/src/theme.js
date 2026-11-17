@@ -1,26 +1,40 @@
 import { MD3LightTheme } from 'react-native-paper';
 
+// NOTE: primary / primaryDark / text / GRADIENT are used by the Login screen - values intentionally unchanged.
 export const COLORS = {
   primary: '#B01E1E',
   primaryDark: '#7F1212',
+  primarySoft: '#FBECEC',
   green: '#1F5C52',
   greenBg: '#E3F1EE',
-  border: '#EADFD2',
+  border: '#ECE4DA',
+  line: '#F2ECE4',
   accent: '#F2A900',
-  bg: '#FBF7F0',
+  accentSoft: '#FFF4D6',
+  bg: '#F7F4EF',
+  surface: '#FFFFFF',
   text: '#2B1B14',
+  textSoft: '#5E5148',
   danger: '#C62828',
   dangerBg: '#FDECEA',
   ok: '#2E7D32',
   okBg: '#E8F5E9',
-  grey: '#8A7B73',
-  greyBg: '#F0EBE7',
+  grey: '#85786F',
+  greyBg: '#F1ECE6',
   warn: '#E65100',
   warnBg: '#FFF3E0',
 };
 
 export const GRADIENT = [COLORS.primaryDark, COLORS.primary, '#D1451F'];
 export const GRADIENT_DANGER = ['#7f1d1d', '#C62828', '#E55353'];
+
+// design tokens used by the new UI
+export const RADIUS = { sm: 10, md: 14, lg: 18, xl: 24, pill: 999 };
+export const SHADOW = {
+  sm: { elevation: 1, shadowColor: '#2B1B14', shadowOpacity: 0.05, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } },
+  md: { elevation: 3, shadowColor: '#2B1B14', shadowOpacity: 0.09, shadowRadius: 14, shadowOffset: { width: 0, height: 6 } },
+  lg: { elevation: 10, shadowColor: '#2B1B14', shadowOpacity: 0.18, shadowRadius: 26, shadowOffset: { width: 0, height: 12 } },
+};
 
 export const paperTheme = {
   ...MD3LightTheme,
@@ -33,6 +47,7 @@ export const paperTheme = {
     onSecondaryContainer: COLORS.primaryDark,
     background: COLORS.bg,
     surface: '#FFFFFF',
+    outline: COLORS.border,
   },
 };
 

@@ -1,8 +1,7 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { View, FlatList, RefreshControl, StyleSheet } from 'react-native';
-import { Text, ActivityIndicator, IconButton, Button } from 'react-native-paper';
+import { View, RefreshControl, StyleSheet } from 'react-native';
+import { ActivityIndicator } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
-import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import api, { errMsg } from '../../api';
 import { useAuth } from '../../AuthContext';
 import { useUi } from '../../ui';
@@ -13,12 +12,12 @@ import PageToolbar from '../../components/PageToolbar';
 import FilterChips from '../../components/FilterChips';
 import usePagedList from '../../hooks/usePagedList';
 import useDebounce from '../../hooks/useDebounce';
-import useLayout from '../../hooks/useLayout';
 import Container from '../../components/Container';
-import PressableScale from '../../components/PressableScale';
+import Badge from '../../components/Badge';
+import InfoCard, { CardList, InfoLine, RoundBtn, toneOf, useCardCols } from '../../components/InfoCard';
 import LoadingView from '../../components/LoadingView';
 import EmptyView from '../../components/EmptyView';
-import { COLORS, fmt, padGrid } from '../../theme';
+import { COLORS, fmt } from '../../theme';
 
 const STATUS_STYLE = {
   ACTIVE: { color: COLORS.ok, bg: COLORS.okBg },
@@ -34,7 +33,7 @@ const label = (list, v) => (list.find((x) => x.value === v) || {}).label || v;
 export default function MachineListScreen({ navigation }) {
   const { can } = useAuth();
   const { toast } = useUi();
-  const { listCols } = useLayout();
+  const grid = useCardCols({ min: 280, phoneMin: 280 });
   const [search, setSearch] = useState('');
   const [type, setType] = useState('');
   const [form, setForm] = useState(null); // null = closed, {} = new, machine = edit
@@ -61,40 +60,33 @@ export default function MachineListScreen({ navigation }) {
       <PageToolbar icon="cog" title="Machines" count={list.total} noun="machine" search={search} onSearch={setSearch}
         placeholder="Search code / name / maker" addLabel="Add Machine" onAdd={can('machine', 'create') ? () => setForm({}) : null} />
       <Container>
-        {/* opens the in-app QR scanner (same screen as the weighing flow, in view-only mode) -> machine details */}
-        <Button mode="contained-tonal" icon="qrcode-scan" style={s.scanBtn} onPress={() => navigation.navigate('WeighingScan', { mode: 'view' })}>Scan Machine</Button>
         <FilterChips value={type} onChange={setType} options={[{ value: '', label: 'All' }, ...MACHINE_TYPES]} />
       </Container>
       <Container fill>
         {list.loading ? <LoadingView /> : list.error && !list.items.length ? <EmptyView error={list.error} onRetry={list.reload} /> : (
-          <FlatList key={listCols} numColumns={listCols} data={padGrid(list.items, listCols)} keyExtractor={(i) => String(i.id)}
-            contentContainerStyle={{ paddingBottom: 40 }}
+          <CardList {...grid} data={list.items} keyExtractor={(i) => String(i.id)}
             refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={list.refresh} colors={[COLORS.primary]} />}
             onEndReached={list.loadMore} onEndReachedThreshold={0.4}
             ListEmptyComponent={<EmptyView icon="🛠️" message="No machines yet" />}
             ListFooterComponent={list.loadingMore ? <ActivityIndicator style={{ margin: 16 }} color={COLORS.primary} /> : null}
-            renderItem={({ item }) => {
-              if (item.pad) return <View style={{ flex: 1, marginHorizontal: 12 }} />;
+            renderItem={(item, i) => {
               const st = STATUS_STYLE[item.status] || STATUS_STYLE.IDLE;
               return (
-                <View style={{ flex: 1 }}>
-                  <PressableScale to={0.98} style={s.card} onPress={can('machine', 'edit') ? () => setForm(item) : undefined}>
-                    <View style={s.avatar}><MCI name={TYPE_ICON[item.machine_type] || 'cog'} size={28} color={COLORS.primary} /></View>
-                    <View style={{ flex: 1, marginRight: 10 }}>
-                      <Text style={s.name}>{item.machine_name}</Text>
-                      <Text style={s.product}>{item.machine_code}  •  {label(MACHINE_TYPES, item.machine_type)}</Text>
-                      {!!item.manufacturer && <Text style={s.code}>{item.manufacturer}</Text>}
-                      {item.capacity != null && <Text style={s.code}>Capacity {fmt(item.capacity)} {item.capacity_unit}</Text>}
-                      {!!item.operator_name && <Text style={s.code}>Operator: {item.operator_name}</Text>}
-                      {!!item.next_maintenance_date && <Text style={s.code}>Next maintenance: {item.next_maintenance_date}</Text>}
-                    </View>
-                    <View style={{ alignItems: 'flex-end' }}>
-                      <View style={[s.badge, { backgroundColor: st.bg }]}><Text style={[s.badgeText, { color: st.color }]}>{label(MACHINE_STATUS, item.status).toUpperCase()}</Text></View>
-                      <IconButton icon="qrcode" size={22} iconColor={COLORS.primary} onPress={() => setQr(item)} accessibilityLabel={`QR code for ${item.machine_name}`} />
-                      {can('machine', 'delete') && <IconButton icon="delete-outline" size={20} iconColor={COLORS.danger} onPress={() => setDel(item)} accessibilityLabel={`Delete ${item.machine_name}`} />}
-                    </View>
-                  </PressableScale>
-                </View>
+                <InfoCard index={i} icon={TYPE_ICON[item.machine_type] || 'cog'} color={COLORS.primary}
+                  value={item.machine_name} size="md" caption={`${item.machine_code}  •  ${label(MACHINE_TYPES, item.machine_type)}`}
+                  onPress={can('machine', 'edit') ? () => setForm(item) : undefined}
+                  right={(
+                    <>
+                      <RoundBtn icon="qrcode" color={COLORS.primary} bg={COLORS.primarySoft} onPress={() => setQr(item)} label={`QR code for ${item.machine_name}`} />
+                      {can('machine', 'delete') && <RoundBtn icon="trash-can-outline" color={COLORS.danger} bg={COLORS.dangerBg} hoverBg="#F9D3CE" onPress={() => setDel(item)} label={`Delete ${item.machine_name}`} />}
+                    </>
+                  )}
+                  footer={<Badge tone={toneOf(st.color)} text={label(MACHINE_STATUS, item.status)} />}>
+                  <InfoLine icon="factory" text={item.manufacturer} />
+                  <InfoLine icon="gauge" text={item.capacity != null ? `Capacity ${fmt(item.capacity)} ${item.capacity_unit}` : ''} />
+                  <InfoLine icon="account-outline" text={item.operator_name ? `Operator: ${item.operator_name}` : ''} />
+                  <InfoLine icon="wrench-clock" text={item.next_maintenance_date ? `Next maintenance: ${item.next_maintenance_date}` : ''} />
+                </InfoCard>
               );
             }} />
         )}
@@ -110,12 +102,4 @@ export default function MachineListScreen({ navigation }) {
 
 const s = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: COLORS.bg },
-  scanBtn: { marginHorizontal: 12, marginTop: 8, borderRadius: 12, alignSelf: 'flex-start' },
-  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 20, marginHorizontal: 12, marginVertical: 8, padding: 20, minHeight: 130, borderWidth: 1, borderColor: COLORS.border },
-  avatar: { width: 60, height: 60, borderRadius: 30, backgroundColor: `${COLORS.primary}14`, alignItems: 'center', justifyContent: 'center', marginRight: 16 },
-  name: { fontSize: 20, fontWeight: '900', color: COLORS.text },
-  product: { color: COLORS.text, fontSize: 15, fontWeight: '700', marginTop: 4 },
-  code: { color: COLORS.grey, fontSize: 14, fontWeight: '600', marginTop: 3 },
-  badge: { borderRadius: 12, paddingHorizontal: 12, paddingVertical: 5 },
-  badgeText: { fontSize: 12, fontWeight: '900', letterSpacing: 0.4 },
 });

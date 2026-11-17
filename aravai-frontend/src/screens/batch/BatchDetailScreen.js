@@ -21,7 +21,7 @@ import { COLORS, fmt } from '../../theme';
 const SHEET_COLS = [
   { key: 'date', label: 'DATE', w: 100 }, { key: 'code', label: 'MATERIAL CODE', w: 110 }, { key: 'name', label: 'MATERIAL NAME', w: 220 },
   { key: 'bags', label: 'NO OF BAGS', w: 90 }, { key: 'wt', label: 'WEIGHT', w: 110 }, { key: 'qty', label: 'WEIGHED QTY', w: 120 },
-  { key: 'by', label: 'DONE BY', w: 120 }, { key: 'chk', label: 'CHECKED BY', w: 120 }, { key: 'img', label: 'PHOTO', w: 80 },
+  { key: 'img', label: 'PHOTO', w: 80 },
 ];
 
 export default function BatchDetailScreen({ route }) {
@@ -91,7 +91,7 @@ export default function BatchDetailScreen({ route }) {
             {/* Sheet: same columns as the paper "ARAVAI BATCHING PROCESS PLAN" */}
             {plan.ingredients.some((i) => i.is_done) && (
               <ScrollView horizontal showsHorizontalScrollIndicator style={{ marginTop: 6 }}>
-                <View style={{ minWidth: 1060 }}>
+                <View style={{ minWidth: 840 }}>
                   <View style={[s.tr, s.trHead]}>
                     {SHEET_COLS.map((c) => <Text key={c.key} style={[s.th, { width: c.w }]}>{c.label}</Text>)}
                   </View>
@@ -101,10 +101,8 @@ export default function BatchDetailScreen({ route }) {
                       <Text style={[s.td, { width: 110, fontWeight: '800' }]}>{i.material_code}</Text>
                       <Text style={[s.td, { width: 220, fontWeight: '800' }]}>{i.material_name}</Text>
                       <Text style={[s.td, { width: 90 }]}>{i.no_of_bags}</Text>
-                      <Text style={[s.td, { width: 110 }]}>{fmt(i.weight_per_bag)} kg</Text>
+                      <Text style={[s.td, { width: 110 }]}>{i.bag_lines && i.bag_lines.length > 1 ? i.bag_lines.map((l) => `${fmt(l.weight_per_bag)} kg × ${l.bags}`).join('\n') : `${fmt(i.weight_per_bag)} kg`}</Text>
                       <Text style={[s.td, { width: 120, fontWeight: '800' }]}>{fmt(i.weighed_qty)} kg</Text>
-                      <Text style={[s.td, { width: 120 }]}>{i.done_by_name || '-'}</Text>
-                      <Text style={[s.td, { width: 120 }]}>{i.checked_by_name || '-'}</Text>
                       {i.weight_image
                         ? <Pressable style={{ width: 80 }} onPress={() => setViewImg(i)}><Text style={[s.td, { color: COLORS.primary, fontWeight: '800' }]}>View</Text></Pressable>
                         : <Text style={[s.td, { width: 80 }]}>-</Text>}

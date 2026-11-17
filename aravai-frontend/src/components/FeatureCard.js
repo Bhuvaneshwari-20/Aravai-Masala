@@ -1,51 +1,110 @@
-import React from 'react';
-import { View, StyleSheet } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Pressable, Animated, StyleSheet } from 'react-native';
 import { Text } from 'react-native-paper';
-import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
-import PressableScale from './PressableScale';
-import { COLORS } from '../theme';
+import { LinearGradient } from 'expo-linear-gradient';
+import useLoop from '../hooks/useLoop';
+import { COLORS, SHADOW } from '../theme';
 
-// Colourful module card. `color` = the group's accent colour.
-export default function FeatureCard({ title, caption, icon, color = COLORS.green, ready, onPress, compact }) {
+// blend a #rrggbb colour with white (amt 0..1) -> lighter shade for the gradient
+const lighten = (hex, amt) => {
+  const h = String(hex).replace('#', '');
+  if (h.length !== 6) return hex;
+  const c = [0, 2, 4].map((i) => Math.round(parseInt(h.slice(i, i + 2), 16) + (255 - parseInt(h.slice(i, i + 2), 16)) * amt));
+  return `#${c.map((x) => x.toString(16).padStart(2, '0')).join('')}`;
+};
+
+// Module card on the Home screen.
+//  - springs in (staggered by `delay`), the icon floats gently, lifts + tilts on hover, springs on press
+//  - `color` = the group's accent colour, `ready` = false shows the greyed "SOON" version
+export default function FeatureCard({ title, caption, icon, color = COLORS.green, ready, onPress, compact, delay = 0 }) {
+  const [hov, setHov] = useState(false);
+  const enter = useRef(new Animated.Value(0)).current;
+  const hover = useRef(new Animated.Value(0)).current;
+  const press = useRef(new Animated.Value(1)).current;
+  const float = useLoop(1700, 400 + (delay % 5) * 260, !!ready);
+
+  useEffect(() => {
+    Animated.spring(enter, { toValue: 1, delay, friction: 7, tension: 70, useNativeDriver: true }).start();
+  }, []); // eslint-disable-line
+
+  const goHover = (on) => { setHov(on); Animated.spring(hover, { toValue: on ? 1 : 0, friction: 6, tension: 120, useNativeDriver: true }).start(); };
+  const goPress = (v) => Animated.spring(press, { toValue: v, friction: 5, tension: 200, useNativeDriver: true }).start();
+
+  const lift = hover.interpolate({ inputRange: [0, 1], outputRange: [0, -5] });
+  const enterY = enter.interpolate({ inputRange: [0, 1], outputRange: [30, 0] });
+  const enterS = enter.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] });
+  const opacity = enter.interpolate({ inputRange: [0, 0.6, 1], outputRange: [0, 1, 1], extrapolate: 'clamp' });
+  const tileRot = hover.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '-8deg'] });
+  const tileScale = hover.interpolate({ inputRange: [0, 1], outputRange: [1, 1.1] });
+  const iconY = float.interpolate({ inputRange: [0, 1], outputRange: [1.5, -2.5] });
+  const markRot = hover.interpolate({ inputRange: [0, 1], outputRange: ['-8deg', '8deg'] });
+  const markScale = hover.interpolate({ inputRange: [0, 1], outputRange: [1, 1.18] });
+  const arrowX = hover.interpolate({ inputRange: [0, 1], outputRange: [0, 3] });
+  const bar = hover.interpolate({ inputRange: [0, 1], outputRange: [0.001, 1] });
+
+  const tile = compact ? 44 : 54;
   return (
-    <PressableScale onPress={onPress} to={0.98} style={[s.card, { borderColor: `${color}33` }]}>
-      <View style={[s.top, compact && s.topC, { backgroundColor: `${color}14` }]}>
-        <MCI name={icon} size={92} color={color} style={s.watermark} />
-        <LinearGradient colors={[color, `${color}CC`]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[s.tile, compact && s.tileC]}>
-          <MCI name={icon} size={compact ? 22 : 26} color="#fff" />
-        </LinearGradient>
-        <View style={[s.chip, { backgroundColor: ready ? COLORS.ok : '#fff' }]}>
-          <Text style={[s.chipText, { color: ready ? '#fff' : color }]}>{ready ? 'READY' : 'SOON'}</Text>
-        </View>
-      </View>
-      <View style={[s.body, compact && { padding: 11, paddingTop: 10 }]}>
-        <Text style={[s.title, compact && { fontSize: 14 }]} numberOfLines={1}>{title}</Text>
-        <View style={s.foot}>
-          <Text style={[s.sub, ready && { color }]} numberOfLines={1}>{caption}</Text>
-          <View style={[s.go, { backgroundColor: ready ? color : `${color}22` }]}>
-            <MCI name="arrow-right" size={14} color={ready ? '#fff' : color} />
+    <Animated.View style={{ opacity, transform: [{ translateY: Animated.add(enterY, lift) }, { scale: Animated.multiply(enterS, press) }] }}>
+      <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={title}
+        onPressIn={() => goPress(0.96)} onPressOut={() => goPress(1)} onHoverIn={() => goHover(true)} onHoverOut={() => goHover(false)}>
+        <View style={[s.card, compact && s.cardC, hov ? SHADOW.md : SHADOW.sm, !ready && { backgroundColor: '#FCFAF7' }]}>
+          <View style={[s.glow, { backgroundColor: `${color}${ready ? '14' : '0C'}` }]} />
+          <Animated.View pointerEvents="none" style={[s.mark, compact && s.markC, { transform: [{ rotate: markRot }, { scale: markScale }] }]}>
+            <MCI name={icon} size={compact ? 84 : 112} color={`${color}${ready ? '12' : '0A'}`} />
+          </Animated.View>
+
+          <View style={s.top}>
+            <Animated.View style={[s.tileWrap, ready && { shadowColor: color }, { transform: [{ rotate: tileRot }, { scale: tileScale }] }]}>
+              {ready ? (
+                <LinearGradient colors={[lighten(color, 0.18), color]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                  style={[s.tile, { width: tile, height: tile, borderRadius: compact ? 14 : 17 }]}>
+                  <Animated.View style={{ transform: [{ translateY: iconY }] }}>
+                    <MCI name={icon} size={compact ? 22 : 27} color="#fff" />
+                  </Animated.View>
+                </LinearGradient>
+              ) : (
+                <View style={[s.tile, { width: tile, height: tile, borderRadius: compact ? 14 : 17, backgroundColor: COLORS.greyBg }]}>
+                  <MCI name={icon} size={compact ? 22 : 27} color="#B5AAA1" />
+                </View>
+              )}
+            </Animated.View>
+            {ready ? (
+              <View style={[s.arrow, { backgroundColor: hov ? color : `${color}18` }]}>
+                <Animated.View style={{ transform: [{ translateX: arrowX }] }}>
+                  <MCI name="arrow-right" size={17} color={hov ? '#fff' : color} />
+                </Animated.View>
+              </View>
+            ) : <View style={s.soon}><Text style={s.soonText}>SOON</Text></View>}
           </View>
+
+          <Text style={[s.title, compact && s.titleC, !ready && { color: COLORS.textSoft }]} numberOfLines={1}>{title}</Text>
+          <View style={[s.chip, { backgroundColor: ready ? `${color}14` : COLORS.greyBg }]}>
+            <Text style={[s.chipText, { color: ready ? color : COLORS.grey }]} numberOfLines={1}>{caption}</Text>
+          </View>
+
+          {ready && <Animated.View pointerEvents="none" style={[s.bar, { backgroundColor: color, transform: [{ scaleX: bar }] }]} />}
         </View>
-      </View>
-    </PressableScale>
+      </Pressable>
+    </Animated.View>
   );
 }
 
 const s = StyleSheet.create({
-  card: { backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden', borderWidth: 1,
-    elevation: 2, shadowColor: '#2B1B14', shadowOpacity: 0.08, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } },
-  top: { height: 84, padding: 12, flexDirection: 'row', justifyContent: 'space-between', overflow: 'hidden' },
-  topC: { height: 68, padding: 10 },
-  tileC: { width: 40, height: 40, borderRadius: 12 },
-  watermark: { position: 'absolute', right: -14, bottom: -22, opacity: 0.12 },
-  tile: { width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
-  chip: { alignSelf: 'flex-start', borderRadius: 20, paddingHorizontal: 9, paddingVertical: 3 },
-  chipText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.8 },
-  body: { padding: 14, paddingTop: 12 },
-  title: { fontSize: 16, fontWeight: '800', color: COLORS.text },
-  foot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 },
-  sub: { flex: 1, fontSize: 12, color: COLORS.grey, fontWeight: '600', marginRight: 8 },
-  go: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  card: { backgroundColor: '#fff', borderRadius: 24, borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden', padding: 18, minHeight: 148 },
+  cardC: { padding: 13, minHeight: 124, borderRadius: 20 },
+  glow: { position: 'absolute', width: 130, height: 130, borderRadius: 65, right: -42, top: -48 },
+  mark: { position: 'absolute', right: -14, bottom: -22 },
+  markC: { right: -10, bottom: -14 },
+  top: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  tileWrap: { shadowOpacity: 0.35, shadowRadius: 10, shadowOffset: { width: 0, height: 5 }, elevation: 0 },
+  tile: { alignItems: 'center', justifyContent: 'center' },
+  arrow: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  title: { fontSize: 17, fontWeight: '900', color: COLORS.text, marginTop: 16, letterSpacing: -0.2 },
+  titleC: { fontSize: 14.5, marginTop: 11 },
+  chip: { alignSelf: 'flex-start', maxWidth: '100%', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 3, marginTop: 6 },
+  chipText: { fontSize: 11.5, fontWeight: '800' },
+  bar: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 4 },
+  soon: { backgroundColor: COLORS.greyBg, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 3 },
+  soonText: { fontSize: 9.5, fontWeight: '900', color: COLORS.grey, letterSpacing: 0.8 },
 });

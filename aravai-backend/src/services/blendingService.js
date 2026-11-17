@@ -37,8 +37,10 @@ async function loadIngredients(db, batchId = null) {
 /* ---------- dropdown data for the form ---------- */
 async function lookups() {
   const [batches] = await pool.query(
-    `SELECT b.id, b.batch_no, b.product_id, p.product_name, b.recipe_id, b.planned_qty_kg, b.current_output_kg
+    `SELECT b.id, b.batch_no, b.product_id, p.product_name, b.recipe_id, b.planned_qty_kg, b.current_output_kg,
+            wm.id AS weighing_machine_id, wm.machine_code AS weighing_machine_code, wm.machine_name AS weighing_machine_name
        FROM batch_master b JOIN product_master p ON p.id = b.product_id
+       LEFT JOIN machine_master wm ON wm.id = b.weighing_machine_id
       WHERE b.current_stage = 'BLENDING' AND b.status IN ('OPEN','IN_PROGRESS') ORDER BY b.id DESC`);
   const [machines] = await pool.query(
     "SELECT id, machine_code, machine_name FROM machine_master WHERE machine_type = 'BLENDING' AND status IN ('ACTIVE','IDLE') ORDER BY machine_name");
@@ -56,7 +58,7 @@ function cleanInput(body, userId) {
   const d = {
     batch_id: v.toId(body.batch_id, 'batch'),
     recipe_id: body.recipe_id ? v.toId(body.recipe_id, 'recipe') : null,
-    machine_id: v.toId(body.machine_id, 'machine'),
+    machine_id: body.machine_id ? v.toId(body.machine_id, 'machine') : null,
     entry_date: h.reqDate(body.entry_date, 'Date'),
     start_clock: h.reqTime(body.start_time, 'Start time'),
     mixing_duration_min: body.mixing_duration_min === '' || body.mixing_duration_min == null ? null : h.wholeNum(body.mixing_duration_min, 'Mixing duration', { max: 1440 }),
@@ -75,7 +77,7 @@ async function create(body, userId, ip) {
   const d = cleanInput(body, userId);
   return withTransaction(async (conn) => {
     const batch = await h.lockBatch(conn, d.batch_id, 'BLENDING');
-    await h.checkMachine(conn, d.machine_id, 'BLENDING');
+    d.machine_id = await h.stageMachine(conn, batch.id, d.machine_id, 'BLENDING');
     await h.checkUsers(conn, [userId, d.done_by, d.checked_by]);
 
     const recipeId = d.recipe_id || batch.recipe_id;

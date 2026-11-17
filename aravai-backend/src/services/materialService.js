@@ -205,4 +205,21 @@ async function setStatus(idRaw, body, userId, ip) {
   });
 }
 
-module.exports = { listCategories, createCategory, list, getById, create, update, setStatus };
+async function remove(idRaw, userId, ip) {
+  const id = v.toId(idRaw, 'material id');
+  const [rows] = await pool.query('SELECT id, material_code, material_name FROM materials WHERE id = ?', [id]);
+  if (!rows.length) throw new AppError('Material not found', 404);
+  try {
+    await pool.query('DELETE FROM materials WHERE id = ?', [id]);
+  } catch (e) {
+    // MySQL 1451 / 1217 = row is referenced by stock, batches, receipts etc.
+    if (e && (e.errno === 1451 || e.errno === 1217 || e.code === 'ER_ROW_IS_REFERENCED_2' || e.code === 'ER_ROW_IS_REFERENCED')) {
+      throw new AppError(`${rows[0].material_name} is already used in stock / batch records and cannot be deleted`, 409);
+    }
+    throw e;
+  }
+  await audit({ userId, action: 'DELETE', table: 'materials', recordId: id, oldValues: rows[0], ip });
+  return { id };
+}
+
+module.exports = { listCategories, createCategory, list, getById, create, update, setStatus, remove };

@@ -4,27 +4,32 @@ import { Text, Portal } from 'react-native-paper';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import useLayout from '../hooks/useLayout';
-import { COLORS } from '../theme';
+import { COLORS, SHADOW } from '../theme';
 
-// Shared popup: dark backdrop, coloured header with close button, scrollable body, optional footer.
-export default function ModalShell({ visible, onDismiss, title, subtitle, icon = 'package-variant', color = COLORS.primaryDark,
+// Shared popup. Desktop = centred dialog, phone = bottom sheet with grab handle.
+// `color` tints the header icon tile (same prop as before, so existing forms keep working).
+export default function ModalShell({ visible, onDismiss, title, subtitle, icon = 'package-variant', color = COLORS.primary,
   maxWidth = 600, busy, footer, noPad, children }) {
   const { isPhone } = useLayout();
   const insets = useSafeAreaInsets();
   if (!visible) return null;
+  const tint = color === COLORS.primaryDark ? COLORS.primary : color;
   return (
     <Portal>
       <KeyboardAvoidingView style={[s.overlay, isPhone && s.overlayPhone]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <Pressable style={s.backdrop} onPress={busy ? undefined : onDismiss} />
-        <View style={[s.card, { maxWidth }, isPhone && s.cardPhone]}>
-          {isPhone && <View style={[s.grab, { backgroundColor: color }]}><View style={s.grabBar} /></View>}
-          <View style={[s.head, { backgroundColor: color }]}>
-            <View style={s.headIcon}><MCI name={icon} size={22} color="#fff" /></View>
-            <View style={{ flex: 1 }}>
+        <View style={[s.card, SHADOW.lg, { maxWidth }, isPhone && s.cardPhone]}>
+          {isPhone && <View style={s.grab}><View style={s.grabBar} /></View>}
+          <View style={s.head}>
+            <View style={[s.headIcon, { backgroundColor: `${tint}18` }]}><MCI name={icon} size={22} color={tint} /></View>
+            <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={s.headTitle} numberOfLines={1}>{title}</Text>
               {!!subtitle && <Text style={s.headSub} numberOfLines={1}>{subtitle}</Text>}
             </View>
-            <Pressable onPress={onDismiss} disabled={busy} style={s.close}><MCI name="close" size={22} color="#fff" /></Pressable>
+            <Pressable onPress={onDismiss} disabled={busy} accessibilityLabel="Close" hitSlop={8}
+              style={({ hovered }) => [s.close, hovered && { backgroundColor: COLORS.primarySoft }]}>
+              <MCI name="close" size={20} color={COLORS.textSoft} />
+            </Pressable>
           </View>
           <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={noPad ? null : s.body} keyboardShouldPersistTaps="handled">
             {children}
@@ -39,17 +44,16 @@ export default function ModalShell({ visible, onDismiss, title, subtitle, icon =
 const s = StyleSheet.create({
   overlay: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', padding: 16 },
   overlayPhone: { justifyContent: 'flex-end', padding: 0 },
-  cardPhone: { maxWidth: '100%', maxHeight: '94%', borderBottomLeftRadius: 0, borderBottomRightRadius: 0, borderTopLeftRadius: 26, borderTopRightRadius: 26 },
-  grab: { alignItems: 'center', paddingTop: 8 },
-  grabBar: { width: 40, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.45)' },
-  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(30,10,8,0.55)' },
-  card: { width: '100%', maxHeight: '92%', backgroundColor: '#fff', borderRadius: 22, overflow: 'hidden',
-    elevation: 12, shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 24, shadowOffset: { width: 0, height: 10 } },
-  head: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 14 },
-  headIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
-  headTitle: { color: '#fff', fontSize: 18, fontWeight: '900' },
-  headSub: { color: '#FFD9A0', fontSize: 12, fontWeight: '600', marginTop: 1 },
-  close: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' },
-  body: { padding: 18, paddingBottom: 8 },
-  foot: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', padding: 14, borderTopWidth: 1, borderTopColor: COLORS.border, backgroundColor: '#FBF7F0' },
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(28,12,8,0.5)' },
+  card: { width: '100%', maxHeight: '92%', backgroundColor: '#fff', borderRadius: 24, overflow: 'hidden' },
+  cardPhone: { maxWidth: '100%', maxHeight: '94%', borderBottomLeftRadius: 0, borderBottomRightRadius: 0, borderTopLeftRadius: 28, borderTopRightRadius: 28 },
+  grab: { alignItems: 'center', paddingTop: 10 },
+  grabBar: { width: 42, height: 4, borderRadius: 2, backgroundColor: '#DDD2C8' },
+  head: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: COLORS.line },
+  headIcon: { width: 42, height: 42, borderRadius: 13, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  headTitle: { color: COLORS.text, fontSize: 18, fontWeight: '900', letterSpacing: -0.2 },
+  headSub: { color: COLORS.grey, fontSize: 12.5, fontWeight: '600', marginTop: 1 },
+  close: { width: 38, height: 38, borderRadius: 19, backgroundColor: COLORS.greyBg, alignItems: 'center', justifyContent: 'center', marginLeft: 8 },
+  body: { padding: 20, paddingBottom: 10 },
+  foot: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', padding: 14, paddingHorizontal: 20, borderTopWidth: 1, borderTopColor: COLORS.line, backgroundColor: '#FCFAF7' },
 });

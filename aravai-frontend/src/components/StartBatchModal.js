@@ -11,10 +11,18 @@ import useOptions from '../hooks/useOptions';
 import useLayout from '../hooks/useLayout';
 import { useAuth } from '../AuthContext';
 import WeightImageVerify from './WeightImageVerify';
-import { ErrorBox, ModalFooter } from './FormBits';
+import { ErrorBox, InfoBox, ModalFooter } from './FormBits';
 import { COLORS, fmt } from '../theme';
+import { REQUIRE_WEIGHT_PHOTO } from '../config';
 
 const r3 = (n) => Math.round(n * 1000) / 1000;
+const lineQty = (b, w) => (Number(b) || 0) * (Number(w) || 0);
+// weighed qty of a material = first line + the extra bag-size lines
+const sumQty = (cur) => lineQty(cur.bags, cur.wt) + (cur.extra || []).reduce((a, l) => a + lineQty(l.bags, l.wt), 0);
+const recalc = (cur) => {
+  if (!cur.touched || (cur.extra || []).length) { const q = sumQty(cur); cur.qty = q > 0 ? String(r3(q)) : ''; }
+  return cur;
+};
 const today = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -25,7 +33,7 @@ const today = () => {
 // Lives outside the modal component so the inputs keep focus while typing.
 const COL = { code: 78, bags: 78, wt: 92, qty: 104, filter: 64, photo: 64 };
 
-function Cell({ value, onChange, placeholder, digits, error, width }) {
+function Cell({ value, onChange, placeholder, digits, error, width, readOnly }) {
   const clean = (t) => {
     if (digits) return t.replace(/[^0-9]/g, '');
     let x = t.replace(/[^0-9.]/g, '');
@@ -34,8 +42,8 @@ function Cell({ value, onChange, placeholder, digits, error, width }) {
   };
   return (
     <TextInput value={value || ''} onChangeText={(t) => onChange(clean(t))} placeholder={placeholder} placeholderTextColor="#B8A99C"
-      keyboardType={digits ? 'number-pad' : 'decimal-pad'} textAlign="center"
-      style={[t.cell, { width }, !!error && { borderColor: COLORS.danger, backgroundColor: COLORS.dangerBg }]} />
+      keyboardType={digits ? 'number-pad' : 'decimal-pad'} textAlign="center" editable={!readOnly}
+      style={[t.cell, { width }, readOnly && { backgroundColor: COLORS.greyBg }, !!error && { borderColor: COLORS.danger, backgroundColor: COLORS.dangerBg }]} />
   );
 }
 
@@ -69,8 +77,9 @@ function SheetHeader({ wide, allFilter, onToggleAll }) {
 // Weighing machine photo button of one material row: upload icon (not checked) / green tick (MATCH or verified) / red or amber alert
 function PhotoBtn({ photo, onPress }) {
   const st = photo && photo.status;
-  const name = photo && photo.passed ? 'check-circle' : st ? 'alert-circle' : 'image-plus';
-  const color = photo && photo.passed ? COLORS.ok : st === 'MISMATCH' ? COLORS.danger : st === 'UNREADABLE' ? COLORS.warn : COLORS.primary;
+  const stale = !!(photo && photo.stale);
+  const name = photo && photo.passed ? 'check-circle' : (st || stale) ? 'alert-circle' : 'image-plus';
+  const color = photo && photo.passed ? COLORS.ok : st === 'MISMATCH' ? COLORS.danger : (st === 'UNREADABLE' || stale) ? COLORS.warn : COLORS.primary;
   return (
     <Pressable onPress={onPress} hitSlop={8} accessibilityRole="button" accessibilityLabel="Weighing machine photo">
       <MCI name={name} size={26} color={color} />
@@ -78,16 +87,18 @@ function PhotoBtn({ photo, onPress }) {
   );
 }
 
-function SheetRow({ item, row, errors, wide, onChange, filter, onToggleFilter, photo, panel, onTogglePhoto, onPhoto, canManual }) {
+function SheetRow({ item, row, errors, wide, onChange, onLine, onAddLine, onRemoveLine, filter, onToggleFilter, photo, panel, onTogglePhoto, onPhoto, canManual }) {
+  const extra = row.extra || [];
   const inputs = (
     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
       <Cell width={COL.bags} digits placeholder="Bags" value={row.bags} onChange={(x) => onChange('bags', x)} error={errors.bags} />
       <Text style={t.x}>×</Text>
       <Cell width={COL.wt} placeholder="kg/bag" value={row.wt} onChange={(x) => onChange('wt', x)} error={errors.wt} />
       <Text style={t.x}>=</Text>
-      <Cell width={COL.qty} placeholder="Qty kg" value={row.qty} onChange={(x) => onChange('qty', x)} error={errors.qty} />
+      <Cell width={COL.qty} placeholder="Qty kg" value={extra.length > 0 ? (lineQty(row.bags, row.wt) > 0 ? String(r3(lineQty(row.bags, row.wt))) : '') : row.qty} onChange={(x) => onChange('qty', x)} error={errors.qty} readOnly={extra.length > 0} />
     </View>
   );
+  const tail = wide ? COL.filter + COL.photo : 32;
   const box = <FilterBox on={filter} onPress={onToggleFilter} />;
   const camBtn = <PhotoBtn photo={photo} onPress={onTogglePhoto} />;
   return (
@@ -106,11 +117,29 @@ function SheetRow({ item, row, errors, wide, onChange, filter, onToggleFilter, p
         {wide && <View style={{ width: COL.filter, alignItems: 'center' }}>{box}</View>}
         {wide && <View style={{ width: COL.photo, alignItems: 'center' }}>{camBtn}</View>}
       </View>
+      {/* more bag sizes of the same material: 10 kg x 3 = 30, then 5 kg x 4 = 20 -> weighed qty 50 */}
+      {extra.map((l, n) => (
+        <View key={n} style={t.extraRow}>
+          <Cell width={COL.bags} digits placeholder="Bags" value={l.bags} onChange={(x) => onLine(n, 'bags', x)} error={errors.lines && !(Number(l.bags) >= 1)} />
+          <Text style={t.x}>×</Text>
+          <Cell width={COL.wt} placeholder="kg/bag" value={l.wt} onChange={(x) => onLine(n, 'wt', x)} error={errors.lines && !(Number(l.wt) > 0)} />
+          <Text style={t.x}>=</Text>
+          <View style={[t.lineQty, { width: COL.qty }]}><Text style={t.lineQtyText}>{fmt(lineQty(l.bags, l.wt))}</Text></View>
+          <Pressable onPress={() => onRemoveLine(n)} hitSlop={8} accessibilityLabel="Remove bag size" style={{ width: tail, alignItems: 'center' }}>
+            <MCI name="close-circle" size={20} color={COLORS.danger} />
+          </Pressable>
+        </View>
+      ))}
+      <Pressable onPress={onAddLine} hitSlop={6} style={[t.addLine, wide ? { alignSelf: 'flex-end', marginRight: tail } : { alignSelf: 'flex-start' }]}>
+        <MCI name="plus" size={14} color={COLORS.green} />
+        <Text style={t.addLineText}>Add bag size</Text>
+      </Pressable>
+      {extra.length > 0 && <Text style={t.matTotal}>{`Total ${item.material_name}: ${fmt(Number(row.qty) || 0)} kg`}</Text>}
       {!!(errors.bags || errors.wt || errors.qty || errors.photo) && <Text style={t.err}>{errors.qty || errors.bags || errors.wt || errors.photo}</Text>}
       {/* kept mounted once opened, so a verified photo is not lost when the panel is closed */}
       {panel !== undefined && (
         <View style={panel === 'open' ? { marginTop: 8 } : { display: 'none' }}>
-          <WeightImageVerify batchId={null} materialId={item.material_id} enteredWeight={row.qty} required uploadOnly canManual={canManual} error={errors.photo} onChange={onPhoto} />
+          <WeightImageVerify batchId={null} materialId={item.material_id} enteredWeight={row.qty} required={REQUIRE_WEIGHT_PHOTO} canManual={canManual} error={errors.photo} onChange={onPhoto} />
         </View>
       )}
     </View>
@@ -131,6 +160,12 @@ const t = StyleSheet.create({
   cell: { height: 38, borderWidth: 1, borderColor: '#E3D3C8', borderRadius: 8, backgroundColor: '#fff', fontSize: 14, fontWeight: '700', color: COLORS.text, paddingHorizontal: 6, outlineStyle: 'none' },
   x: { width: 16, textAlign: 'center', color: COLORS.grey, fontWeight: '800' },
   err: { color: COLORS.danger, fontSize: 11.5, fontWeight: '700', marginTop: 3, marginLeft: 4 },
+  extraRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 6 },
+  lineQty: { height: 38, borderWidth: 1, borderColor: '#E3D3C8', borderRadius: 8, backgroundColor: COLORS.greyBg, alignItems: 'center', justifyContent: 'center' },
+  lineQtyText: { fontSize: 14, fontWeight: '700', color: COLORS.text },
+  matTotal: { alignSelf: 'flex-end', marginTop: 4, marginRight: 4, fontSize: 12.5, fontWeight: '900', color: COLORS.ok },
+  addLine: { flexDirection: 'row', alignItems: 'center', marginTop: 6, paddingVertical: 2 },
+  addLineText: { fontSize: 12, fontWeight: '800', color: COLORS.green, marginLeft: 3 },
   fcheck: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border, borderRadius: 12, padding: 12, marginTop: 4, backgroundColor: '#fff' },
   fcheckOn: { borderColor: COLORS.primary, backgroundColor: `${COLORS.primary}0D` },
 });
@@ -138,15 +173,12 @@ const t = StyleSheet.create({
 // New batch (follows the Aravai batching sheet): date, product -> its recipe materials -> bags / weight / weighed qty
 // for each -> done by + checked by -> save.  Saving closes BATCHING; the batch continues at ROASTING.
 export default function StartBatchModal({ visible, onDismiss, onSaved }) {
-  const { user, can } = useAuth();
+  const { can } = useAuth();
   const { isWide } = useLayout();
   const products = useOptions('/products', { active: 'true' }, (p) => ({ value: p.id, label: p.product_name }), visible);
   const machines = useOptions('/batches/weighing-machines', {}, (m) => ({ value: m.id, label: `${m.machine_code} - ${m.machine_name}${m.locked_batch_no ? `  (in use: ${m.locked_batch_no})` : ''}`, lockedBatch: m.locked_batch_no || '' }), visible);
-  const staff = useOptions('/batches/staff', {}, (u) => ({ value: u.id, label: `${u.full_name} (${u.role_name})` }), visible);
   const [date, setDate] = useState(today());
   const [productId, setProductId] = useState(null);
-  const [doneBy, setDoneBy] = useState(null);
-  const [checkedBy, setCheckedBy] = useState(null);
   const [machineId, setMachineId] = useState(null);
   const [filterIds, setFilterIds] = useState({}); // material_id -> true when that material must be filtered
   const [recipe, setRecipe] = useState(null); // { id, ingredients: [...] }
@@ -161,7 +193,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   useEffect(() => {
     if (visible) {
       setDate(today()); setProductId(null); setRecipe(null); setRows({}); setPhotos({}); setPanels({}); setErrors({}); setErr(''); setSaving(false);
-      setDoneBy(user?.id || null); setCheckedBy(null); setMachineId(null); setFilterIds({});
+      setMachineId(null); setFilterIds({});
     }
   }, [visible]); // eslint-disable-line
 
@@ -189,17 +221,31 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   const change = (id) => (k, t) => setRows((p) => {
     const cur = { ...(p[id] || {}), [k]: t };
     if (k === 'qty') cur.touched = true;
-    else if (!cur.touched) {
-      const q = (Number(cur.bags) || 0) * (Number(cur.wt) || 0);
-      cur.qty = q > 0 ? String(r3(q)) : '';
-    }
+    else recalc(cur);
     return { ...p, [id]: cur };
+  });
+  // extra bag sizes (3 x 10 kg + 4 x 5 kg = 50 kg)
+  const addLine = (id) => () => setRows((p) => {
+    const cur = { ...(p[id] || {}), extra: [...((p[id] || {}).extra || []), { bags: '', wt: '' }] };
+    return { ...p, [id]: recalc(cur) };
+  });
+  const changeLine = (id) => (n, k, t) => setRows((p) => {
+    const cur = { ...(p[id] || {}), extra: ((p[id] || {}).extra || []).map((l, j) => (j === n ? { ...l, [k]: t } : l)) };
+    return { ...p, [id]: recalc(cur) };
+  });
+  const removeLine = (id) => (n) => setRows((p) => {
+    const cur = { ...(p[id] || {}), extra: ((p[id] || {}).extra || []).filter((_, j) => j !== n) };
+    if (!cur.extra.length) cur.touched = false;
+    return { ...p, [id]: recalc(cur) };
   });
 
   const total = useMemo(() => r3(Object.values(rows).reduce((a, x) => a + (Number(x.qty) || 0), 0)), [rows]);
 
   const togglePhoto = (id) => () => setPanels((p) => ({ ...p, [id]: p[id] === 'open' ? 'closed' : 'open' }));
-  const onPhoto = (id) => (st) => setPhotos((p) => ((p[id] && p[id].imageId === st.imageId && p[id].passed === st.passed && p[id].status === st.status) ? p : { ...p, [id]: st }));
+  const onPhoto = (id) => (st) => {
+    setPhotos((p) => ((p[id] && p[id].imageId === st.imageId && p[id].passed === st.passed && p[id].status === st.status && !!p[id].stale === !!st.stale) ? p : { ...p, [id]: st }));
+    if (st.stale) setPanels((p) => (p[id] === 'open' ? p : { ...p, [id]: 'open' })); // weighed qty changed (e.g. bag size added): ask for the photo check again
+  };
 
   const toggleFilter = (id) => () => setFilterIds((p) => ({ ...p, [id]: !p[id] }));
   const allFilter = !!recipe && recipe.ingredients.length > 0 && recipe.ingredients.every((i) => filterIds[i.material_id]);
@@ -210,16 +256,17 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   // only materials that are actually weighed count (blank qty = not used in this batch)
   const filterNames = recipe ? recipe.ingredients.filter((i) => filterIds[i.material_id] && Number(rows[i.material_id]?.qty) > 0).map((i) => i.material_name) : [];
   const needsFiltering = filterNames.length > 0;
+  // Save Batch unlocks only when every weighed material has a photo that MATCHES its weighed qty (or was verified manually)
+  const weighedItems = recipe ? recipe.ingredients.filter((i) => Number(rows[i.material_id]?.qty) > 0) : [];
+  const photoPending = weighedItems.filter((i) => !(photos[i.material_id] && photos[i.material_id].passed));
+  const canSave = !!recipe && weighedItems.length > 0 && (!REQUIRE_WEIGHT_PHOTO || photoPending.length === 0);
 
   const save = async () => {
     const e = {};
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) e.date = 'Use YYYY-MM-DD';
     if (!productId) e.product = 'Select the product';
-    if (!doneBy) e.doneBy = 'Select who weighed';
     if (!machineId) e.machine = 'Select the weighing machine';
     else if (machines.find((o) => o.value === machineId)?.lockedBatch) e.machine = `This machine is locked to batch ${machines.find((o) => o.value === machineId).lockedBatch}. Choose another machine.`;
-    if (!checkedBy) e.checkedBy = 'Select who checked';
-    else if (checkedBy === doneBy) e.checkedBy = 'Must be a different person';
     if (recipe) {
       recipe.ingredients.forEach((i) => {
         const x = rows[i.material_id] || {};
@@ -229,10 +276,14 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
         if (!x.qty || !(Number(x.qty) > 0)) e[`${k}qty`] = 'Enter weighed qty';
         else if (Number(x.qty) > Number(i.current_stock)) e[`${k}qty`] = `Only ${fmt(i.current_stock)} kg in stock`;
         if (x.bags && Number(x.bags) < 1) e[`${k}bags`] = 'At least 1 bag';
+        if ((x.extra || []).length) {
+          const all = [{ bags: x.bags, wt: x.wt }, ...x.extra];
+          if (all.some((l) => !(Number(l.bags) >= 1) || !(Number(l.wt) > 0))) { e[`${k}qty`] = 'Fill bags and kg/bag in every bag size line'; e[`${k}lines`] = true; }
+        }
       });
       if (!(total > 0)) e.total = 'Enter the quantity for at least one material';
       // every weighed material needs its weighing machine photo to MATCH (or be verified manually) - checked again by the server
-      if (machineId) {
+      if (REQUIRE_WEIGHT_PHOTO && machineId) {
         const missing = recipe.ingredients.filter((i) => Number(rows[i.material_id]?.qty) > 0 && !(photos[i.material_id] && photos[i.material_id].passed));
         if (missing.length) {
           e.photo = `Weighing machine photo is not verified for: ${missing.map((i) => i.material_name).join(', ')}`;
@@ -245,10 +296,12 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
     if (Object.keys(e).length || !recipe) return;
     setSaving(true); setErr('');
     try {
-      const r = await api.post('/batches', { product_id: productId, recipe_id: recipe.id, production_date: date, done_by: doneBy, checked_by: checkedBy, weighing_machine_id: machineId, needs_filtering: needsFiltering,
+      const r = await api.post('/batches', { product_id: productId, recipe_id: recipe.id, production_date: date, weighing_machine_id: machineId, needs_filtering: needsFiltering,
         ingredients: recipe.ingredients.map((i) => {
           const x = rows[i.material_id] || {};
-          return { material_id: i.material_id, no_of_bags: x.bags || undefined, weight_per_bag: x.wt || undefined, weighed_qty: x.qty || 0, needs_filtering: !!filterIds[i.material_id],
+          const multi = (x.extra || []).length > 0;
+          return { material_id: i.material_id, no_of_bags: multi ? undefined : (x.bags || undefined), weight_per_bag: multi ? undefined : (x.wt || undefined), weighed_qty: x.qty || 0,
+            bag_lines: multi ? [{ bags: x.bags, weight: x.wt }, ...x.extra].map((l) => ({ bags: Number(l.bags), weight: Number(l.wt) })) : undefined, needs_filtering: !!filterIds[i.material_id],
             weight_image_id: photos[i.material_id] && photos[i.material_id].passed ? photos[i.material_id].imageId : undefined };
         }) });
       setSaving(false);
@@ -259,7 +312,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   return (
     <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon="scale-balance" maxWidth={760} title="New Batch"
       subtitle="Aravai Batching Process Plan"
-      footer={<ModalFooter onCancel={onDismiss} onSave={save} saving={saving} disabled={!recipe} label="Save Batch" />}>
+      footer={<ModalFooter onCancel={onDismiss} onSave={save} saving={saving} disabled={!canSave} label="Save Batch" />}>
       <View>
         <FormRow>
           <FormField label="Date (YYYY-MM-DD) *" value={date} onChangeText={setDate} error={errors.date} maxLength={10} />
@@ -274,18 +327,17 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
             {recipe.ingredients.map((i) => {
               const k = `m${i.material_id}`;
               return <SheetRow key={i.material_id} item={i} row={rows[i.material_id] || {}} wide={isWide} onChange={change(i.material_id)}
+                onLine={changeLine(i.material_id)} onAddLine={addLine(i.material_id)} onRemoveLine={removeLine(i.material_id)}
                 filter={!!filterIds[i.material_id]} onToggleFilter={toggleFilter(i.material_id)}
-                errors={{ bags: errors[`${k}bags`], wt: errors[`${k}wt`], qty: errors[`${k}qty`], photo: errors[`${k}photo`] }}
+                errors={{ bags: errors[`${k}bags`], wt: errors[`${k}wt`], qty: errors[`${k}qty`], lines: errors[`${k}lines`], photo: errors[`${k}photo`] }}
                 photo={photos[i.material_id]} panel={panels[i.material_id]} onTogglePhoto={togglePhoto(i.material_id)} onPhoto={onPhoto(i.material_id)} canManual={can('batching', 'approve')} />;
             })}
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: total > 0 ? COLORS.okBg : COLORS.warnBg, borderRadius: 10, padding: 12, marginTop: 10, marginBottom: 14 }}>
               <Text style={{ fontWeight: '800', color: total > 0 ? COLORS.ok : COLORS.warn }}>Total weighed</Text>
               <Text style={{ fontWeight: '900', fontSize: 16, color: total > 0 ? COLORS.ok : COLORS.warn }}>{fmt(total)} kg</Text>
             </View>
-            <FormRow>
-              <SelectField label="Done by *" value={doneBy} options={staff} onChange={setDoneBy} error={errors.doneBy} />
-              <SelectField label="Checked by *" value={checkedBy} options={staff} onChange={setCheckedBy} error={errors.checkedBy} />
-            </FormRow>
+
+            {REQUIRE_WEIGHT_PHOTO && photoPending.length > 0 && <InfoBox text={`Save Batch unlocks when the weighing machine photo matches the weighed qty. Pending: ${photoPending.map((i) => i.material_name).join(', ')}`} />}
 
             {/* Filtering is not done here. Ticked materials send the batch to the Filtering menu before Roasting. */}
             <View style={[t.fcheck, needsFiltering && t.fcheckOn]}>

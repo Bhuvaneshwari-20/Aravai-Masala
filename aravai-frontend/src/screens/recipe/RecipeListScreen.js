@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { View, FlatList, RefreshControl, StyleSheet } from 'react-native';
+import { View, RefreshControl, StyleSheet } from 'react-native';
 import { Text, ActivityIndicator } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
 import api, { errMsg } from '../../api';
@@ -10,18 +10,16 @@ import ModalShell from '../../components/ModalShell';
 import PageToolbar from '../../components/PageToolbar';
 import usePagedList from '../../hooks/usePagedList';
 import useDebounce from '../../hooks/useDebounce';
-import useLayout from '../../hooks/useLayout';
 import Container from '../../components/Container';
-import PressableScale from '../../components/PressableScale';
+import InfoCard, { CardList, ChevronDot, useCardCols } from '../../components/InfoCard';
 import LoadingView from '../../components/LoadingView';
 import EmptyView from '../../components/EmptyView';
-import { COLORS, padGrid } from '../../theme';
+import { COLORS } from '../../theme';
 
 export default function RecipeListScreen() {
   const { can } = useAuth();
   const { toast } = useUi();
-  const { listCols: cols } = useLayout();
-  const listCols = Math.min(cols, 2); // bigger cards: at most 2 per row
+  const grid = useCardCols({ min: 260, phoneMin: 280 });
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [view, setView] = useState(null); // recipe detail
@@ -44,22 +42,14 @@ export default function RecipeListScreen() {
         placeholder="Search recipe / product" addLabel="New Recipe" onAdd={can('recipe', 'create') ? () => setShowForm(true) : null} />
       <Container fill>
         {list.loading ? <LoadingView /> : list.error && !list.items.length ? <EmptyView error={list.error} onRetry={list.reload} /> : (
-          <FlatList key={listCols} numColumns={listCols} data={padGrid(list.items, listCols)} keyExtractor={(i) => String(i.id)}
-            contentContainerStyle={{ paddingBottom: 40 }}
+          <CardList {...grid} data={list.items} keyExtractor={(i) => String(i.id)}
             refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={list.refresh} colors={[COLORS.primary]} />}
             onEndReached={list.loadMore} onEndReachedThreshold={0.4}
             ListEmptyComponent={<EmptyView icon="📖" message="No recipes yet" />}
             ListFooterComponent={list.loadingMore ? <ActivityIndicator style={{ margin: 16 }} color={COLORS.primary} /> : null}
-            renderItem={({ item }) => item.pad ? <View style={{ flex: 1, marginHorizontal: 12 }} /> : (
-              <PressableScale to={0.98} style={[s.card, !item.is_active && { opacity: 0.6 }]} onPress={() => open(item.id)}>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.name}>{item.product_name}</Text>
-                  <Text style={s.code}>{item.ingredient_count} material{item.ingredient_count === 1 ? '' : 's'}</Text>
-                </View>
-                <View style={[s.badge, { backgroundColor: item.is_active ? COLORS.okBg : COLORS.greyBg }]}>
-                  <Text style={[s.badgeText, { color: item.is_active ? COLORS.ok : COLORS.grey }]}>{item.is_active ? 'ACTIVE' : 'OLD'}</Text>
-                </View>
-              </PressableScale>
+            renderItem={(item, i) => (
+              <InfoCard index={i} icon="book-open-variant" color="#059669" value={item.product_name} size="md" caption="Recipe"
+                dim={!item.is_active} right={<ChevronDot />} onPress={() => open(item.id)} />
             )} />
         )}
       </Container>
@@ -86,11 +76,7 @@ export default function RecipeListScreen() {
 
 const s = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: COLORS.bg },
-  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, marginHorizontal: 12, marginVertical: 8, padding: 28, minHeight: 150, flex: 1, borderWidth: 1, borderColor: COLORS.border },
-  name: { fontSize: 24, fontWeight: '800', color: COLORS.text },
   code: { color: COLORS.grey, fontSize: 16, fontWeight: '600', marginTop: 8 },
-  badge: { borderRadius: 14, paddingHorizontal: 14, paddingVertical: 6, marginLeft: 12 },
-  badgeText: { fontSize: 13, fontWeight: '900', letterSpacing: 0.4 },
   ing: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   ingName: { fontSize: 15, fontWeight: '700', color: COLORS.text },
   ingQty: { fontSize: 15, fontWeight: '900', color: COLORS.text },

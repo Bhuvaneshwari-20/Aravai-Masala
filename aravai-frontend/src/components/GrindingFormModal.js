@@ -7,6 +7,8 @@ import ModalShell from './ModalShell';
 import FormField from './FormField';
 import FormRow from './FormRow';
 import SelectField from './SelectField';
+import TimeField from './TimeField';
+import WeighingMachineInfo from './WeighingMachineInfo';
 import { COLORS } from '../theme';
 
 const today = () => {
@@ -16,7 +18,7 @@ const today = () => {
 };
 const EMPTY = () => ({
   date: today(), product: '', batch_id: '', machine_id: '', batch_code: '', mesh_size: '', mesh_id: '',
-  ip_wt: '', op_wt: '', sieved: 'NO', ip_time: '', op_time: '', sign: '', finish_grinding: true,
+  ip_wt: '', op_wt: '', sieved: 'NO', start_time: '', end_time: '', finish_grinding: true,
 });
 const YESNO = [{ value: 'YES', label: 'Yes' }, { value: 'NO', label: 'No' }];
 const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
@@ -76,18 +78,26 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
   const loss = lossKgNum !== null ? ((lossKgNum / ip) * 100).toFixed(2) : '';
   const lossKg = lossKgNum !== null ? lossKgNum.toFixed(3) : '';
   const lossG = lossKgNum !== null ? (lossKgNum * 1000).toFixed(0) : '';
+  // The machine is the weighing machine chosen in Batching (older batches without one still pick a grinding machine)
+  const availKg = (() => { const b = batches.find((x) => x.id === f.batch_id); return b ? Number(b.available_kg) : null; })();
+  const leftKg = availKg !== null && ip > 0 ? Math.round((availKg - ip) * 1000) / 1000 : null; // roasted weight not fed to grinding
+  const gBatchMachine = (() => { const b = batches.find((x) => x.id === f.batch_id); return b && b.weighing_machine_id ? b : null; })();
 
   const validate = () => {
     const e = {};
     if (!/^\d{2}\/\d{2}\/\d{4}$/.test(f.date)) e.date = 'Use DD/MM/YYYY';
     if (!f.batch_id) e.batch_code = 'Select a batch';
-    if (!f.machine_id) e.machine_id = 'Select a machine';
+    if (!gBatchMachine && !f.machine_id) e.machine_id = 'Select a machine';
     if (!f.mesh_id) e.mesh_size = 'Select the mesh size';
     if (!f.ip_wt || ip <= 0) e.ip_wt = 'Enter input weight';
+    else if (availKg !== null && ip > availKg + 0.001) e.ip_wt = `Cannot be more than ${availKg} kg (weight from Roasting)`;
     if (!f.op_wt) e.op_wt = 'Enter output weight';
-    if (!TIME_RE.test(f.ip_time)) e.ip_time = 'Use HH:MM (24h)';
-    if (!TIME_RE.test(f.op_time)) e.op_time = 'Use HH:MM (24h)';
-    if (!f.sign.trim()) e.sign = 'Operator sign is required';
+    else if (op <= 0) e.op_wt = 'O/P must be more than 0';
+    else if (ip > 0 && op > ip) e.op_wt = 'O/P cannot be more than I/P';
+    if (f.finish_grinding && leftKg !== null && leftKg > 0.001) e.ip_wt = `${leftKg} kg is not ground yet. Enter I/P ${availKg} kg, or untick "Grinding finished"`;
+    if (!TIME_RE.test(f.start_time)) e.start_time = 'Select the start time';
+    if (!TIME_RE.test(f.end_time)) e.end_time = 'Select the end time';
+    else if (TIME_RE.test(f.start_time) && f.end_time <= f.start_time) e.end_time = 'End time must be after start time';
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -96,7 +106,7 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
     if (!validate()) return;
     setSaving(true); setErr('');
     try {
-      await api.post('/grinding', f);
+      await api.post('/grinding', { ...f, machine_id: gBatchMachine ? gBatchMachine.weighing_machine_id : f.machine_id, ip_time: f.start_time, op_time: f.end_time });
       setSaving(false);
       onSaved && onSaved();
     } catch (e) { setErr(errMsg(e)); setSaving(false); }
@@ -115,7 +125,7 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
         <FormRow>
           <FormField label="Date *" value={f.date} onChangeText={set('date')} error={errors.date} />
           <SelectField label="Batch code *" value={f.batch_id}
-            options={batches.map((b) => ({ value: b.id, label: `${b.batch_no} · ${b.available_kg} kg` }))}
+            options={batches.map((b) => ({ value: b.id, label: `${b.batch_no} · ${b.product_name}` }))}
             onChange={pickBatch} error={errors.batch_code} />
         </FormRow>
         <FormRow>
@@ -125,28 +135,32 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
             onChange={pickMesh} error={errors.mesh_size} onCreate={addMesh} createLabel="Add new mesh size (mm)" />
         </FormRow>
         <FormRow>
-          <FormField label="I/P weight (kg) *" numeric value={f.ip_wt} onChangeText={set('ip_wt')} error={errors.ip_wt} />
+          <FormField label="I/P weight (kg) *" numeric value={f.ip_wt} onChangeText={set('ip_wt')} error={errors.ip_wt}
+            hint={availKg !== null ? `From Roasting: ${availKg} kg` : undefined} />
           <FormField label="O/P weight (kg) *" numeric value={f.op_wt} onChangeText={set('op_wt')} error={errors.op_wt} />
         </FormRow>
         <FormRow>
-          <FormField label="I/P time *" value={f.ip_time} onChangeText={set('ip_time')} error={errors.ip_time} hint="HH:MM, e.g. 10:00" maxLength={5} />
-          <FormField label="O/P time *" value={f.op_time} onChangeText={set('op_time')} error={errors.op_time} hint="HH:MM, e.g. 11:30" maxLength={5} />
+          <TimeField label="Start time *" value={f.start_time} onChangeText={set('start_time')} error={errors.start_time} />
+          <TimeField label="End time *" value={f.end_time} onChangeText={set('end_time')} error={errors.end_time} />
         </FormRow>
         <FormRow>
-          <SelectField label="Grinding machine *" value={f.machine_id}
-            options={machines.map((m) => ({ value: m.id, label: `${m.machine_code} - ${m.machine_name}` }))}
-            onChange={set('machine_id')} error={errors.machine_id} />
+          {gBatchMachine ? <WeighingMachineInfo batch={gBatchMachine} label="MACHINE (FROM BATCHING)" /> : !f.batch_id ? (
+            <FormField label="Machine (from batching)" value="Select the batch code first" editable={false} />
+          ) : (
+            <SelectField label="Grinding machine *" value={f.machine_id}
+              options={machines.map((m) => ({ value: m.id, label: `${m.machine_code} - ${m.machine_name}` }))}
+              onChange={set('machine_id')} error={errors.machine_id} />
+          )}
           <SelectField label="Sieved" value={f.sieved} options={YESNO} onChange={set('sieved')} />
         </FormRow>
         <FormRow>
-          <FormField label="Loss %" value={loss} editable={false} hint="Auto: (I/P − O/P) ÷ I/P × 100" />
-          <FormField label="Loss (kg)" value={lossKg} editable={false} hint="Auto: I/P − O/P" />
+          <FormField label="Loss %" value={loss} editable={false} />
+          <FormField label="Loss (kg)" value={lossKg} editable={false} />
         </FormRow>
         <FormRow>
-          <FormField label="Loss (g)" value={lossG} editable={false} hint="Auto: kg × 1000" />
+          <FormField label="Loss (g)" value={lossG} editable={false} />
           <View style={{ flex: 1 }} />
         </FormRow>
-        <FormField label="Operator sign *" value={f.sign} onChangeText={set('sign')} error={errors.sign} />
         {!batches.length && (
           <Text style={{ fontSize: 12, color: COLORS.danger, marginBottom: 8 }}>
             No batch is waiting for Grinding. Finish Roasting first (tick "Roasting finished for this batch").

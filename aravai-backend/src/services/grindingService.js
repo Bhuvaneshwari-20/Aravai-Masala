@@ -33,7 +33,6 @@ function cleanInput(b, userId) {
   const machine_id = Number(b.machine_id);
   const operator_id = Number(userId);
   if (!Number.isInteger(batch_id) || batch_id <= 0) throw new AppError('Batch ID is required');
-  if (!Number.isInteger(machine_id) || machine_id <= 0) throw new AppError('Machine ID is required');
   if (!Number.isInteger(operator_id) || operator_id <= 0) throw new AppError('Operator ID is required');
 
   const status = String(b.status || 'COMPLETED').toUpperCase();
@@ -100,7 +99,7 @@ async function create(body, userId, ip) {
   const res = await withTransaction(async (conn) => {
     // only batches that finished Roasting (stage GRINDING) can be ground
     const batch = await h.lockBatch(conn, d.batch_id, 'GRINDING');
-    await h.checkMachine(conn, d.machine_id, 'GRINDING');
+    d.machine_id = await h.stageMachine(conn, batch.id, d.machine_id, 'GRINDING');
     const [[g]] = await conn.query("SELECT COALESCE(SUM(input_weight), 0) AS used FROM grinding_details WHERE batch_id = ? AND status <> 'REJECTED'", [batch.id]);
     const available = h.r3(Number(batch.current_output_kg) - Number(g.used));
     if (d.input_weight > available + 0.001)
@@ -115,6 +114,11 @@ async function create(body, userId, ip) {
 
     let moved = null;
     if (d.finish_grinding && d.status === 'COMPLETED') {
+      // all the roasted weight must go through grinding before the batch moves on; otherwise it would silently become "loss"
+      const [[u]] = await conn.query("SELECT COALESCE(SUM(input_weight), 0) AS used FROM grinding_details WHERE batch_id = ? AND status <> 'REJECTED'", [batch.id]);
+      const notGround = h.r3(Number(batch.current_output_kg) - Number(u.used));
+      if (notGround > 0.001)
+        throw new AppError(`${notGround} kg of ${batch.batch_no} is still not ground. Grind it too (I/P up to ${h.r3(Number(batch.current_output_kg) - Number(u.used) + d.input_weight)} kg), or untick "Grinding finished for this batch" and add the next run later`);
       // powder handed to Blending = total ground output; anything not output is grinding loss
       const [[o]] = await conn.query("SELECT COALESCE(SUM(output_weight), 0) AS total_out FROM grinding_details WHERE batch_id = ? AND status = 'COMPLETED'", [batch.id]);
       const outKg = h.r3(Number(o.total_out));
@@ -143,10 +147,10 @@ async function list(q) {
   }
   const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const J = `FROM grinding_details g JOIN batch_master b ON b.id = g.batch_id JOIN product_master p ON p.id = b.product_id
-              LEFT JOIN users u ON u.id = g.operator_id`;
+              LEFT JOIN users u ON u.id = g.operator_id LEFT JOIN machine_master m ON m.id = g.machine_id`;
   const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total ${J} ${w}`, args);
   const [rows] = await pool.query(
-    `SELECT g.*, b.batch_no AS batch_code, p.product_name AS product, u.full_name AS sign_name ${J} ${w} ORDER BY g.grind_date DESC, g.id DESC LIMIT ? OFFSET ?`, [...args, limit, offset]);
+    `SELECT g.*, b.batch_no AS batch_code, p.product_name AS product, u.full_name AS sign_name, m.machine_name, m.machine_code, b.current_stage AS batch_stage ${J} ${w} ORDER BY g.grind_date DESC, g.id DESC LIMIT ? OFFSET ?`, [...args, limit, offset]);
   return { items: rows, page, limit, total, total_pages: Math.max(Math.ceil(total / limit), 1) };
 }
 
@@ -154,9 +158,11 @@ async function list(q) {
 async function batchOptions() {
   const [rows] = await pool.query(
     `SELECT b.id, b.batch_no, b.product_id, p.product_name, b.current_output_kg,
+            wm.id AS weighing_machine_id, wm.machine_code AS weighing_machine_code, wm.machine_name AS weighing_machine_name,
             (SELECT COALESCE(SUM(g.input_weight), 0) FROM grinding_details g WHERE g.batch_id = b.id AND g.status <> 'REJECTED') AS ground_kg
        FROM batch_master b
        JOIN product_master p ON p.id = b.product_id
+       LEFT JOIN machine_master wm ON wm.id = b.weighing_machine_id
       WHERE b.status = 'IN_PROGRESS' AND b.current_stage = 'GRINDING'
       ORDER BY b.id DESC`);
   return rows.map((b) => ({ ...b, available_kg: h.r3(Number(b.current_output_kg) - Number(b.ground_kg)) })).filter((b) => b.available_kg > 0);

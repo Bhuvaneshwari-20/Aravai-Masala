@@ -61,6 +61,18 @@ async function checkMachine(conn, machineId, type) {
   return m;
 }
 
+// Machine of a production stage = the weighing machine chosen in Batching (batch_master.weighing_machine_id).
+// Older batches without one still pick a machine of the stage's type. Returns the machine id to store.
+async function stageMachine(db, batchId, bodyMachineId, type) {
+  if (batchId) {
+    const [[b]] = await db.query('SELECT weighing_machine_id FROM batch_master WHERE id = ?', [batchId]);
+    if (b && b.weighing_machine_id) return b.weighing_machine_id;
+  }
+  if (!bodyMachineId) throw new AppError('Select a machine');
+  const m = await checkMachine(db, bodyMachineId, type);
+  return m.id;
+}
+
 async function checkUsers(conn, ids) {
   const uniq = [...new Set(ids.filter(Boolean))];
   const [rows] = await conn.query('SELECT id FROM users WHERE id IN (?) AND is_active = 1', [uniq]);
@@ -90,4 +102,4 @@ async function issueRawMaterial(conn, { materialId, weightKg, date, batch, userI
   return t.insertId;
 }
 
-module.exports = { r2, r3, reqDate, reqTime, wholeNum, dateTimeStr, lockBatch, checkMachine, checkUsers, issueRawMaterial };
+module.exports = { r2, r3, reqDate, reqTime, wholeNum, dateTimeStr, lockBatch, checkMachine, stageMachine, checkUsers, issueRawMaterial };

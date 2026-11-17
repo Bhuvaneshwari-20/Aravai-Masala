@@ -1,6 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { View, ScrollView, StyleSheet } from 'react-native';
-import { Text, IconButton } from 'react-native-paper';
+import { View, StyleSheet } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import api, { errMsg } from '../../api';
 import { useAuth } from '../../AuthContext';
@@ -11,11 +10,16 @@ import PageToolbar from '../../components/PageToolbar';
 import Container from '../../components/Container';
 import LoadingView from '../../components/LoadingView';
 import EmptyView from '../../components/EmptyView';
+import Badge from '../../components/Badge';
+import InfoCard, { CardList, RoundBtn, LockDot, useCardCols } from '../../components/InfoCard';
 import { COLORS } from '../../theme';
+
+const PURPLE = '#7C3AED';
 
 export default function MeshListScreen() {
   const { can } = useAuth();
   const { toast } = useUi();
+  const grid = useCardCols();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -32,7 +36,7 @@ export default function MeshListScreen() {
 
   const shown = useMemo(() => {
     const q = search.trim();
-    return q ? items.filter((m) => m.mesh_size.includes(q)) : items;
+    return q ? items.filter((m) => String(m.mesh_size).includes(q)) : items;
   }, [items, search]);
 
   const remove = async () => {
@@ -47,22 +51,18 @@ export default function MeshListScreen() {
         placeholder="Search mesh size" addLabel="Add Mesh" onAdd={can('mesh', 'create') ? () => setShowForm(true) : null} />
       <Container fill>
         {loading ? <LoadingView /> : error && !items.length ? <EmptyView error={error} onRetry={load} /> : (
-          <ScrollView contentContainerStyle={{ paddingBottom: 40, paddingHorizontal: 6 }}>
-            {!shown.length ? <EmptyView icon="🔳" message="No mesh sizes yet. Add 20, 40, 60 ..." /> : (
-              <View style={s.grid}>
-                {shown.map((m) => (
-                  <View key={m.id} style={s.card}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.big}>{m.mesh_size}</Text>
-                      <Text style={s.small}>{m.used_count ? `Used in ${m.used_count} grinding entr${m.used_count > 1 ? 'ies' : 'y'}` : 'Not used yet'}</Text>
-                    </View>
-                    {can('mesh', 'delete') && !m.used_count && (
-                      <IconButton icon="delete-outline" size={20} iconColor={COLORS.danger} onPress={() => setDel(m)} />)}
-                  </View>
-                ))}
-              </View>
-            )}
-          </ScrollView>
+          <CardList {...grid} data={shown} keyExtractor={(m) => String(m.id)}
+            ListEmptyComponent={<EmptyView icon="🔳" message="No mesh sizes yet. Add 20, 40, 60 ..." />}
+            renderItem={(m, i) => {
+              const used = Number(m.used_count) || 0;
+              return (
+                <InfoCard index={i} icon="grid" color={PURPLE} value={m.mesh_size} unit="MM" caption="Mesh size"
+                  right={can('mesh', 'delete') && !used
+                    ? <RoundBtn icon="trash-can-outline" color={COLORS.danger} bg={COLORS.dangerBg} hoverBg="#F9D3CE" onPress={() => setDel(m)} label={`Delete ${m.mesh_size}`} />
+                    : used ? <LockDot /> : null}
+                  footer={<Badge tone={used ? 'ok' : 'grey'} text={used ? `Used in ${used} grinding entr${used > 1 ? 'ies' : 'y'}` : 'Not used yet'} />} />
+              );
+            }} />
         )}
       </Container>
       <MeshFormModal visible={showForm} onDismiss={() => setShowForm(false)} onSaved={() => { setShowForm(false); load(); toast('Mesh size added'); }} />
@@ -74,9 +74,4 @@ export default function MeshListScreen() {
 
 const s = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: COLORS.bg },
-  grid: { flexDirection: 'row', flexWrap: 'wrap' },
-  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, borderWidth: 1, borderColor: COLORS.border,
-    margin: 6, paddingLeft: 18, paddingVertical: 10, paddingRight: 4, minWidth: 170 },
-  big: { fontSize: 20, fontWeight: '900', color: COLORS.text },
-  small: { color: COLORS.grey, fontSize: 12.5, fontWeight: '600', marginTop: 2 },
 });

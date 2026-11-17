@@ -9,8 +9,8 @@ export default function ConfirmDialog({ visible, title, message, confirmText = '
     <ModalShell visible={visible} onDismiss={onCancel} title={title} icon="help-circle-outline" maxWidth={420} busy={busy}
       footer={(
         <View style={{ flexDirection: 'row' }}>
-          <Button mode="outlined" onPress={onCancel} disabled={busy} textColor={COLORS.text} style={{ borderRadius: 10, borderColor: COLORS.border, marginRight: 10 }}>Cancel</Button>
-          <Button mode="contained" onPress={onConfirm} loading={busy} disabled={busy} buttonColor={COLORS.green} style={{ borderRadius: 10 }}>{confirmText}</Button>
+          <Button mode="outlined" onPress={onCancel} disabled={busy} textColor={COLORS.text} style={{ borderRadius: 12, borderColor: COLORS.border, marginRight: 10 }}>Cancel</Button>
+          <Button mode="contained" onPress={onConfirm} loading={busy} disabled={busy} buttonColor={COLORS.primary} style={{ borderRadius: 12 }}>{confirmText}</Button>
         </View>
       )}>
       <Text style={{ fontSize: 15, color: COLORS.text, lineHeight: 22, paddingBottom: 10 }}>{message}</Text>

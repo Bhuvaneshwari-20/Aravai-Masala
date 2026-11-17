@@ -4,6 +4,7 @@ import { PaperProvider } from 'react-native-paper';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { StatusBar } from 'expo-status-bar';
 import { AuthProvider, useAuth } from './src/AuthContext';
 import { COLORS, paperTheme } from './src/theme';
 import LoginScreen from './src/screens/LoginScreen';
@@ -17,7 +18,6 @@ import VendorListScreen from './src/screens/vendor/VendorListScreen';
 import VendorDetailScreen from './src/screens/vendor/VendorDetailScreen';
 import AccountListScreen from './src/screens/users/AccountListScreen';
 import StockListScreen from './src/screens/stock/StockListScreen';
-import StockCardScreen from './src/screens/stock/StockCardScreen';
 import ProductListScreen from './src/screens/product/ProductListScreen';
 import GramListScreen from './src/screens/gram/GramListScreen';
 import RecipeListScreen from './src/screens/recipe/RecipeListScreen';
@@ -43,10 +43,13 @@ const Stack = createNativeStackNavigator();
 const navRef = createNavigationContainerRef();
 
 const headerOpts = {
-  headerStyle: { backgroundColor: COLORS.primaryDark },
-  headerTintColor: '#fff',
-  headerTitleStyle: { fontWeight: '700' },
+  headerStyle: { backgroundColor: '#FFFFFF' },
+  headerTintColor: COLORS.primary,
+  headerTitleStyle: { fontWeight: '800', fontSize: 17, color: COLORS.text },
+  headerTitleAlign: 'left',
+  headerBackButtonDisplayMode: 'minimal',
   headerShadowVisible: false,
+  contentStyle: { backgroundColor: COLORS.bg },
   animation: 'slide_from_right',
 };
 
@@ -60,6 +63,7 @@ function Root() {
   if (!user) return <LoginScreen />;
   return (
     <View style={{ flex: 1, flexDirection: 'row', backgroundColor: COLORS.bg }}>
+      <StatusBar style="dark" />
       {width >= 900 && <Sidebar navRef={navRef} current={route} />}
       <View style={{ flex: 1, minWidth: 0 }}>
     <View style={{ flex: 1 }}>
@@ -72,7 +76,6 @@ function Root() {
         <Stack.Screen name="VendorList" component={VendorListScreen} options={{ title: 'Vendor Master' }} />
         <Stack.Screen name="VendorDetail" component={VendorDetailScreen} options={{ title: 'Vendor Details' }} />
         <Stack.Screen name="StockList" component={StockListScreen} options={{ title: 'Material Stock' }} />
-        <Stack.Screen name="StockCard" component={StockCardScreen} options={{ title: 'Material Card' }} />
         <Stack.Screen name="ProductList" component={ProductListScreen} options={{ title: 'Products & MRP' }} />
         <Stack.Screen name="GramList" component={GramListScreen} options={{ title: 'Grams' }} />
         <Stack.Screen name="MeshList" component={MeshListScreen} options={{ title: 'Mesh Size' }} />
@@ -80,7 +83,7 @@ function Root() {
         <Stack.Screen name="BatchList" component={BatchListScreen} options={{ title: 'Batches' }} />
         <Stack.Screen name="BatchDetail" component={BatchDetailScreen} options={{ title: 'Batch' }} />
         <Stack.Screen name="FilteringList" component={FilteringListScreen} options={{ title: 'Filtering' }} />
-<Stack.Screen name="RoastingList" component={RoastingListScreen} options={{ title: 'Roasting Register' }} />
+<Stack.Screen name="RoastingList" component={RoastingListScreen} options={{ title: 'Roasting' }} />
         <Stack.Screen name="MachineList" component={MachineListScreen} options={{ title: 'Machines' }} />
         <Stack.Screen name="AccountList" component={AccountListScreen} options={{ title: 'Users' }} />
       <Stack.Screen name="BlendingList" component={BlendingListScreen} options={{ title: 'Blending' }} />

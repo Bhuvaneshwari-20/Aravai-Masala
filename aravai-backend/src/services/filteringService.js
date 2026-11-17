@@ -35,11 +35,13 @@ async function list(q) {
   const base = `FROM batch_master b
     JOIN product_master p ON p.id = b.product_id
     LEFT JOIN recipe_master r ON r.id = b.recipe_id
+    LEFT JOIN machine_master wm ON wm.id = b.weighing_machine_id
     WHERE b.current_stage = 'FILTERING' AND b.status IN ('IN_PROGRESS','ON_HOLD')${like}`;
   const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total ${base}`, args);
   const [rows] = await pool.query(
     `SELECT b.id AS batch_id, b.batch_no, b.production_date, b.status, b.hold_reason, b.current_output_kg AS input_kg,
             p.product_name, r.recipe_no, r.default_filter_stages AS recipe_stages,
+            wm.id AS weighing_machine_id, wm.machine_code AS weighing_machine_code, wm.machine_name AS weighing_machine_name,
             (SELECT GROUP_CONCAT(m.material_name ORDER BY bd.id SEPARATOR ', ')
                FROM batching_details bd JOIN materials m ON m.id = bd.material_id
               WHERE bd.batch_id = b.id AND bd.needs_filtering = 1) AS filter_materials
@@ -61,9 +63,9 @@ async function create(body, user, ip) {
   const end = reqTime(body.end_time, 'End time');
   if (end <= start) throw new AppError('End time must be after start time');
   const doneBy = body.done_by ? v.toId(body.done_by, 'done by') : user.id;
-  if (!body.checked_by) throw new AppError('Checked by is required');
-  const checkedBy = v.toId(body.checked_by, 'checked by');
-  if (doneBy === checkedBy) throw new AppError('Checked by must be a different person from Done by');
+  // Checked by is no longer asked in the form. When it is not sent, the logged-in user is stored for both (the columns stay filled).
+  const checkedBy = body.checked_by ? v.toId(body.checked_by, 'checked by') : doneBy;
+  if (body.checked_by && doneBy === checkedBy) throw new AppError('Checked by must be a different person from Done by');
   const remarks = v.optStr(body.remarks, 'Remarks', 255);
 
   return withTransaction(async (conn) => {

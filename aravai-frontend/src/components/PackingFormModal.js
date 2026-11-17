@@ -6,17 +6,17 @@ import api, { errMsg } from '../api';
 import ModalShell from './ModalShell';
 import ConfirmDialog from './ConfirmDialog';
 import FormField from './FormField';
-import DateField, { addDays } from './DateField';
+import DateField from './DateField';
 import FormRow from './FormRow';
 import SelectField from './SelectField';
 import { COLORS, fmt } from '../theme';
-import { DATE_RE, num, r3 } from '../productionUtils';
+import { todayStr, DATE_RE, num, r3 } from '../productionUtils';
 
 // Counter check: a counter may differ from Total packets by this share before a warning shows (warnings never block submit)
 const COUNTER_TOLERANCE = 0.02;
 const tol = (n) => Math.max(1, Math.ceil(n * COUNTER_TOLERANCE));
 const OVERALL_TOLERANCE = 0.02;   // 2 % allowed difference (scale/over-fill). Use 0 for an exact match.
-const EMPTY = { batch_id: null, packing_rate_id: null, machine_id: null, packing_date: '', use_by_date: '', packing_code: '', target_weight: '', overall_weight_kg: '',
+const EMPTY = { batch_id: null, packing_rate_id: null, machine_id: null, packing_date: todayStr(), use_by_date: '', packing_code: '', target_weight: '', overall_weight_kg: '',
   total_bag_count: '', rejected_bag_count: '0', auger_count: '', puller_count: '', production_count: '', remarks: '', close_batch: false };
 const Label = ({ children, style }) => <Text style={[{ fontSize: 11, fontWeight: '900', letterSpacing: 1.4, color: COLORS.grey, marginBottom: 8 }, style]}>{children}</Text>;
 
@@ -33,7 +33,7 @@ export default function PackingFormModal({ visible, onDismiss, onSaved }) {
 
   useEffect(() => {
     if (!visible) return;
-    setF({ ...EMPTY }); setErrors({}); setErr(''); setSaving(false); setLoading(true);
+    setF({ ...EMPTY, packing_date: todayStr() }); setErrors({}); setErr(''); setSaving(false); setLoading(true);
     api.get('/packing/lookups')
       .then((r) => setLk(r.data.data))
       .catch((e) => setErr(errMsg(e)))
@@ -60,9 +60,9 @@ export default function PackingFormModal({ visible, onDismiss, onSaved }) {
   const totalKg = r3((total * packG) / 1000);            // packets x pack size: this is what "left in batch" uses
   const overallKg = r3(num(f.overall_weight_kg));       // typed by the user: recorded only, never used for "left in batch"
   const avgG = total > 0 && overallKg > 0 ? Math.round(((overallKg * 1000) / total) * 100) / 100 : 0;
- const mismatch = overallKg > 0 && totalKg > 0 && Math.abs(overallKg - totalKg) > totalKg * OVERALL_TOLERANCE;
-const mismatchMsg = `Packed weight is ${fmt(totalKg)} kg (${fmt(total)} packets × ${fmt(packG)} g) but overall weight is ${fmt(overallKg)} kg`;
- 
+  const mismatch = overallKg > 0 && totalKg > 0 && Math.abs(overallKg - totalKg) > totalKg * OVERALL_TOLERANCE;
+  const mismatchMsg = `Packed weight is ${fmt(totalKg)} kg (${fmt(total)} packets × ${fmt(packG)} g) but overall weight is ${fmt(overallKg)} kg`;
+
   const remaining = batch && Number(batch.current_output_kg) > 0 ? r3(Number(batch.current_output_kg) - Number(batch.packed_kg)) : null;
   const after = remaining === null ? null : r3(remaining - totalKg);
 
@@ -87,12 +87,12 @@ const mismatchMsg = `Packed weight is ${fmt(totalKg)} kg (${fmt(total)} packets 
     const e = {};
     if (!f.batch_id) e.batch_id = 'Select a batch';
     if (!f.packing_rate_id) e.packing_rate_id = 'Select a pack size';
-    if (!f.machine_id) e.machine_id = 'Select a machine';
-    if (!DATE_RE.test(f.packing_date)) e.packing_date = 'Pick the packing date';
-    if (!DATE_RE.test(f.use_by_date)) e.use_by_date = 'Pick the use by date';
+    if (!f.machine_id) e.machine_id = 'Select a packing machine';
+    if (!DATE_RE.test(f.packing_date)) e.packing_date = 'Use YYYY-MM-DD';
+    if (!DATE_RE.test(f.use_by_date)) e.use_by_date = 'Use YYYY-MM-DD';
     else if (DATE_RE.test(f.packing_date) && f.use_by_date <= f.packing_date) e.use_by_date = 'Must be after the packing date';
     if (!(overallKg > 0)) e.overall_weight_kg = 'Enter the overall weight of the packets (kg)';
-else if (mismatch) e.overall_weight_kg = mismatchMsg;
+    else if (mismatch) e.overall_weight_kg = mismatchMsg;
     if (!(total > 0)) e.total_bag_count = 'Enter the total packets';
     if (rejected > total) e.rejected_bag_count = 'Cannot be more than total packets';
     if (after !== null && after < -0.001) e.total_bag_count = `Only ${fmt(remaining)} kg is left in this batch`;
@@ -146,13 +146,12 @@ else if (mismatch) e.overall_weight_kg = mismatchMsg;
           )}
           <FormRow>
             <SelectField label="Packing machine *" value={f.machine_id} options={machineOptions} onChange={set('machine_id')} error={errors.machine_id} />
-            <DateField label="Packing date *" value={f.packing_date} onChange={set('packing_date')} error={errors.packing_date} />
+            <DateField label="Packing date *" value={f.packing_date} onChangeText={set('packing_date')} error={errors.packing_date} />
           </FormRow>
           <FormRow>
-            <DateField label="Use by date *" value={f.use_by_date} onChange={set('use_by_date')} error={errors.use_by_date}
-              min={addDays(f.packing_date, 1)} hint="Pick the date printed on the packet" />
+            <DateField label="Use by date *" value={f.use_by_date} onChangeText={set('use_by_date')} error={errors.use_by_date} min={f.packing_date} />
             <FormField label="Packing code" value={f.packing_code} onChangeText={set('packing_code')} maxLength={50}
-              hint="Code or label text printed on the packet" />
+              placeholder="e.g. K04X8G05" />
           </FormRow>
 
           <Label style={{ marginTop: 6 }}>WEIGHT & PACKETS</Label>
@@ -160,30 +159,31 @@ else if (mismatch) e.overall_weight_kg = mismatchMsg;
             <FormField label="Target weight per packet (g)" numeric value={f.target_weight} disabled
               hint={rate ? `Pack size: ${fmt(rate.weight_grams)} g` : 'Select a pack size'} />
             <FormField label="Overall packet weight (kg) *" numeric value={f.overall_weight_kg} onChangeText={set('overall_weight_kg')}
-            error={errors.overall_weight_kg || (mismatch ? mismatchMsg : undefined)} hint="Weight of all the packets of this run together" />
+              error={errors.overall_weight_kg || (mismatch ? mismatchMsg : undefined)} hint="Weight of all the packets of this run together" />
           </FormRow>
           <FormRow>
             <FormField label="Total packets *" digits value={f.total_bag_count} onChangeText={set('total_bag_count')} error={errors.total_bag_count} />
             <FormField label="Rejected packets" digits value={f.rejected_bag_count} onChangeText={set('rejected_bag_count')} error={errors.rejected_bag_count} />
           </FormRow>
-         <View style={{ backgroundColor: '#FFF3E0', borderRadius: 12, padding: 12, marginBottom: 12 }}>
-  <Text style={{ fontWeight: '700' }}>Accepted packets: {fmt(accepted)}   |   Packed: {fmt(totalKg)} kg</Text>
-  {avgG > 0 && (
-    <Text style={{ color: COLORS.grey, marginTop: 3, fontSize: 12.5, fontWeight: '600' }}>
-      Overall weight {fmt(overallKg)} kg = {fmt(avgG)} g per packet (for record only)
-    </Text>
-  )}
-  {mismatch && (
-    <Text style={{ color: COLORS.danger, marginTop: 3, fontSize: 12.5, fontWeight: '800' }}>
-      ⚠ Overall weight {fmt(overallKg)} kg does not match packed {fmt(totalKg)} kg
-    </Text>
-  )}
-  {after !== null && (
-    <Text style={{ color: after < -0.001 ? COLORS.danger : COLORS.grey, marginTop: 3, fontSize: 12.5, fontWeight: '600' }}>
-      Left in batch after this entry: {fmt(after)} kg
-    </Text>
-  )}
-</View>
+          <View style={{ backgroundColor: '#FFF3E0', borderRadius: 12, padding: 12, marginBottom: 12 }}>
+            <Text style={{ fontWeight: '700' }}>Accepted packets: {fmt(accepted)}   |   Packed: {fmt(totalKg)} kg</Text>
+            {avgG > 0 && (
+              <Text style={{ color: COLORS.grey, marginTop: 3, fontSize: 12.5, fontWeight: '600' }}>
+                Overall weight {fmt(overallKg)} kg = {fmt(avgG)} g per packet (for record only)
+              </Text>
+            )}
+            {mismatch && (
+              <Text style={{ color: COLORS.danger, marginTop: 3, fontSize: 12.5, fontWeight: '800' }}>
+                ⚠ Overall weight {fmt(overallKg)} kg does not match packed {fmt(totalKg)} kg
+              </Text>
+            )}
+            {after !== null && (
+              <Text style={{ color: after < -0.001 ? COLORS.danger : COLORS.grey, marginTop: 3, fontSize: 12.5, fontWeight: '600' }}>
+                Left in batch after this entry: {fmt(after)} kg
+              </Text>
+            )}
+          </View>
+
           <Label style={{ marginTop: 6 }}>MACHINE COUNTERS (OPTIONAL)</Label>
           <FormRow>
             <FormField label="Auger count" digits value={f.auger_count} onChangeText={set('auger_count')} />
@@ -220,18 +220,6 @@ else if (mismatch) e.overall_weight_kg = mismatchMsg;
               <Text style={{ fontSize: 12, color: COLORS.grey, marginTop: 1 }}>Turn on to mark the batch as completed{after > 0.001 ? ` (${fmt(after)} kg left over will be counted as wastage)` : ''}</Text>
             </View>
             <Switch value={f.close_batch} onValueChange={set('close_batch')} color={COLORS.green} />
-          </View>
-
-          <View style={{ backgroundColor: '#FFF3E0', borderRadius: 12, padding: 12, marginTop: 12 }}>
-            <Text style={{ fontWeight: '800', color: COLORS.text, marginBottom: 6 }}>BATCH WEIGHT</Text>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
-              <Text style={{ color: COLORS.grey, fontWeight: '600' }}>Initial weight (at batching)</Text>
-              <Text style={{ fontWeight: '800', color: COLORS.text }}>{batch && Number(batch.batching_kg) > 0 ? `${fmt(batch.batching_kg)} kg` : '—'}</Text>
-            </View>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-              <Text style={{ color: COLORS.grey, fontWeight: '600' }}>Final weight (packed, this entry)</Text>
-              <Text style={{ fontWeight: '800', color: COLORS.text }}>{overallKg > 0 ? `${fmt(overallKg)} kg` : '—'}</Text>
-            </View>
           </View>
 
           <ConfirmDialog visible={confirm} busy={saving} title="Submit packing?" confirmText="Yes, submit"

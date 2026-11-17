@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { View, FlatList, RefreshControl, StyleSheet } from 'react-native';
+import { View, RefreshControl, StyleSheet } from 'react-native';
 import { Text, ActivityIndicator } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
 import api from '../../api';
@@ -9,13 +9,13 @@ import StartBatchModal from '../../components/StartBatchModal';
 import PageToolbar from '../../components/PageToolbar';
 import usePagedList from '../../hooks/usePagedList';
 import useDebounce from '../../hooks/useDebounce';
-import useLayout from '../../hooks/useLayout';
 import Container from '../../components/Container';
 import PressableScale from '../../components/PressableScale';
 import LoadingView from '../../components/LoadingView';
 import EmptyView from '../../components/EmptyView';
-import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
-import { COLORS, fmt, padGrid } from '../../theme';
+import Badge from '../../components/Badge';
+import InfoCard, { CardList, InfoLine, ChevronDot, toneOf, useCardCols } from '../../components/InfoCard';
+import { COLORS, fmt } from '../../theme';
 
 export const STATUS = {
   IN_PROGRESS: { label: 'IN PROGRESS', color: COLORS.ok, bg: COLORS.okBg },
@@ -36,7 +36,7 @@ export const badgeFor = (b) => (b.status === 'IN_PROGRESS' && b.current_stage &&
 export default function BatchListScreen({ navigation }) {
   const { can } = useAuth();
   const { toast } = useUi();
-  const { listCols } = useLayout();
+  const grid = useCardCols({ min: 260, phoneMin: 280 });
   const [search, setSearch] = useState('');
   const [showStart, setShowStart] = useState(false);
   const [active, setActive] = useState(null);
@@ -71,28 +71,22 @@ export default function BatchListScreen({ navigation }) {
 
       <Container fill>
         {list.loading ? <LoadingView /> : list.error && !list.items.length ? <EmptyView error={list.error} onRetry={list.reload} /> : (
-          <FlatList key={listCols} numColumns={listCols} data={padGrid(list.items, listCols)} keyExtractor={(i) => String(i.id)}
-            contentContainerStyle={{ paddingBottom: 40 }}
+          <CardList {...grid} data={list.items} keyExtractor={(i) => String(i.id)}
             refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => { list.refresh(); loadActive(); }} colors={[COLORS.primary]} />}
             onEndReached={list.loadMore} onEndReachedThreshold={0.4}
             ListEmptyComponent={<EmptyView icon="⚖️" message="No batches yet" />}
             ListFooterComponent={list.loadingMore ? <ActivityIndicator style={{ margin: 16 }} color={COLORS.primary} /> : null}
-            renderItem={({ item }) => {
-              if (item.pad) return <View style={{ flex: 1, marginHorizontal: 12 }} />;
+            renderItem={(item, i) => {
               const st = badgeFor(item);
+              const running = item.status === 'IN_PROGRESS' || item.status === 'ON_HOLD';
               return (
-                <View style={{ flex: 1 }}>
-                <PressableScale to={0.98} style={s.card} onPress={() => navigation.navigate('BatchDetail', { id: item.id })}>
-                  <View style={s.avatar}><MCI name="scale-balance" size={28} color={COLORS.primary} /></View>
-                  <View style={{ flex: 1, marginRight: 10 }}>
-                    <Text style={s.name}>{item.batch_no}</Text>
-                    <Text style={s.product} numberOfLines={2}>{item.product_name}  •  {fmt(item.planned_qty_kg)} kg</Text>
-                    <Text style={s.code}>{String(item.production_date).slice(0, 10)}</Text>
-                    <Text style={s.code}>Process: {item.status === 'IN_PROGRESS' || item.status === 'ON_HOLD' ? stageLabel(item.current_stage) : st.label.charAt(0) + st.label.slice(1).toLowerCase()}</Text>
-                  </View>
-                  <View style={[s.badge, { backgroundColor: st.bg }]}><Text style={[s.badgeText, { color: st.color }]}>{st.label}</Text></View>
-                </PressableScale>
-                </View>
+                <InfoCard index={i} icon="scale-balance" color={COLORS.primary} value={item.batch_no} size="md"
+                  caption={`${item.product_name}  •  ${fmt(item.planned_qty_kg)} kg`}
+                  right={<ChevronDot />} onPress={() => navigation.navigate('BatchDetail', { id: item.id })}
+                  footer={<Badge tone={toneOf(st.color)} text={st.label} />}>
+                  <InfoLine icon="calendar-blank-outline" text={String(item.production_date).slice(0, 10)} />
+                  <InfoLine icon="progress-clock" text={`Process: ${running ? stageLabel(item.current_stage) : st.label.charAt(0) + st.label.slice(1).toLowerCase()}`} />
+                </InfoCard>
               );
             }} />
         )}
@@ -110,13 +104,4 @@ const s = StyleSheet.create({
   bannerTitle: { color: '#fff', fontSize: 16, fontWeight: '900' },
   bannerSub: { color: '#FFD9A0', fontWeight: '700', marginTop: 3 },
   bannerHint: { color: 'rgba(255,255,255,0.7)', fontSize: 12, marginTop: 4 },
-  // full-width, bigger card (was a small content-sized card)
-  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 20, marginHorizontal: 12, marginVertical: 8, padding: 20, minHeight: 130,
-    borderWidth: 1, borderColor: COLORS.border },
-  avatar: { width: 60, height: 60, borderRadius: 30, backgroundColor: `${COLORS.primary}14`, alignItems: 'center', justifyContent: 'center', marginRight: 16 },
-  name: { fontSize: 21, fontWeight: '900', color: COLORS.text },
-  product: { color: COLORS.text, fontSize: 16, fontWeight: '700', marginTop: 5 },
-  code: { color: COLORS.grey, fontSize: 14.5, fontWeight: '600', marginTop: 4 },
-  badge: { borderRadius: 12, paddingHorizontal: 14, paddingVertical: 6 },
-  badgeText: { fontSize: 13, fontWeight: '900', letterSpacing: 0.5 },
 });

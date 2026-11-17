@@ -9,13 +9,16 @@ import ConfirmDialog from './ConfirmDialog';
 import FormField from './FormField';
 import FormRow from './FormRow';
 import SelectField from './SelectField';
+import TimeField from './TimeField';
+import DateField from './DateField';
+import WeighingMachineInfo from './WeighingMachineInfo';
 import { COLORS, fmt } from '../theme';
 import { todayStr, nowHHmm, DATE_RE, TIME_RE, num, r3, nextKey } from '../productionUtils';
 
 const GROUND = 'GROUND';
 const newLine = () => ({ key: nextKey(), material_id: null, no_of_bags: '', weight_per_bag: '', ingredient_weight: '' });
 const initial = (uid) => ({ batch_id: null, recipe_id: null, machine_id: null, entry_date: todayStr(), start_time: '',
-  mixing_duration_min: '', output_weight: '', done_by: uid, checked_by: null, remarks: '' });
+  mixing_duration: '', output_weight: '', remarks: '' });
 const effWeight = (l) => num(l.ingredient_weight) || r3(num(l.no_of_bags) * num(l.weight_per_bag));
 const Label = ({ children, style }) => <Text style={[{ fontSize: 11, fontWeight: '900', letterSpacing: 1.4, color: COLORS.grey, marginBottom: 8 }, style]}>{children}</Text>;
 
@@ -59,8 +62,7 @@ export default function BlendingFormModal({ visible, onDismiss, onSaved }) {
   const batchOptions = (lk?.batches || []).map((b) => ({ value: b.id, label: `${b.batch_no} · ${b.product_name}` }));
   const machineOptions = (lk?.machines || []).map((m) => ({ value: m.id, label: `${m.machine_code} · ${m.machine_name}` }));
 const recipeOptions = !batch ? [] : (lk?.recipes || []).filter((r) => r.product_id === batch.product_id)
-  .map((r) => ({ value: r.id, label: `${r.recipe_no} (v${r.version_no})` }));  const userOptions = (lk?.users || []).map((u) => ({ value: u.id, label: u.full_name }));
-  const checkedOptions = [{ value: 0, label: '— None —' }, ...userOptions];
+  .map((r) => ({ value: r.id, label: batch.product_name }));
    const materialOptions = useMemo(() => (lk?.materials || []).map((m) => ({ value: m.id, label: `${m.material_code} · ${m.material_name}` })), [lk]);
   const pickBatch = (id) => {
     const b = lk.batches.find((x) => x.id === id);
@@ -78,11 +80,11 @@ const recipeOptions = !batch ? [] : (lk?.recipes || []).filter((r) => r.product_
     const e = {};
     if (!f.batch_id) e.batch_id = 'Select a batch';
     if (!f.recipe_id) e.recipe_id = 'Select a recipe';
-    if (!f.machine_id) e.machine_id = 'Select a machine';
+    if (!(batch && batch.weighing_machine_id) && !f.machine_id) e.machine_id = 'Select a machine';
     if (!DATE_RE.test(f.entry_date)) e.entry_date = 'Use YYYY-MM-DD';
 if (!f.start_time) e.start_time = 'Enter the start time (HH:mm)';
 else if (!TIME_RE.test(f.start_time)) e.start_time = 'Use HH:mm (24 hour), e.g. 16:30';
-    if (f.mixing_duration_min !== '' && Number(f.mixing_duration_min) < 0) e.mixing_duration_min = 'Enter minutes';
+    if (f.mixing_duration && !TIME_RE.test(f.mixing_duration)) e.mixing_duration = 'Use HH:MM';
     if (f.batch_id && !lines.length) e.batch_id = 'This batch has no ingredient weights';
     if (!(out > 0)) e.output_weight = 'Enter the total blended weight';
     else if (out > totalIn + 0.01) e.output_weight = `Cannot be more than total ingredients (${fmt(totalIn)} kg)`;
@@ -97,9 +99,9 @@ else if (!TIME_RE.test(f.start_time)) e.start_time = 'Use HH:mm (24 hour), e.g. 
     setSaving(true); setErr('');
     try {
       await api.post('/blending', {
-        batch_id: f.batch_id, recipe_id: f.recipe_id, machine_id: f.machine_id, entry_date: f.entry_date, start_time: f.start_time,
-        mixing_duration_min: f.mixing_duration_min === '' ? null : f.mixing_duration_min, output_weight: f.output_weight,
-        done_by: f.done_by, checked_by: f.checked_by || null, remarks: f.remarks.trim(),
+        batch_id: f.batch_id, recipe_id: f.recipe_id, machine_id: (batch && batch.weighing_machine_id) || f.machine_id, entry_date: f.entry_date, start_time: f.start_time,
+        mixing_duration_min: f.mixing_duration ? Number(f.mixing_duration.slice(0, 2)) * 60 + Number(f.mixing_duration.slice(3, 5)) : null, output_weight: f.output_weight,
+        remarks: f.remarks.trim(),
         ingredients: lines.map((l) => ({ material_id: l.material_id, no_of_bags: l.no_of_bags || 0,
           weight_per_bag: l.weight_per_bag || 0, ingredient_weight: l.ingredient_weight || 0 })),
       });
@@ -133,16 +135,12 @@ else if (!TIME_RE.test(f.start_time)) e.start_time = 'Use HH:mm (24 hour), e.g. 
   error={errors.recipe_id} disabled={!batch} />
             </FormRow>
           <FormRow>
-            <SelectField label="Blending machine *" value={f.machine_id} options={machineOptions} onChange={set('machine_id')} error={errors.machine_id} />
-            <FormField label="Date * (YYYY-MM-DD)" value={f.entry_date} onChangeText={set('entry_date')} error={errors.entry_date} maxLength={10} />
+            {batch && batch.weighing_machine_id ? <WeighingMachineInfo batch={batch} label="MACHINE (FROM BATCHING)" /> : <SelectField label="Blending machine *" value={f.machine_id} options={machineOptions} onChange={set('machine_id')} error={errors.machine_id} />}
+            <DateField label="Date *" value={f.entry_date} onChangeText={set('entry_date')} error={errors.entry_date} />
           </FormRow>
           <FormRow>
-            <FormField label="Start time * (HH:mm)" value={f.start_time} onChangeText={set('start_time')} error={errors.start_time} maxLength={5} />
-            <FormField label="Mixing duration (min)" digits value={f.mixing_duration_min} onChangeText={set('mixing_duration_min')} error={errors.mixing_duration_min} />
-          </FormRow>
-          <FormRow>
-            <SelectField label="Done by" value={f.done_by} options={userOptions} onChange={set('done_by')} />
-            <SelectField label="Checked by" value={f.checked_by} options={checkedOptions} onChange={set('checked_by')} />
+            <TimeField label="Start time *" value={f.start_time} onChangeText={set('start_time')} error={errors.start_time} />
+            <TimeField label="Mixing duration (HH:MM)" value={f.mixing_duration} onChangeText={set('mixing_duration')} error={errors.mixing_duration} />
           </FormRow>
 
           <Label style={{ marginTop: 6 }}>INGREDIENTS (FROM BATCH)</Label>
