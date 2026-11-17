@@ -26,6 +26,15 @@ const SELECT = `
     LEFT JOIN materials mt ON mt.id = r.material_id
     LEFT JOIN users inc ON inc.id = r.incharge_id`;
 
+// Output of Filtering for one material of a batch (null = that material was not filtered)
+async function filteredQtyOf(batchId, materialId) {
+  try {
+    const [rows] = await pool.query(
+      'SELECT fm.output_weight FROM filtering_materials fm JOIN filtering_details f ON f.id = fm.filtering_id WHERE f.batch_id = ? AND fm.material_id = ?', [batchId, materialId]);
+    return rows.length ? Number(rows[0].output_weight) : null;
+  } catch (e) { if (e.code === 'ER_NO_SUCH_TABLE') return null; throw e; }
+}
+
 // Weighed quantity of one material in one batch (from Batching) and how much of it is already roasted
 async function batchMaterialQty(batchId, materialId, excludeId = 0) {
   const [[w]] = await pool.query('SELECT SUM(weighed_qty) AS qty FROM batching_details WHERE batch_id = ? AND material_id = ?', [batchId, materialId]);
@@ -99,6 +108,12 @@ async function clean(body, old = null, selfId = 0) {
     }
     weighedInfo = { batch_no: b.batch_no, ...(await batchMaterialQty(batch_id, material_id, selfId)) };
     if (weighedInfo.weighed === null) throw new AppError(`This material was not weighed in batch ${b.batch_no}`);
+    // a filtered material starts roasting with its FILTERED output, not the weight weighed in Batching
+    const fq = await filteredQtyOf(batch_id, material_id);
+    if (fq !== null) {
+      const rem = r3(fq - weighedInfo.roasted);
+      if (rem < weighedInfo.remaining) { weighedInfo.remaining = Math.max(rem, 0); weighedInfo.filteredCap = fq; }
+    }
     // I/P of Roasting = what the earlier stages handed over (e.g. Filtering O/P), never more than that
     if (b.current_stage === 'ROASTING') {
       const left = await batchLeftToRoast(batch_id, selfId);
@@ -114,6 +129,8 @@ async function clean(body, old = null, selfId = 0) {
   if (hasOut && output > input) throw new AppError('O/P weight cannot be more than I/P weight');
   if (weighedInfo && weighedInfo.byStage !== undefined && input > weighedInfo.remaining + 0.0005)
     throw new AppError(`I/P weight cannot be more than ${weighedInfo.remaining} kg (the weight handed over to Roasting for ${weighedInfo.batch_no}, after the earlier stages' loss)`);
+  if (weighedInfo && weighedInfo.filteredCap !== undefined && input > weighedInfo.remaining + 0.0005)
+    throw new AppError(`I/P weight cannot be more than ${weighedInfo.remaining} kg (this material was ${weighedInfo.filteredCap} kg after filtering, already roasted ${weighedInfo.roasted} kg)`);
   if (weighedInfo && input > weighedInfo.remaining + 0.0005)
     throw new AppError(`I/P weight cannot be more than ${weighedInfo.remaining} kg (weighed ${weighedInfo.weighed} kg in ${weighedInfo.batch_no}, already roasted ${weighedInfo.roasted} kg)`);
 
@@ -222,10 +239,18 @@ async function batchMaterials(q) {
       WHERE bd.batch_id = ?
       GROUP BY m.id, m.material_code, m.material_name, bd.batch_id
       ORDER BY MIN(bd.id)`, [excludeId, batchId]);
+  // A material that was filtered starts roasting with its FILTERED output (not the weight weighed in Batching)
+  let filtered = new Map();
+  try {
+    const [fm] = await pool.query(
+      `SELECT fm.material_id, fm.output_weight FROM filtering_materials fm JOIN filtering_details f ON f.id = fm.filtering_id WHERE f.batch_id = ?`, [batchId]);
+    filtered = new Map(fm.map((x) => [x.material_id, Number(x.output_weight)]));
+  } catch (e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; } // table is created by migration v6
   const left = await batchLeftToRoast(batchId, excludeId); // never offer more than the earlier stages handed over
   const items = rows.map((m) => {
-    const own = r3(Number(m.weighed_qty) - Number(m.roasted_qty));
-    return { ...m, remaining_qty: left === null ? own : Math.max(Math.min(own, left), 0), batch_left_kg: left };
+    const filteredQty = filtered.has(m.material_id) ? filtered.get(m.material_id) : null;
+    const own = r3((filteredQty !== null ? filteredQty : Number(m.weighed_qty)) - Number(m.roasted_qty));
+    return { ...m, filtered_qty: filteredQty, remaining_qty: left === null ? own : Math.max(Math.min(own, left), 0), batch_left_kg: left };
   }).filter((m) => m.remaining_qty > 0 || m.material_id === currentMaterial);
   return { items };
 }
@@ -264,43 +289,131 @@ async function batchesFor(q) {
   return { items };
 }
 
+// Hand the batch over to GRINDING.
+// Grinding I/P = roasted output of the completed entries, plus any weighed material that was not roasted at all.
+// soft = true: do nothing (return null) when an entry is still in progress, instead of raising an error.
+async function finishRoasting(conn, batchId, user, ip, { soft = false } = {}) {
+  const [[open]] = await conn.query("SELECT COUNT(*) AS n FROM roasting_details WHERE batch_id = ? AND status = 'IN_PROGRESS'", [batchId]);
+  if (open.n > 0) {
+    if (soft) return null;
+    throw new AppError('Some roasting entries of this batch are still in progress. Complete them first');
+  }
+  const [[w]] = await conn.query(
+    "SELECT COUNT(*) AS n, COALESCE(SUM(input_weight), 0) AS in_kg, COALESCE(SUM(output_weight), 0) AS out_kg FROM roasting_details WHERE batch_id = ? AND status = 'COMPLETED'", [batchId]);
+  if (!w.n) throw new AppError('Roasting is compulsory: add at least one completed roasting entry before the batch goes to Grinding');
+  const [[bm]] = await conn.query('SELECT current_output_kg FROM batch_master WHERE id = ?', [batchId]);
+  const held = Number(bm.current_output_kg);                       // what the batch held when Roasting started (Batching / Filtering O/P)
+  const notRoasted = Math.max(r3(held - Number(w.in_kg)), 0);
+  const toGrinding = Math.min(r3(Number(w.out_kg) + notRoasted), held);
+  const loss = Math.max(r3(held - toGrinding), 0);
+  await conn.query(
+    "UPDATE batch_master SET current_stage = 'GRINDING', current_output_kg = ?, total_wastage_kg = total_wastage_kg + ? WHERE id = ?",
+    [toGrinding, loss, batchId]);
+  await audit({ userId: user.id, action: 'UPDATE', table: 'batch_master', recordId: batchId,
+    oldValues: { current_stage: 'ROASTING', current_output_kg: held },
+    newValues: { current_stage: 'GRINDING', current_output_kg: toGrinding }, ip }, conn);
+  return { to: 'GRINDING', weight_kg: toGrinding, roasting_loss_kg: loss };
+}
+
+// true when nothing is left to roast: the weight handed over to Roasting is used up, or every material is fully roasted
+async function nothingLeftToRoast(conn, batchId) {
+  const [[bm]] = await conn.query('SELECT current_output_kg FROM batch_master WHERE id = ?', [batchId]);
+  const [[used]] = await conn.query("SELECT COALESCE(SUM(input_weight), 0) AS qty FROM roasting_details WHERE batch_id = ? AND status <> 'REJECTED'", [batchId]);
+  if (Number(bm.current_output_kg) - Number(used.qty) <= 0.0005) return true;
+  const [mats] = await conn.query(
+    `SELECT bd.material_id, SUM(bd.weighed_qty) AS weighed,
+            (SELECT COALESCE(SUM(x.input_weight), 0) FROM roasting_details x
+              WHERE x.batch_id = bd.batch_id AND x.material_id = bd.material_id AND x.status <> 'REJECTED') AS roasted
+       FROM batching_details bd WHERE bd.batch_id = ? GROUP BY bd.material_id, bd.batch_id`, [batchId]);
+  let filtered = new Map();
+  try {
+    const [fm] = await conn.query(
+      'SELECT fm.material_id, fm.output_weight FROM filtering_materials fm JOIN filtering_details f ON f.id = fm.filtering_id WHERE f.batch_id = ?', [batchId]);
+    filtered = new Map(fm.map((x) => [x.material_id, Number(x.output_weight)]));
+  } catch (e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
+  return mats.every((m) => (filtered.has(m.material_id) ? filtered.get(m.material_id) : Number(m.weighed)) - Number(m.roasted) <= 0.0005);
+}
+
+const INSERT_SQL = `INSERT INTO roasting_details (batch_id, material_id, roast_date, machine_id, code_no, input_weight, output_weight, temp_before, std_temp, temp_after,
+         start_time, end_time, running_hours, wastage_weight, loss_percent, remarks, status, operator_id)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
+const auditEntry = (user, id, d, ip, conn) => audit({ userId: user.id, action: 'CREATE', table: 'roasting_details', recordId: id,
+  newValues: { code_no: d.code_no, batch_id: d.batch_id, material_id: d.material_id, input_weight: d.input_weight, output_weight: d.output_weight, loss_percent: d.loss_percent }, ip }, conn);
+
+// ONE form, MANY materials: every material has its own I/P, O/P and Loss %; temperatures, times and remarks are shared.
+// Saving completes Roasting for the batch and hands it to GRINDING (no "finished" tick needed).
+async function createMulti(body, user, ip) {
+  const batchId = v.toId(body.batch_id, 'batch');
+  const list = body.materials;
+  if (list.length > 50) throw new AppError('Too many materials in one entry');
+  const ids = list.map((m) => v.toId(m && m.material_id, 'material'));
+  if (new Set(ids).size !== ids.length) throw new AppError('The same material is added twice');
+  const [names] = await pool.query('SELECT id, material_name FROM materials WHERE id IN (?)', [ids]);
+  const nameOf = new Map(names.map((n) => [n.id, n.material_name]));
+
+  const ds = [];
+  for (let i = 0; i < list.length; i += 1) {
+    try {
+      const d = await clean({
+  ...body, batch_id: batchId, material_id: ids[i],
+  input_weight: list[i].input_weight, output_weight: list[i].output_weight,
+  start_time: list[i].start_time || body.start_time, end_time: list[i].end_time || body.end_time,
+});
+      if (d.status !== 'COMPLETED') throw new AppError('Enter O/P weight and the End time');
+      ds.push(d);
+    } catch (e) {
+      if (e instanceof AppError) throw new AppError(`${nameOf.get(ids[i]) || 'Material'}: ${e.message}`, e.status);
+      throw e;
+    }
+  }
+  // all rows together may not use more than the weight handed over to Roasting
+  const left = await batchLeftToRoast(batchId);
+  const total = r3(ds.reduce((a, d) => a + d.input_weight, 0));
+  if (left !== null && total > left + 0.0005)
+    throw new AppError(`Total I/P ${total} kg is more than the ${left} kg handed over to Roasting for this batch`);
+
+  const out = await withTransaction(async (conn) => {
+    await h.lockBatch(conn, batchId, 'ROASTING');
+    const saved = [];
+    for (const d of ds) {
+      const [r] = await conn.query(INSERT_SQL, [...cols(d), user.id]);
+      saved.push(r.insertId);
+      await auditEntry(user, r.insertId, d, ip, conn);
+    }
+    const moved = await finishRoasting(conn, batchId, user, ip);
+    return { saved, moved };
+  });
+  const items = [];
+  for (const id of out.saved) items.push(await getOne(id));
+  return { items, batch_moved: out.moved };
+}
+
+// For a batch that is still waiting at Roasting although every material is already roasted (older entries saved without the tick)
+async function finishBatch(body, user, ip) {
+  const batchId = v.toId(body.batch_id, 'batch');
+  const moved = await withTransaction(async (conn) => {
+    await h.lockBatch(conn, batchId, 'ROASTING');
+    return finishRoasting(conn, batchId, user, ip);
+  });
+  return { batch_id: batchId, batch_moved: moved };
+}
+
 async function create(body, user, ip) {
+  if (Array.isArray(body.materials) && body.materials.length) return createMulti(body, user, ip);
   const d = await clean(body);
-  // "Roasting finished for this batch": hands the batch over to GRINDING
+  // old single-entry API: "finish_roasting" hands the batch over to GRINDING. It also happens by itself when nothing is left to roast.
   const finish = body.finish_roasting === true || body.finish_roasting === 'true';
   if (finish) {
     if (!d.batch_id) throw new AppError('Select the batch to finish roasting');
     if (d.status !== 'COMPLETED') throw new AppError('Enter O/P weight and End time (complete this entry) before finishing roasting for the batch');
   }
   const out = await withTransaction(async (conn) => {
-    if (finish) await h.lockBatch(conn, d.batch_id, 'ROASTING');
-    const [r] = await conn.query(
-      `INSERT INTO roasting_details (batch_id, material_id, roast_date, machine_id, code_no, input_weight, output_weight, temp_before, std_temp, temp_after,
-         start_time, end_time, running_hours, wastage_weight, loss_percent, remarks, status, operator_id)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [...cols(d), user.id]);
+    if (d.batch_id) await h.lockBatch(conn, d.batch_id, 'ROASTING');
+    const [r] = await conn.query(INSERT_SQL, [...cols(d), user.id]);
     let moved = null;
-    if (finish) {
-      const [[open]] = await conn.query(
-        "SELECT COUNT(*) AS n FROM roasting_details WHERE batch_id = ? AND status = 'IN_PROGRESS'", [d.batch_id]);
-      if (open.n > 0) throw new AppError('Some roasting entries of this batch are still in progress. Complete them first');
-      // Grinding I/P = Roasting O/P: the roasted output of all completed entries, plus any weighed material that was not roasted at all
-      const [[w]] = await conn.query(
-        "SELECT COALESCE(SUM(input_weight), 0) AS in_kg, COALESCE(SUM(output_weight), 0) AS out_kg FROM roasting_details WHERE batch_id = ? AND status = 'COMPLETED'", [d.batch_id]);
-      const [[bm]] = await conn.query('SELECT current_output_kg FROM batch_master WHERE id = ?', [d.batch_id]);
-      const held = Number(bm.current_output_kg);                       // what the batch held when Roasting started (Batching / Filtering O/P)
-      const notRoasted = Math.max(r3(held - Number(w.in_kg)), 0);
-      const toGrinding = Math.min(r3(Number(w.out_kg) + notRoasted), held);
-      const loss = Math.max(r3(held - toGrinding), 0);
-      await conn.query(
-        "UPDATE batch_master SET current_stage = 'GRINDING', current_output_kg = ?, total_wastage_kg = total_wastage_kg + ? WHERE id = ?",
-        [toGrinding, loss, d.batch_id]);
-      moved = { to: 'GRINDING', weight_kg: toGrinding, roasting_loss_kg: loss };
-      await audit({ userId: user.id, action: 'UPDATE', table: 'batch_master', recordId: d.batch_id,
-        oldValues: { current_stage: 'ROASTING', current_output_kg: Number(bm.current_output_kg) },
-        newValues: { current_stage: 'GRINDING', current_output_kg: toGrinding }, ip }, conn);
-    }
-    await audit({ userId: user.id, action: 'CREATE', table: 'roasting_details', recordId: r.insertId,
-      newValues: { code_no: d.code_no, batch_id: d.batch_id, material_id: d.material_id, input_weight: d.input_weight, output_weight: d.output_weight, loss_percent: d.loss_percent }, ip }, conn);
+    if (finish) moved = await finishRoasting(conn, d.batch_id, user, ip);
+    else if (d.batch_id && d.status === 'COMPLETED' && await nothingLeftToRoast(conn, d.batch_id)) moved = await finishRoasting(conn, d.batch_id, user, ip, { soft: true });
+    await auditEntry(user, r.insertId, d, ip, conn);
     return { id: r.insertId, moved };
   });
   const row = await getOne(out.id);
@@ -323,4 +436,4 @@ async function update(id, body, user, ip) {
   return getOne(id);
 }
 
-module.exports = { list, options, recipeMaterials, batchesFor, batchOptions, batchMaterials, create, update };
+module.exports = { list, options, recipeMaterials, batchesFor, batchOptions, batchMaterials, create, finishBatch, update };

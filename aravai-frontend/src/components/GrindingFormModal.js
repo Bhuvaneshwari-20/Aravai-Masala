@@ -141,7 +141,7 @@ export default function GrindingFormModal({ visible, onDismiss, onSaved }) {
         </FormRow>
         <FormRow>
           <TimeField label="Start time *" value={f.start_time} onChangeText={set('start_time')} error={errors.start_time} />
-          <TimeField label="End time *" value={f.end_time} onChangeText={set('end_time')} error={errors.end_time} />
+          <TimeField label="End time *" value={f.end_time} onChangeText={set('end_time')} error={errors.end_time} min={f.start_time} />
         </FormRow>
         <FormRow>
           {gBatchMachine ? <WeighingMachineInfo batch={gBatchMachine} label="MACHINE (FROM BATCHING)" /> : !f.batch_id ? (

@@ -32,30 +32,38 @@ function PendingCard({ item, index, onPress }) {
   const hold = item.status === 'ON_HOLD';
   return (
     <InfoCard index={index} icon="filter-variant" color={hold ? COLORS.warn : COLORS.primary}
-      value={fmt(item.input_kg)} unit="KG" caption="Input weight to filter"
+      value={fmt(item.materials && item.materials.length ? item.filter_kg : item.input_kg)} unit="KG" caption="Input weight to filter"
       right={<Badge tone={hold ? 'warn' : 'ok'} text={hold ? 'ON HOLD' : 'WAITING'} />}
       onPress={onPress}
       bottom={<ActionPill hold={hold} />}>
       <Text style={s.batch} numberOfLines={1}>{item.batch_no}</Text>
       <InfoLine icon="tag-outline" text={`${item.product_name}${item.recipe_no ? ` · ${item.recipe_no}` : ''}`} />
       <InfoLine icon="calendar-blank-outline" text={String(item.production_date).slice(0, 10)} />
-      {!!item.filter_materials && <InfoLine icon="filter-outline" color={COLORS.primary} lines={2} text={`To filter: ${item.filter_materials}`} />}
+      {item.materials && item.materials.length
+        ? item.materials.map((m) => <InfoLine key={m.material_id} icon="filter-outline" color={COLORS.primary} text={`${m.material_name} · ${fmt(m.input_weight)} kg`} />)
+        : !!item.filter_materials && <InfoLine icon="filter-outline" color={COLORS.primary} lines={2} text={`To filter: ${item.filter_materials}`} />}
       {hold && !!item.hold_reason && <InfoLine icon="alert-circle-outline" color={COLORS.warn} lines={2} text={item.hold_reason} />}
     </InfoCard>
   );
 }
 
 function DoneCard({ item, index }) {
-  const high = Number(item.loss_percent) > 5;
+  // entries saved with per-material rows show the filtered materials' own I/P, O/P and loss
+  const mats = item.materials || [];
+  const fIn = mats.reduce((a, m) => a + Number(m.input_weight), 0);
+  const fOut = mats.reduce((a, m) => a + Number(m.output_weight), 0);
+  const lossPct = mats.length && fIn > 0 ? Math.round(((fIn - fOut) / fIn) * 10000) / 100 : item.loss_percent;
+  const high = Number(lossPct) > 5;
   return (
     <InfoCard index={index} icon="filter-check-outline" color={high ? COLORS.danger : COLORS.ok}
-      value={fmt(item.output_weight)} unit="KG" caption="Output after filtering"
+      value={fmt(mats.length ? fOut : item.output_weight)} unit="KG" caption={mats.length ? 'Filtered material output' : 'Output after filtering'}
       right={<Badge tone="ok" text={`${item.stages} STAGE${item.stages > 1 ? 'S' : ''}`} />}
-      footer={<Badge tone={high ? 'danger' : 'ok'} text={`Loss ${item.loss_percent}%`} />}>
+      footer={<Badge tone={high ? 'danger' : 'ok'} text={`Loss ${lossPct}%`} />}>
       <Text style={s.batch} numberOfLines={1}>{item.batch_no}</Text>
       <InfoLine icon="tag-outline" text={item.product_name} />
+      {mats.map((m) => <InfoLine key={m.material_id} icon="filter-outline" color={COLORS.primary} text={`${m.material_name}: ${fmt(m.input_weight)} → ${fmt(m.output_weight)} kg (${m.loss_percent}%)`} />)}
       <InfoStats items={[
-        { label: 'I/P (KG)', value: fmt(item.input_weight) },
+        { label: 'I/P (KG)', value: fmt(mats.length ? fIn : item.input_weight) },
         { label: 'NEXT', value: item.current_stage === 'ROASTING' ? 'Roasting' : item.current_stage },
         { label: 'DATE', value: String(item.filter_date).slice(0, 10) },
         { label: 'TIME', value: `${hhmm(item.start_time)} – ${hhmm(item.end_time)}` },

@@ -7,6 +7,18 @@ const batchService = require('./batchService');
 
 const STAGES_MAX = 5;
 
+// Materials of a batch that were ticked "Filter" in Batching, with the weight weighed for each one (= its I/P in Filtering)
+async function flaggedMaterials(db, batchIds) {
+  if (!batchIds.length) return [];
+  const [rows] = await db.query(
+    `SELECT bd.batch_id, m.id AS material_id, m.material_code, m.material_name, SUM(bd.weighed_qty) AS input_weight
+       FROM batching_details bd JOIN materials m ON m.id = bd.material_id
+      WHERE bd.batch_id IN (?) AND bd.needs_filtering = 1
+      GROUP BY bd.batch_id, m.id, m.material_code, m.material_name
+      ORDER BY MIN(bd.id)`, [batchIds]);
+  return rows.map((r) => ({ ...r, input_weight: Number(r.input_weight) }));
+}
+
 /* ---------- list ----------
  * tab=pending : batches ticked "Filtering required" in Batching, waiting at the FILTERING stage
  * tab=done    : filtering register (finished entries)
@@ -29,6 +41,17 @@ async function list(q) {
     const [rows] = await pool.query(
       `SELECT f.*, b.batch_no, b.current_stage, p.product_name, r.recipe_no, du.full_name AS done_by_name, cu.full_name AS checked_by_name
        ${base} ORDER BY f.id DESC LIMIT ? OFFSET ?`, [...args, limit, offset]);
+
+    // per-material I/P, O/P and loss of every entry (entries saved before this update simply have none)
+    let mats = [];
+    if (rows.length) {
+      try {
+        [mats] = await pool.query(
+          `SELECT fm.filtering_id, fm.material_id, m.material_code, m.material_name, fm.input_weight, fm.output_weight, fm.wastage_weight, fm.loss_percent
+             FROM filtering_materials fm JOIN materials m ON m.id = fm.material_id WHERE fm.filtering_id IN (?) ORDER BY fm.id`, [rows.map((r) => r.id)]);
+      } catch (e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
+    }
+    rows.forEach((r) => { r.materials = mats.filter((x) => x.filtering_id === r.id); });
     return { items: rows, page, limit, total, total_pages: Math.max(Math.ceil(total / limit), 1) };
   }
 
@@ -46,19 +69,31 @@ async function list(q) {
                FROM batching_details bd JOIN materials m ON m.id = bd.material_id
               WHERE bd.batch_id = b.id AND bd.needs_filtering = 1) AS filter_materials
      ${base} ORDER BY b.id DESC LIMIT ? OFFSET ?`, [...args, limit, offset]);
+
+  // each material to filter, with its own I/P (taken from Batching) - the form lists them one by one
+  const flagged = await flaggedMaterials(pool, rows.map((r) => r.batch_id));
+  rows.forEach((r) => {
+    r.materials = flagged.filter((x) => x.batch_id === r.batch_id);
+    r.filter_kg = r3(r.materials.reduce((a, x) => a + x.input_weight, 0));
+  });
   return { items: rows, page, limit, total, total_pages: Math.max(Math.ceil(total / limit), 1) };
 }
 
 // Done by / Checked by pickers (own endpoint so the Filtering role does not need the Batching permission)
 const staff = () => batchService.staff();
 
-/* ---------- save a filtering entry, then hand the batch to ROASTING ---------- */
+/* ---------- save a filtering entry, then hand the batch to ROASTING ----------
+ * Two ways to call it:
+ *  - body.materials = [{ material_id, output_weight }]  -> every ticked material gets its own O/P (new form)
+ *  - body.output_weight                                  -> one O/P for the whole batch (old behaviour, unchanged)
+ */
 async function create(body, user, ip) {
   const batchId = v.toId(body.batch_id, 'batch');
   const date = reqDate(body.filter_date, 'Date');
   const stages = v.intRange(body.stages, 'Filtering stages', 1, STAGES_MAX);
   if (stages === undefined) throw new AppError('Filtering stages is required');
-  const output = v.positive(body.output_weight, 'O/P weight (kg)', { max: 1000000 });
+  const perMaterial = Array.isArray(body.materials) && body.materials.length > 0;
+  const outputOld = perMaterial ? null : v.positive(body.output_weight, 'O/P weight (kg)', { max: 1000000 });
   const start = reqTime(body.start_time, 'Start time');
   const end = reqTime(body.end_time, 'End time');
   if (end <= start) throw new AppError('End time must be after start time');
@@ -74,8 +109,28 @@ async function create(body, user, ip) {
     await checkUsers(conn, [doneBy, checkedBy]);
 
     const input = Number(b.current_output_kg);
-    if (output > input) throw new AppError(`O/P weight cannot be more than I/P weight (${input} kg)`);
-    const wastage = r3(input - output);
+    let output; let wastage; let mats = [];
+    if (perMaterial) {
+      const flagged = await flaggedMaterials(conn, [batchId]);
+      if (!flagged.length) throw new AppError('No material of this batch is marked for filtering');
+      const given = new Map(body.materials.map((x) => [Number(x.material_id), x.output_weight]));
+      let waste = 0;
+      mats = flagged.map((m) => {
+        const raw = given.get(m.material_id);
+        if (raw === undefined || raw === null || raw === '') throw new AppError(`Enter O/P weight for ${m.material_name}`);
+        const out = v.positive(raw, `O/P weight of ${m.material_name}`, { max: 1000000 });
+        if (out > m.input_weight) throw new AppError(`O/P of ${m.material_name} cannot be more than its I/P (${m.input_weight} kg)`);
+        const w = r3(m.input_weight - out);
+        waste = r3(waste + w);
+        return { material_id: m.material_id, material_name: m.material_name, input: m.input_weight, output: out, wastage: w, loss: r2((w / m.input_weight) * 100) };
+      });
+      wastage = waste;
+      output = r3(input - wastage); // materials that were not filtered go to roasting as they are
+    } else {
+      output = outputOld;
+      if (output > input) throw new AppError(`O/P weight cannot be more than I/P weight (${input} kg)`);
+      wastage = r3(input - output);
+    }
     const loss = r2((wastage / input) * 100);
 
     let id;
@@ -89,6 +144,11 @@ async function create(body, user, ip) {
       if (e.code === 'ER_DUP_ENTRY') throw new AppError(`Filtering is already recorded for batch ${b.batch_no}`, 409);
       throw e;
     }
+    for (const m of mats) {
+      await conn.query(
+        `INSERT INTO filtering_materials (filtering_id, material_id, input_weight, output_weight, wastage_weight, loss_percent) VALUES (?,?,?,?,?,?)`,
+        [id, m.material_id, m.input, m.output, m.wastage, m.loss]);
+    }
 
     // the filtered quantity goes on to roasting
     await conn.query(
@@ -96,9 +156,9 @@ async function create(body, user, ip) {
       [output, wastage, batchId]);
 
     await audit({ userId: user.id, action: 'CREATE', table: 'filtering_details', recordId: id,
-      newValues: { batch_no: b.batch_no, stages, input, output, wastage, loss, doneBy, checkedBy, next_stage: 'ROASTING' }, ip }, conn);
+      newValues: { batch_no: b.batch_no, stages, input, output, wastage, loss, doneBy, checkedBy, materials: mats, next_stage: 'ROASTING' }, ip }, conn);
     return { id, batch_id: batchId, batch_no: b.batch_no, input_weight: input, output_weight: output,
-      wastage_weight: wastage, loss_percent: loss, next_stage: 'ROASTING' };
+      wastage_weight: wastage, loss_percent: loss, next_stage: 'ROASTING', materials: mats };
   });
 }
 
