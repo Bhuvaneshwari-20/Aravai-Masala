@@ -77,7 +77,7 @@ export default function RoastingListScreen({ navigation, route }) {
 
   const openItem = (item) => {
     if (!can('roasting', 'edit')) return toast('You can view this entry but not edit it');
-    if (item.status === 'COMPLETED' && user.role_name === 'Roasting Operator') return toast('Completed entries are locked. Ask the Production Incharge to correct it.');
+       if (item.status === 'COMPLETED') return toast('Saved roasting entries are locked and cannot be edited');
     setForm({ open: true, item });
   };
 
@@ -103,7 +103,12 @@ export default function RoastingListScreen({ navigation, route }) {
       </Container>
 
       <RoastingFormModal visible={form.open} item={form.item} onDismiss={() => setForm({ open: false, item: null })}
-        onSaved={(edited) => { setForm({ open: false, item: null }); list.reload(); toast(edited ? 'Roasting entry updated' : 'Roasting entry saved'); }} />
+               onSaved={(edited, r) => {
+          setForm({ open: false, item: null }); list.reload();
+          toast(edited ? 'Roasting entry updated'
+            : r && r.batch_moved ? 'Roasting saved - batch sent to Grinding'
+              : 'Roasting saved - add the remaining materials later');
+        }} />
     </View>
   );
 }

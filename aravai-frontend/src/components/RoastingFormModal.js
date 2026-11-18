@@ -9,7 +9,6 @@ import FormRow from './FormRow';
 import SelectField from './SelectField';
 import TimeField from './TimeField';
 import WeighingMachineInfo from './WeighingMachineInfo';
-import { materialStage } from '../batchMaterialStatus';
 import { COLORS } from '../theme';
 
 const today = () => {
@@ -34,19 +33,18 @@ const hoursBetween = (s, e) => {
   return mins > 0 ? Math.round((mins / 60) * 100) / 100 : null;
 };
 
-// Add (no item) or Edit (item) a roasting register entry, as a popup.
-// Add mode: ONE form, MANY materials - every material has its own I/P, O/P, Loss %, Start time, End time and Running hours.
-// Running hours, wastage and Loss % are calculated here (preview) and again by the server (saved value).
+// Add: pick the materials roasted now (each with its own I/P, O/P, Loss %, Start, End). Saved entries are LOCKED.
+//      The batch goes to Grinding only when every material of the batch is roasted.
+// Edit: only for old entries that were left open (a completed entry cannot be edited).
 export default function RoastingFormModal({ visible, item, onDismiss, onSaved }) {
   const isEdit = !!item;
   const [f, setF] = useState(EMPTY());
   const [machines, setMachines] = useState([]);
-  const [batchList, setBatchList] = useState([]); // batches (from Batching) waiting at Roasting, each with its recipe
-  const [materialRows, setMaterialRows] = useState([]); // materials weighed in the selected batch
+  const [batchList, setBatchList] = useState([]);
+  const [materialRows, setMaterialRows] = useState([]); // materials of the batch NOT roasted yet
   const [loadingMat, setLoadingMat] = useState(false);
-  const [batErr, setBatErr] = useState(''); // real error when the batch list / material list could not be loaded
+  const [batErr, setBatErr] = useState('');
   const [matErr, setMatErr] = useState('');
-  const [blocked, setBlocked] = useState([]); // materials of the batch that are still waiting for Filtering: they cannot be roasted yet
   const [alertAt, setAlertAt] = useState(12);
   const keyRef = useRef(0);
   const blankRow = () => { keyRef.current += 1; return { key: keyRef.current, material_id: null, input_weight: '', output_weight: '', start_time: '', end_time: '' }; };
@@ -76,12 +74,11 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
     api.get('/roasting/options').then((r) => {
       const d = r.data.data;
       setMachines(d.machines.map((m) => ({ value: m.id, label: `${m.machine_code} · ${m.machine_name}` })));
-      if (!item && d.machines.length === 1) setF((p) => ({ ...p, machine_id: d.machines[0].id })); // only one roasting machine -> pre-select
+      if (!item && d.machines.length === 1) setF((p) => ({ ...p, machine_id: d.machines[0].id }));
       setAlertAt(d.loss_alert_percent);
     }).catch((e) => setErr(errMsg(e))).finally(() => setLoading(false));
   }, [visible, item]); // eslint-disable-line
 
-  // Batch codes (from Batching) waiting at the Roasting stage
   useEffect(() => {
     if (!visible) return undefined;
     let off = false;
@@ -91,24 +88,16 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
     return () => { off = true; };
   }, [visible, item]);
 
-  // Batch selected -> the materials of that batch load automatically
   useEffect(() => {
-    if (!visible || !f.batch_id) { setMaterialRows([]); setBlocked([]); setMatErr(''); return undefined; }
+    if (!visible || !f.batch_id) { setMaterialRows([]); setMatErr(''); return undefined; }
     let off = false; setLoadingMat(true); setMatErr('');
     api.get('/roasting/batch-materials', { params: { batch_id: f.batch_id, exclude_id: item?.id || undefined, current_material_id: item?.material_id || undefined } })
-      .then((r) => {
-        if (off) return;
-        const all = r.data.data.items;
-        // a material that is ticked for Filtering can only be roasted after its Filtering is completed (the server checks this again)
-        setMaterialRows(all.filter((m) => materialStage(m) !== 'FILTERING'));
-        setBlocked(all.filter((m) => materialStage(m) === 'FILTERING'));
-      })
-      .catch((e) => { if (!off) { setMaterialRows([]); setBlocked([]); setMatErr(errMsg(e)); } })
+      .then((r) => { if (!off) setMaterialRows(r.data.data.items); })
+      .catch((e) => { if (!off) { setMaterialRows([]); setMatErr(errMsg(e)); } })
       .finally(() => { if (!off) setLoadingMat(false); });
     return () => { off = true; };
   }, [visible, f.batch_id, item]);
 
-  // Pick the batch -> recipe is filled from the batch; material and I/P are chosen next
   const onBatch = (id) => {
     const b = batchList.find((x) => x.batch_id === id);
     setF((p) => ({ ...p, batch_id: id, code_no: b ? (b.recipe_no || '') : '', material_id: null, input_weight: '' }));
@@ -116,12 +105,12 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
   };
   const onMaterial = (id) => {
     const m = materialRows.find((x) => x.material_id === id);
-    setF((p) => ({ ...p, material_id: id, input_weight: m ? String(m.remaining_qty) : p.input_weight })); // I/P = weight from Batching
+    setF((p) => ({ ...p, material_id: id, input_weight: m ? String(m.remaining_qty) : p.input_weight }));
   };
   const batchOpts = useMemo(() => batchList.map((b) => ({ value: b.batch_id, label: `${b.batch_no} · ${b.product_name}` })), [batchList]);
   const materialOpts = useMemo(() => materialRows.map((m) => ({ value: m.material_id, label: `${m.material_name} · ${m.remaining_qty} kg` })), [materialRows]);
   const pickedMaterial = materialRows.find((m) => m.material_id === f.material_id);
-  const leftKg = materialRows.length ? materialRows[0].batch_left_kg : null; // weight handed over to Roasting
+  const leftKg = materialRows.length ? materialRows[0].batch_left_kg : null;
   const usedByOthers = (key) => rows.filter((r) => r.key !== key).reduce((a, r) => a + (Number(r.input_weight) || 0), 0);
   const totalIn = rows.reduce((a, r) => a + (Number(r.input_weight) || 0), 0);
   const overBatch = !isEdit && leftKg != null && totalIn > leftKg + 0.0005;
@@ -133,31 +122,33 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
     const cap = m ? (leftKg == null ? m.remaining_qty : Math.max(Math.min(m.remaining_qty, leftKg - usedByOthers(key)), 0)) : 0;
     setRow(key, { material_id: id, input_weight: m ? String(Math.round(cap * 1000) / 1000) : '' });
   };
-  // a material can be chosen in one row only
   const rowOpts = (key) => materialOpts.filter((o) => !rows.some((r) => r.key !== key && r.material_id === o.value));
   const rowLoss = (r) => {
     const i = Number(r.input_weight); const o = Number(r.output_weight);
     return i > 0 && r.output_weight !== '' && o > 0 && o <= i ? Math.round(((i - o) / i) * 10000) / 100 : null;
   };
-  // batch is still at Roasting but every material is already roasted (entries saved earlier without the tick)
-  const nothingToRoast = !isEdit && !!f.batch_id && !loadingMat && !matErr && materialRows.length === 0 && blocked.length === 0;
-  // only filtered-pending materials are left: nothing can be roasted until Filtering is done (and the batch must NOT be sent on)
-  const waitingOnly = !isEdit && !!f.batch_id && !loadingMat && !matErr && materialRows.length === 0 && blocked.length > 0;
+  const nothingToRoast = !isEdit && !!f.batch_id && !loadingMat && !matErr && materialRows.length === 0;
   const sendToGrinding = async () => {
     setSaving(true); setErr('');
-    try { await api.post('/roasting/finish', { batch_id: f.batch_id }); setSaving(false); onSaved && onSaved(false); } catch (e) { setErr(errMsg(e)); setSaving(false); }
+    try {
+      const r = await api.post('/roasting/finish', { batch_id: f.batch_id });
+      setSaving(false); onSaved && onSaved(false, { batch_moved: r.data.data.batch_moved });
+    } catch (e) { setErr(errMsg(e)); setSaving(false); }
   };
 
+  // materials of the batch that are not in this form yet (to be roasted later)
+  const notAdded = !isEdit ? materialRows.filter((m) => !rows.some((r) => r.material_id === m.material_id)) : [];
+  const finishes = !isEdit && materialRows.length > 0 && notAdded.length === 0; // every remaining material is in this form
+
   const pickedBatch = batchList.find((b) => b.batch_id === f.batch_id);
-  // The machine is the weighing machine chosen in Batching (older batches without one still pick a roasting machine)
   const batchMachine = pickedBatch && pickedBatch.weighing_machine_id && (!isEdit || String(item.machine_id) === String(pickedBatch.weighing_machine_id)) ? pickedBatch : null;
   const recipeLabel = pickedBatch ? pickedBatch.product_name : f.code_no;
-  // live preview of the calculated columns
+
   const calc = useMemo(() => {
     let inp = Number(f.input_weight); let out = Number(f.output_weight);
     let hasOut = f.output_weight !== '';
     let hours = null;
-    if (!isEdit) { // add mode: totals of all material rows
+    if (!isEdit) {
       const done = rows.filter((r) => Number(r.input_weight) > 0 && Number(r.output_weight) > 0 && Number(r.output_weight) <= Number(r.input_weight));
       inp = done.reduce((a, r) => a + Number(r.input_weight), 0); out = done.reduce((a, r) => a + Number(r.output_weight), 0); hasOut = done.length > 0;
       const hs = rows.map((r) => hoursBetween(r.start_time, r.end_time)).filter((h) => h !== null);
@@ -173,7 +164,6 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
     if (!/^\d{4}-\d{2}-\d{2}$/.test(f.roast_date)) e.roast_date = 'Use YYYY-MM-DD';
     if (!batchMachine && !f.machine_id) e.machine_id = 'Select a machine';
     if ((!isEdit || item.batch_id) && !f.batch_id) e.batch_id = 'Select the batch code';
-    // single Material box exists only when editing one entry; in Add mode every row is checked below
     if (isEdit && item.batch_id && f.batch_id && !f.material_id) e.material_id = 'Select the material';
     if (!f.batch_id && !f.code_no.trim()) e.code_no = 'Select the batch code';
     if (isEdit) {
@@ -188,7 +178,7 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
       rows.forEach((r) => {
         const m = materialRows.find((x) => x.material_id === r.material_id);
         if (!r.material_id) e[`m${r.key}`] = 'Select the material';
-        if (!(Number(r.input_weight) > 0)) e[`i${r.key}`] = 'Enter I/P';
+        if (!(Number(r.input_weight) > 0)) e[`i${r.key}`] = 'Select the material to fill I/P';
         else if (m && Number(r.input_weight) > m.remaining_qty + 0.0005) e[`i${r.key}`] = `Max ${m.remaining_qty} kg`;
         if (!(Number(r.output_weight) > 0)) e[`o${r.key}`] = 'Enter O/P';
         else if (Number(r.output_weight) > Number(r.input_weight)) e[`o${r.key}`] = 'More than I/P';
@@ -209,16 +199,17 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
     setSaving(true); setErr('');
     try {
       const body = { ...f, code_no: f.code_no.trim().toUpperCase(), machine_id: batchMachine ? batchMachine.weighing_machine_id : f.machine_id };
+      let data = null;
       if (isEdit) await api.put(`/roasting/${item.id}`, body);
       else {
-        // one request, many materials: each row carries its own I/P, O/P and start/end time
-        await api.post('/roasting', {
+        const r = await api.post('/roasting', {
           ...body, material_id: undefined, input_weight: undefined, output_weight: undefined, start_time: undefined, end_time: undefined,
-          materials: rows.map((r) => ({ material_id: r.material_id, input_weight: r.input_weight, output_weight: r.output_weight, start_time: r.start_time, end_time: r.end_time })),
+          materials: rows.map((x) => ({ material_id: x.material_id, input_weight: x.input_weight, output_weight: x.output_weight, start_time: x.start_time, end_time: x.end_time })),
         });
+        data = r.data.data;
       }
       setSaving(false);
-      onSaved && onSaved(isEdit);
+      onSaved && onSaved(isEdit, data);
     } catch (e) { setErr(errMsg(e)); setSaving(false); }
   };
 
@@ -226,13 +217,13 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
 
   return (
     <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon="fire" maxWidth={720}
-      title={isEdit ? 'Edit Roasting Entry' : 'Add Roasting Entry'} subtitle={isEdit ? `${item.batch_no ? `${item.batch_no} · ` : ''}${item.material_name || ''}` : 'Batch code → add all materials of the batch'}
+      title={isEdit ? 'Edit Roasting Entry' : 'Add Roasting Entry'} subtitle={isEdit ? `${item.batch_no ? `${item.batch_no} · ` : ''}${item.material_name || ''}` : 'Batch code → add the materials roasted now'}
       footer={(
         <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
           <Text numberOfLines={3} style={{ flex: 1, marginRight: 12, color: COLORS.danger, fontWeight: '700', fontSize: 12 }}>{err}</Text>
           <Button mode="outlined" onPress={onDismiss} disabled={saving} textColor={COLORS.text} style={{ borderRadius: 10, borderColor: COLORS.border, marginRight: 10 }}>Cancel</Button>
-          <Button mode="contained" onPress={save} loading={saving} disabled={saving || loading || nothingToRoast || waitingOnly} buttonColor={COLORS.green} style={{ borderRadius: 10 }} icon="check">
-            {isEdit ? 'Update Entry' : 'Save Roasting'}
+          <Button mode="contained" onPress={save} loading={saving} disabled={saving || loading || nothingToRoast} buttonColor={COLORS.green} style={{ borderRadius: 10 }} icon="check">
+            {isEdit ? 'Update Entry' : (finishes ? 'Save & Send to Grinding' : 'Save Roasting')}
           </Button>
         </View>
       )}>
@@ -275,22 +266,14 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
             </View>
           ) : (
             <View>
-              <Label style={{ marginTop: 6 }}>MATERIALS (each with its own I/P, O/P, Loss % and time)</Label>
+              <Label style={{ marginTop: 6 }}>MATERIALS TO ROAST (each with its own I/P, O/P, Loss % and time)</Label>
               {!!matErr && (
                 <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.dangerBg, borderRadius: 10, padding: 10, marginBottom: 10 }}>
                   <MCI name="alert-circle" size={16} color={COLORS.danger} />
                   <Text style={{ color: COLORS.danger, marginLeft: 8, flex: 1, fontWeight: '600' }}>Could not load the materials of this batch: {matErr}</Text>
                 </View>
               )}
-              {blocked.length > 0 && (
-                <View style={{ backgroundColor: COLORS.warnBg, borderRadius: 12, padding: 12, marginBottom: 10 }}>
-                  <Text style={{ color: COLORS.warn, fontWeight: '800' }}>Waiting for Filtering: {blocked.map((m) => m.material_name).join(', ')}</Text>
-                  <Text style={{ color: COLORS.warn, fontSize: 12, marginTop: 4 }}>
-                    {waitingOnly ? 'Nothing in this batch can be roasted yet. Complete Filtering first.' : 'These materials cannot be roasted until their Filtering is completed. The other materials can be roasted now.'}
-                  </Text>
-                </View>
-              )}
-              {waitingOnly ? null : nothingToRoast ? (
+              {nothingToRoast ? (
                 <View style={{ backgroundColor: COLORS.greyBg, borderRadius: 12, padding: 12, marginBottom: 10 }}>
                   <Text style={{ color: COLORS.text, fontWeight: '700' }}>Every material of this batch is already roasted.</Text>
                   <Text style={{ color: COLORS.grey, fontSize: 12, marginTop: 4, marginBottom: 8 }}>The batch is still waiting at Roasting. Send it on to Grinding.</Text>
@@ -308,7 +291,7 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
                         <SelectField label={`Material ${idx + 1} *`} value={r.material_id} options={rowOpts(r.key)} onChange={(id) => pickRowMaterial(r.key, id)}
                           error={errors[`m${r.key}`]} disabled={!f.batch_id || loadingMat} />
                         <FormRow>
-                          <FormField label="I/P (Kg) *" numeric value={r.input_weight} onChangeText={(t) => setRow(r.key, { input_weight: t })} error={errors[`i${r.key}`]} />
+                          <FormField label="I/P (Kg) * (auto)" numeric value={r.input_weight} editable={false} error={errors[`i${r.key}`]} />
                           <FormField label="O/P (Kg) *" numeric value={r.output_weight} onChangeText={(t) => setRow(r.key, { output_weight: t })} error={errors[`o${r.key}`]} />
                           <View style={{ flex: 1, backgroundColor: hi ? COLORS.dangerBg : COLORS.greyBg, borderRadius: 12, padding: 10, marginBottom: 12, justifyContent: 'center' }}>
                             <Text style={{ fontSize: 10, fontWeight: '800', color: hi ? COLORS.danger : COLORS.grey }}>LOSS %{hi ? ' · HIGH' : ''}</Text>
@@ -340,7 +323,11 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
                   <Button mode="outlined" icon="plus" onPress={addRow} disabled={!f.batch_id || loadingMat || rows.length >= materialOpts.length}
                     textColor={COLORS.primary} style={{ borderRadius: 10, borderColor: COLORS.border, alignSelf: 'flex-start', marginBottom: 12 }}>Add another material</Button>
                   <Text style={{ fontSize: 12, color: COLORS.grey, marginBottom: overBatch ? 2 : 8 }}>
-                    Total I/P {calc.inp} kg · Total O/P {calc.out} kg. Materials you do not add here go on to Grinding as they are.
+                    Total I/P {calc.inp} kg · Total O/P {calc.out} kg.{' '}
+                    {notAdded.length > 0
+                      ? `Not added now: ${notAdded.map((m) => m.material_name).join(', ')}. Add them later; the batch goes to Grinding after every material is roasted.`
+                      : 'All remaining materials are in this entry. Saving sends the batch to Grinding.'}
+                    {' '}Saved entries cannot be edited.
                   </Text>
                   {overBatch && (
                     <Text style={{ fontSize: 12, color: COLORS.danger, fontWeight: '700', marginBottom: 8 }}>
@@ -369,7 +356,6 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
             </View>
           )}
 
-          {/* calculated by the system */}
           <View style={{ flexDirection: 'row', marginBottom: 12 }}>
             <View style={{ flex: 1, backgroundColor: COLORS.greyBg, borderRadius: 12, padding: 12, marginRight: 10 }}>
               <Text style={{ fontSize: 11, fontWeight: '800', color: COLORS.grey }}>{isEdit ? 'RUNNING HOURS' : 'TOTAL RUNNING HOURS'}</Text>
@@ -382,12 +368,6 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
           </View>
 
           <FormField label="Remarks" multiline value={f.remarks} onChangeText={set('remarks')} maxLength={255} />
-          {!isEdit && !nothingToRoast && (
-            <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.greyBg, borderRadius: 12, padding: 12, marginBottom: 8 }}>
-              <MCI name="information-outline" size={20} color={COLORS.grey} />
-              <Text style={{ flex: 1, marginLeft: 10, fontSize: 12, color: COLORS.grey }}>Saving finishes Roasting for this batch and sends it to Grinding. No tick is needed.</Text>
-            </View>
-          )}
 
           {!!err && (
             <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.dangerBg, borderRadius: 10, padding: 10, marginTop: 8 }}>

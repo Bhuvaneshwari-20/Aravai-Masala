@@ -36,10 +36,9 @@ function Box({ label, value, color, bg, flex = 1 }) {
   );
 }
 
-// Filtering entry for one batch (the batch had materials ticked "Filter" in Batching).
-// Pick a material from the dropdown -> its I/P (weighed in Batching) fills in automatically; enter the O/P and the Start / End time of THAT material.
-// "Add material" adds another row. Totals (I/P, O/P, wastage, loss %) are calculated from all rows.
-// A batch with no material list (old entries) keeps the single I/P / O/P boxes and one shared time. Saving moves the batch to ROASTING.
+// Filtering for one batch. batch.materials = the ticked materials NOT filtered yet.
+// Add one or more materials and save: those entries are saved and LOCKED. The batch goes to Roasting only when every material is filtered.
+// A batch with no material list (old entries) keeps the single I/P / O/P boxes and one shared time.
 export default function FilteringFormModal({ visible, batch, onDismiss, onSaved }) {
   const [f, setF] = useState({});
   const [lines, setLines] = useState([]); // [{ key, material_id, out, start, end }]
@@ -51,11 +50,12 @@ export default function FilteringFormModal({ visible, batch, onDismiss, onSaved 
   const mats = (batch && batch.materials) || [];
   const perMaterial = mats.length > 0;
   const byId = useMemo(() => new Map(mats.map((m) => [m.material_id, m])), [mats]);
+  const doneCount = Number(batch?.done_materials || 0);
+  const totalCount = Number(batch?.total_materials || mats.length);
 
   useEffect(() => {
     if (!visible || !batch) return;
     setF({ date: todayStr(), stages: Number(batch.recipe_stages) > 0 ? Number(batch.recipe_stages) : 1, output: '', start: '', end: '', remarks: '' });
-    // only one material to filter -> pre-select it
     setLines([newRow(batch.materials && batch.materials.length === 1 ? batch.materials[0].material_id : null)]);
     setErrors({}); setErr(''); setSaving(false);
   }, [visible, batch]); // eslint-disable-line
@@ -67,7 +67,6 @@ export default function FilteringFormModal({ visible, batch, onDismiss, onSaved 
     .map((m) => ({ value: m.material_id, label: `${m.material_name} · I/P ${fmt(m.input_weight)} kg` }));
   const canAdd = perMaterial && lines.length < mats.length;
 
-  // per row + totals (preview; the server calculates again)
   const calc = useMemo(() => {
     if (!perMaterial) {
       const out = Number(f.output);
@@ -114,9 +113,6 @@ export default function FilteringFormModal({ visible, batch, onDismiss, onSaved 
     try {
       const body = { batch_id: batch.batch_id, filter_date: f.date, stages: f.stages, remarks: f.remarks || undefined };
       if (perMaterial) {
-        // header time = earliest start .. latest end of all materials (so the current server still works)
-        const starts = lines.map((l) => l.start).sort(); const ends = lines.map((l) => l.end).sort();
-        body.start_time = starts[0]; body.end_time = ends[ends.length - 1];
         body.materials = lines.map((l) => ({ material_id: l.material_id, output_weight: l.out, start_time: l.start, end_time: l.end }));
       } else {
         body.start_time = f.start; body.end_time = f.end; body.output_weight = f.output;
@@ -129,19 +125,26 @@ export default function FilteringFormModal({ visible, batch, onDismiss, onSaved 
 
   const high = calc.loss !== null && calc.loss > 5;
   const notChosen = perMaterial ? mats.filter((m) => !used.has(m.material_id)) : [];
+  const finishes = !perMaterial || notChosen.length === 0; // every remaining material is in this form -> batch goes to Roasting
 
   return (
     <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon="filter-variant" maxWidth={640}
       title="Filtering" subtitle={batch ? `${batch.batch_no} · ${batch.product_name}` : ''}
-      footer={<ModalFooter onCancel={onDismiss} onSave={save} saving={saving} label="Save Filtering" />}>
+      footer={<ModalFooter onCancel={onDismiss} onSave={save} saving={saving} label={finishes ? 'Save & Send to Roasting' : 'Save'} />}>
       <View>
         <Label>FILTERING</Label>
         <WeighingMachineInfo batch={batch} />
+        {perMaterial && doneCount > 0 && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.okBg, borderRadius: 12, padding: 10, marginBottom: 10 }}>
+            <MCI name="check-circle-outline" size={18} color={COLORS.ok} />
+            <Text style={{ flex: 1, marginLeft: 8, fontSize: 12.5, fontWeight: '700', color: COLORS.ok }}>{doneCount} of {totalCount} materials already filtered (saved, cannot be changed)</Text>
+          </View>
+        )}
         <FormField label="Date * (YYYY-MM-DD)" value={f.date || ''} onChangeText={(t) => set('date')(fmtDate(t))} error={errors.date} keyboardType="number-pad" maxLength={10} />
 
         {perMaterial ? (
           <>
-            <Label style={{ marginTop: 6 }}>MATERIALS FILTERED (each with its own time)</Label>
+            <Label style={{ marginTop: 6 }}>MATERIALS TO FILTER (each with its own time)</Label>
             {calc.rows.map((r, i) => (
               <View key={r.key} style={{ borderWidth: 1, borderColor: COLORS.border, borderRadius: 14, padding: 12, marginBottom: 10 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
@@ -178,15 +181,16 @@ export default function FilteringFormModal({ visible, batch, onDismiss, onSaved 
               </Pressable>
             )}
 
-            <Label style={{ marginTop: 2 }}>TOTAL</Label>
+            <Label style={{ marginTop: 2 }}>THIS ENTRY</Label>
             <View style={{ flexDirection: 'row' }}>
               <Box label="TOTAL LOSS %" value={calc.loss === null ? '–' : `${calc.loss} %`} color={high ? COLORS.danger : undefined} bg={high ? COLORS.dangerBg : undefined} />
             </View>
-            {notChosen.length > 0 && (
-              <Text style={{ fontSize: 12, color: COLORS.grey, marginBottom: 10 }}>
-                Not added: {notChosen.map((m) => m.material_name).join(', ')}. These go to Roasting without filtering. Other materials of the batch also go straight to Roasting.
-              </Text>
-            )}
+            <Text style={{ fontSize: 12, color: COLORS.grey, marginBottom: 10 }}>
+              {notChosen.length > 0
+                ? `Not added now: ${notChosen.map((m) => m.material_name).join(', ')}. Add them later; the batch goes to Roasting after every material is filtered.`
+                : 'All remaining materials are in this entry. Saving sends the batch to Roasting.'}
+              {' '}Saved entries cannot be edited.
+            </Text>
           </>
         ) : (
           <>

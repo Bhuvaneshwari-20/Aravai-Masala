@@ -32,13 +32,14 @@ function PendingCard({ item, index, onPress }) {
   const hold = item.status === 'ON_HOLD';
   return (
     <InfoCard index={index} icon="filter-variant" color={hold ? COLORS.warn : COLORS.primary}
-      value={fmt(item.materials && item.materials.length ? item.filter_kg : item.input_kg)} unit="KG" caption="Input weight to filter"
+      value={fmt(item.materials && item.materials.length ? item.filter_kg : item.input_kg)} unit="KG" caption="Input weight still to filter"
       right={<Badge tone={hold ? 'warn' : 'ok'} text={hold ? 'ON HOLD' : 'WAITING'} />}
       onPress={onPress}
       bottom={<ActionPill hold={hold} />}>
       <Text style={s.batch} numberOfLines={1}>{item.batch_no}</Text>
       <InfoLine icon="tag-outline" text={`${item.product_name}${item.recipe_no ? ` · ${item.recipe_no}` : ''}`} />
       <InfoLine icon="calendar-blank-outline" text={String(item.production_date).slice(0, 10)} />
+      {item.done_materials > 0 && <InfoLine icon="check-circle-outline" color={COLORS.ok} text={`${item.done_materials} of ${item.total_materials} materials filtered`} />}
       {item.materials && item.materials.length
         ? item.materials.map((m) => <InfoLine key={m.material_id} icon="filter-outline" color={COLORS.primary} text={`${m.material_name} · ${fmt(m.input_weight)} kg`} />)
         : !!item.filter_materials && <InfoLine icon="filter-outline" color={COLORS.primary} lines={2} text={`To filter: ${item.filter_materials}`} />}
@@ -122,7 +123,11 @@ export default function FilteringListScreen() {
       </Container>
 
       <FilteringFormModal visible={form.open} batch={form.batch} onDismiss={() => setForm({ open: false, batch: null })}
-        onSaved={(r) => { setForm({ open: false, batch: null }); list.reload(); toast(`${r.batch_no} filtered - ready for Roasting`); }} />
+              onSaved={(r) => {
+          setForm({ open: false, batch: null }); list.reload();
+          toast(r.batch_moved ? `${r.batch_no} filtered - sent to Roasting`
+            : `${r.batch_no}: saved. Still to filter: ${(r.pending_materials || []).join(', ')}`);
+        }} />
     </View>
   );
 }
@@ -133,3 +138,4 @@ const s = StyleSheet.create({
   pill: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.primary, borderRadius: 12, paddingVertical: 10 },
   pillText: { color: '#fff', fontWeight: '800', fontSize: 13.5, marginLeft: 6 },
 });
+
