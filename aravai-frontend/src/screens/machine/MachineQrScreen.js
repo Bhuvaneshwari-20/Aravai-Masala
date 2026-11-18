@@ -60,7 +60,7 @@ export default function MachineQrScreen({ route, navigation }) {
           <View style={s.rows}>
             <Row k="Machine code" v={m.machine_code} />
             <Row k="Machine name" v={m.machine_name} />
-            <Row k="Machine type" v={label(MACHINE_TYPES, m.machine_type)} />
+            <Row k="Machine type" v={m.machine_type_name || label(MACHINE_TYPES, m.machine_type)} />
             <Row k="Status" v={label(MACHINE_STATUS, m.status)} />
             <Row k="Manufacturer" v={m.manufacturer} />
             <Row k="Capacity" v={m.capacity != null ? `${fmt(m.capacity)} ${m.capacity_unit || ''}`.trim() : null} />

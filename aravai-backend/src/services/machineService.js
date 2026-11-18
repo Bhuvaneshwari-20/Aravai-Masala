@@ -5,6 +5,7 @@ const AppError = require('../utils/AppError');
 const v = require('../utils/validate');
 const { newToken, extractToken, qrUrl } = require('../utils/qrToken');
 
+// Built-in types. Production screens look machines up by these codes, so they can be renamed but never deleted.
 const TYPES = ['ROASTING', 'GRINDING', 'BLENDING', 'PACKING', 'WEIGHING'];
 
 const STATUSES = [
@@ -15,10 +16,12 @@ const STATUSES = [
   'INACTIVE'
 ];
 
+// machine_type_name comes from the machine_types master (empty if a machine has a code that is not in the master)
 const SELECT = `
-  SELECT m.*, u.full_name AS operator_name
+  SELECT m.*, u.full_name AS operator_name, t.name AS machine_type_name
   FROM machine_master m
   LEFT JOIN users u ON u.id = m.operator_id
+  LEFT JOIN machine_types t ON t.code = m.machine_type
 `;
 
 const fmtDate = (d) =>
@@ -70,7 +73,8 @@ async function list(q) {
   if (q.machine_type) {
     const t = String(q.machine_type).toUpperCase();
 
-    if (!TYPES.includes(t)) {
+    // any code from the machine type master is allowed (no longer a fixed list)
+    if (!/^[A-Z0-9_]{1,50}$/.test(t)) {
       throw new AppError('Invalid machine type');
     }
 
@@ -93,10 +97,11 @@ async function list(q) {
 
   if (search) {
     where.push(
-      '(m.machine_code LIKE ? OR m.machine_name LIKE ? OR m.manufacturer LIKE ?)'
+      '(m.machine_code LIKE ? OR m.machine_name LIKE ? OR m.manufacturer LIKE ? OR t.name LIKE ?)'
     );
 
     args.push(
+      `%${search}%`,
       `%${search}%`,
       `%${search}%`,
       `%${search}%`
@@ -108,7 +113,8 @@ async function list(q) {
     : '';
 
   const [[{ total }]] = await pool.query(
-    `SELECT COUNT(*) AS total FROM machine_master m ${w}`,
+    `SELECT COUNT(*) AS total FROM machine_master m
+     LEFT JOIN machine_types t ON t.code = m.machine_type ${w}`,
     args
   );
 
@@ -134,10 +140,20 @@ async function list(q) {
 // --------------------------------------------------
 
 async function parse(body, db) {
-  const type = String(body.machine_type || '').toUpperCase();
+  const type = String(body.machine_type || '').trim().toUpperCase();
 
-  if (!TYPES.includes(type)) {
+  if (!type) {
     throw new AppError('Select the machine type');
+  }
+
+  // must be an active (not deleted) type of the machine type master
+  const [tt] = await db.query(
+    'SELECT id FROM machine_types WHERE code = ? AND deleted_at IS NULL',
+    [type]
+  );
+
+  if (!tt.length) {
+    throw new AppError('Select a valid machine type');
   }
 
   const status = String(body.status || 'ACTIVE').toUpperCase();
@@ -377,6 +393,43 @@ async function update(idRaw, body, userId, ip) {
 
 
 // --------------------------------------------------
+// CHANGE ONLY THE STATUS  (PUT /machines/:id/status  { status })
+// Used by the status badge on the machine card.
+// --------------------------------------------------
+
+async function setStatus(idRaw, body, userId, ip) {
+  const id = v.toId(idRaw, 'machine id');
+  const status = String((body && body.status) || '').trim().toUpperCase();
+
+  if (!STATUSES.includes(status)) {
+    throw new AppError('Invalid status');
+  }
+
+  return withTransaction(async (conn) => {
+    const old = await getById(id, conn);
+
+    if (old.status === status) {
+      return old;
+    }
+
+    await conn.query('UPDATE machine_master SET status = ? WHERE id = ?', [status, id]);
+
+    await audit({
+      userId,
+      action: 'STATUS_CHANGE',
+      table: 'machine_master',
+      recordId: id,
+      oldValues: { status: old.status },
+      newValues: { status },
+      ip
+    }, conn);
+
+    return getById(id, conn);
+  });
+}
+
+
+// --------------------------------------------------
 // DELETE MACHINE
 // --------------------------------------------------
 
@@ -412,6 +465,286 @@ async function remove(idRaw, userId, ip) {
   });
 
   return { id };
+}
+
+
+// ==================================================
+// MACHINE TYPE MASTER
+//   machine_types        id, code, name, created_by, updated_by, deleted_by, created_at, updated_at, deleted_at
+//   machine_type_audit   independent history log (no foreign key), so it survives soft delete
+// Soft delete: a deleted type keeps its row (deleted_at is set) and its history.
+// ==================================================
+
+// "Cold Press" -> COLD_PRESS. Stored on machine_master.machine_type; never changes after creation.
+const toCode = (name) =>
+  String(name).trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+
+const TYPE_SELECT = `
+  SELECT t.id, t.code, t.name, t.created_at, t.updated_at, t.deleted_at,
+         t.created_by, t.updated_by, t.deleted_by,
+         cu.full_name AS created_by_name, uu.full_name AS updated_by_name, du.full_name AS deleted_by_name,
+         (SELECT COUNT(*) FROM machine_master m WHERE m.machine_type = t.code) AS machine_count
+  FROM machine_types t
+  LEFT JOIN users cu ON cu.id = t.created_by
+  LEFT JOIN users uu ON uu.id = t.updated_by
+  LEFT JOIN users du ON du.id = t.deleted_by
+`;
+
+const typeShape = (r) => ({
+  ...r,
+  is_system: TYPES.includes(r.code),
+  machine_count: Number(r.machine_count || 0)
+});
+
+// MariaDB returns JSON text, MySQL returns objects: accept both
+const parseJson = (x) => {
+  if (x === null || x === undefined) return null;
+  if (typeof x === 'object') return x;
+  try { return JSON.parse(x); } catch { return null; }
+};
+
+async function getType(idRaw, db = pool) {
+  const id = v.toId(idRaw, 'machine type id');
+  const [rows] = await db.query(`${TYPE_SELECT} WHERE t.id = ?`, [id]);
+  if (!rows.length) throw new AppError('Machine type not found', 404);
+  return typeShape(rows[0]);
+}
+
+async function userName(userId, db) {
+  if (!userId) return null;
+  const [r] = await db.query('SELECT full_name FROM users WHERE id = ?', [userId]);
+  return r.length ? r[0].full_name : null;
+}
+
+// One row of the history log, written inside the caller's transaction
+async function typeLog(conn, { typeId, typeName, action, previous, next, userId, ip }) {
+  await conn.query(
+    `INSERT INTO machine_type_audit
+       (machine_type_id, machine_type_name, action, previous_value, new_value, performed_by, performed_by_name, ip_address)
+     VALUES (?,?,?,?,?,?,?,?)`,
+    [
+      typeId,
+      typeName,
+      action,
+      previous ? JSON.stringify(previous) : null,
+      next ? JSON.stringify(next) : null,
+      userId || null,
+      await userName(userId, conn),
+      ip || null
+    ]
+  );
+}
+
+function parseTypeName(body) {
+  const name = v.reqStr(body && body.name, 'Machine type name', 100);
+
+  if (name.length < 2) throw new AppError('Machine type name must be at least 2 characters');
+
+  const code = toCode(name);
+
+  if (!code) throw new AppError('Machine type name must contain letters or numbers');
+  if (code.length > 50) throw new AppError('Machine type name is too long');
+
+  return { name, code };
+}
+
+
+// GET /machines/types?status=active|deleted|all&search=
+async function listTypes(q) {
+  const status = String(q.status || 'active').toLowerCase();
+
+  if (!['active', 'deleted', 'all'].includes(status)) {
+    throw new AppError('Invalid status');
+  }
+
+  const where = [];
+  const args = [];
+
+  if (status === 'active') where.push('t.deleted_at IS NULL');
+  if (status === 'deleted') where.push('t.deleted_at IS NOT NULL');
+
+  const search = v.clean(q.search);
+
+  if (search) {
+    where.push('(t.name LIKE ? OR t.code LIKE ?)');
+    args.push(`%${search}%`, `%${search}%`);
+  }
+
+  const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const [rows] = await pool.query(
+    `${TYPE_SELECT} ${w}
+     ORDER BY ${status === 'deleted' ? 't.deleted_at DESC' : 't.name'}`,
+    args
+  );
+
+  return { items: rows.map(typeShape), total: rows.length };
+}
+
+
+// POST /machines/types  { name }
+// Adding a name that was deleted earlier restores that same type, so its history stays in one place.
+async function createType(body, userId, ip) {
+  const d = parseTypeName(body);
+
+  return withTransaction(async (conn) => {
+    const [ex] = await conn.query('SELECT * FROM machine_types WHERE code = ? FOR UPDATE', [d.code]);
+
+    if (ex.length && !ex[0].deleted_at) {
+      throw new AppError(`Machine type "${ex[0].name}" already exists`, 409);
+    }
+
+    let id;
+    let previous = null;
+    let next = { name: d.name };
+
+    if (ex.length) {
+      id = ex[0].id;
+      previous = { name: ex[0].name, deleted: true };
+      next = { name: d.name, restored: true };
+
+      await conn.query(
+        'UPDATE machine_types SET name = ?, deleted_at = NULL, deleted_by = NULL, updated_by = ? WHERE id = ?',
+        [d.name, userId, id]
+      );
+    } else {
+      const [r] = await conn.query(
+        'INSERT INTO machine_types (code, name, created_by, updated_by) VALUES (?,?,?,?)',
+        [d.code, d.name, userId, userId]
+      );
+      id = r.insertId;
+    }
+
+    await typeLog(conn, { typeId: id, typeName: d.name, action: 'CREATED', previous, next, userId, ip });
+    await audit({ userId, action: 'CREATE', table: 'machine_types', recordId: id, oldValues: previous, newValues: next, ip }, conn);
+
+    return getType(id, conn);
+  });
+}
+
+
+// PUT /machines/types/:id  { name }   (the code never changes)
+async function updateType(idRaw, body, userId, ip) {
+  const id = v.toId(idRaw, 'machine type id');
+  const d = parseTypeName(body);
+
+  return withTransaction(async (conn) => {
+    const [rows] = await conn.query('SELECT * FROM machine_types WHERE id = ? FOR UPDATE', [id]);
+
+    if (!rows.length) throw new AppError('Machine type not found', 404);
+
+    const old = rows[0];
+
+    if (old.deleted_at) throw new AppError('This machine type was deleted and cannot be edited', 409);
+
+    // "Cold-Press" and "Cold Press" would give the same code as another type
+    if (d.code !== old.code) {
+      const [clash] = await conn.query('SELECT name FROM machine_types WHERE code = ? AND id <> ?', [d.code, id]);
+      if (clash.length) throw new AppError(`"${clash[0].name}" already exists. Use a different name`, 409);
+    }
+
+    if (old.name === d.name) {
+      return getType(id, conn); // nothing changed: no update, no history entry
+    }
+
+    await conn.query('UPDATE machine_types SET name = ?, updated_by = ? WHERE id = ?', [d.name, userId, id]);
+
+    await typeLog(conn, {
+      typeId: id, typeName: d.name, action: 'UPDATED',
+      previous: { name: old.name }, next: { name: d.name }, userId, ip
+    });
+    await audit({ userId, action: 'UPDATE', table: 'machine_types', recordId: id, oldValues: { name: old.name }, newValues: { name: d.name }, ip }, conn);
+
+    return getType(id, conn);
+  });
+}
+
+
+// DELETE /machines/types/:id[?reassign_to=<type id>]   (soft delete)
+//  - built-in types cannot be deleted
+//  - a type that machines still use is deleted only together with a reassignment: all its machines
+//    are moved to reassign_to in the same transaction
+async function removeType(idRaw, reassignRaw, userId, ip) {
+  const id = v.toId(idRaw, 'machine type id');
+  const reassignTo = v.clean(reassignRaw) ? v.toId(reassignRaw, 'reassign type') : null;
+
+  return withTransaction(async (conn) => {
+    const [rows] = await conn.query('SELECT * FROM machine_types WHERE id = ? FOR UPDATE', [id]);
+
+    if (!rows.length || rows[0].deleted_at) throw new AppError('Machine type not found', 404);
+
+    const t = rows[0];
+
+    if (TYPES.includes(t.code)) {
+      throw new AppError(`"${t.name}" is a built-in type used by the production screens and cannot be deleted. You can rename it instead`, 409);
+    }
+
+    const [machines] = await conn.query('SELECT id FROM machine_master WHERE machine_type = ? FOR UPDATE', [t.code]);
+    let target = null;
+
+    if (machines.length) {
+      if (!reassignTo) {
+        throw new AppError(`"${t.name}" is used by ${machines.length} machine${machines.length > 1 ? 's' : ''}. Move them to another type to delete it`, 409);
+      }
+
+      if (reassignTo === id) throw new AppError('Choose a different machine type to move the machines to');
+
+      const [tg] = await conn.query('SELECT * FROM machine_types WHERE id = ? AND deleted_at IS NULL FOR UPDATE', [reassignTo]);
+
+      if (!tg.length) throw new AppError('The type you chose to move machines to was not found', 404);
+
+      target = tg[0];
+
+      await conn.query('UPDATE machine_master SET machine_type = ? WHERE machine_type = ?', [target.code, t.code]);
+
+      for (const m of machines) {
+        await audit({
+          userId, action: 'UPDATE', table: 'machine_master', recordId: m.id,
+          oldValues: { machine_type: t.code }, newValues: { machine_type: target.code }, ip
+        }, conn);
+      }
+    }
+
+    await conn.query('UPDATE machine_types SET deleted_at = NOW(), deleted_by = ?, updated_by = ? WHERE id = ?', [userId, userId, id]);
+
+    const next = {
+      deleted: true,
+      ...(target ? { reassigned_machines: machines.length, reassigned_to: target.name } : {})
+    };
+
+    await typeLog(conn, { typeId: id, typeName: t.name, action: 'DELETED', previous: { name: t.name }, next, userId, ip });
+    await audit({ userId, action: 'DELETE', table: 'machine_types', recordId: id, oldValues: { name: t.name }, newValues: next, ip }, conn);
+
+    return { id, moved: machines.length };
+  });
+}
+
+
+// GET /machines/types/:id/history  -> { type, items: [newest first] }   (works for deleted types too)
+async function typeHistory(idRaw) {
+  const id = v.toId(idRaw, 'machine type id');
+
+  const [rows] = await pool.query(
+    `SELECT id, machine_type_id, machine_type_name, action, previous_value, new_value,
+            performed_by, performed_by_name, performed_at
+     FROM machine_type_audit WHERE machine_type_id = ? ORDER BY id DESC LIMIT 500`,
+    [id]
+  );
+
+  let type = null;
+
+  try { type = await getType(id); } catch (e) { if (e.status !== 404) throw e; }
+
+  if (!type && !rows.length) throw new AppError('Machine type not found', 404);
+
+  return {
+    type,
+    items: rows.map((r) => ({
+      ...r,
+      previous_value: parseJson(r.previous_value),
+      new_value: parseJson(r.new_value)
+    }))
+  };
 }
 
 
@@ -499,6 +832,7 @@ async function qrInfo(idRaw) {
     machine_code: m.machine_code,
     machine_name: m.machine_name,
     machine_type: m.machine_type,
+    machine_type_name: m.machine_type_name,
     qr_token: token,
     qr_url: qrUrl(token)
   };
@@ -577,7 +911,15 @@ module.exports = {
   getById,
   create,
   update,
+  setStatus,
   remove,
+
+  // machine type master
+  listTypes,
+  createType,
+  updateType,
+  removeType,
+  typeHistory,
 
   // QR functions
   qrInfo,
