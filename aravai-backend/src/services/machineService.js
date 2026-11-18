@@ -181,7 +181,15 @@ async function parse(body, db) {
     nextMaint = x.toISOString().slice(0, 10);
   }
 
+  // Optional tare of a weighing machine (kg). Key not sent -> undefined (update keeps the stored value); blank -> null (no tare)
+  let tare;
+  if (body.tare_weight_kg !== undefined) {
+    tare = v.clean(body.tare_weight_kg) ? v.num(body.tare_weight_kg, 'Tare weight (kg)', { max: 1000000, decimals: 3 }) : null;
+    if (tare === 0) tare = null;
+  }
+
   return {
+    tare_weight_kg: tare,
     machine_name: v.reqStr(body.machine_name, 'Machine name', 100),
     machine_type: type,
     manufacturer: v.optStr(body.manufacturer, 'Manufacturer', 100),
@@ -240,8 +248,9 @@ async function create(body, userId, ip) {
             calibration_due_date,
             maintenance_interval_days,
             remarks,
-            qr_token
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            qr_token,
+            tare_weight_kg
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [
             code,
             d.machine_name,
@@ -260,7 +269,8 @@ async function create(body, userId, ip) {
             d.calibration_due_date,
             d.maintenance_interval_days,
             d.remarks,
-            token
+            token,
+            d.tare_weight_kg === undefined ? null : d.tare_weight_kg
           ]
         );
 
@@ -326,7 +336,8 @@ async function update(idRaw, body, userId, ip) {
         serial_no = ?,
         calibration_due_date = ?,
         maintenance_interval_days = ?,
-        remarks = ?
+        remarks = ?,
+        tare_weight_kg = ?
        WHERE id = ?`,
       [
         d.machine_name,
@@ -345,6 +356,7 @@ async function update(idRaw, body, userId, ip) {
         d.calibration_due_date,
         d.maintenance_interval_days,
         d.remarks,
+        d.tare_weight_kg === undefined ? (old.tare_weight_kg ?? null) : d.tare_weight_kg,
         id
       ]
     );

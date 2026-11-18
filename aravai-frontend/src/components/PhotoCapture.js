@@ -12,7 +12,8 @@ const insecureWeb = Platform.OS === 'web' && typeof window !== 'undefined' && wi
 
 // Live camera -> preview -> Retake / Upload. Only a photo taken right now is accepted (no gallery picker).
 // onUpload(photo) must return a promise; errors are shown by the parent through `error`.
-export default function PhotoCapture({ onUpload, uploading, error, uploadLabel = 'Upload & Verify' }) {
+// autoSubmit: onUpload runs as soon as the photo is taken (no extra tap); Retake / the upload button stay available if it fails.
+export default function PhotoCapture({ onUpload, uploading, error, uploadLabel = 'Upload & Verify', autoSubmit = false }) {
   const [perm, request] = useCameraPermissions();
   const cam = useRef(null);
   const [ready, setReady] = useState(false);
@@ -20,10 +21,12 @@ export default function PhotoCapture({ onUpload, uploading, error, uploadLabel =
   const [photo, setPhoto] = useState(null);
   const [localErr, setLocalErr] = useState('');
 
+  const accept = (p) => { setPhoto(p); if (autoSubmit && onUpload) onUpload(p); };
+
   const snap = async () => {
     if (!cam.current || !ready || taking) return;
     setTaking(true); setLocalErr('');
-    try { setPhoto(await cam.current.takePictureAsync({ quality: 0.7 })); } catch (e) { setLocalErr('Could not take the photo. Please try again.'); }
+    try { accept(await cam.current.takePictureAsync({ quality: 0.7 })); } catch (e) { setLocalErr('Could not take the photo. Please try again.'); }
     setTaking(false);
   };
 
@@ -33,7 +36,7 @@ export default function PhotoCapture({ onUpload, uploading, error, uploadLabel =
     try {
       const ImagePicker = require('expo-image-picker'); // eslint-disable-line global-require
       const r = await ImagePicker.launchCameraAsync({ quality: 0.7 });
-      if (!r.canceled && r.assets && r.assets.length) setPhoto({ uri: r.assets[0].uri });
+      if (!r.canceled && r.assets && r.assets.length) accept({ uri: r.assets[0].uri });
     } catch (e) { setLocalErr('Could not open the camera. Please allow camera access in the browser / phone settings.'); }
   };
 

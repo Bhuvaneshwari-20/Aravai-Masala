@@ -7,6 +7,8 @@ import { useAuth } from '../../AuthContext';
 import { useUi } from '../../ui';
 import BatchingEntryModal from '../../components/BatchingEntryModal';
 import BatchEditModal from '../../components/BatchEditModal';
+import BatchMaterialEditModal from '../../components/BatchMaterialEditModal';
+import { materialBadge, materialStage, canEditMaterial, canDeleteMaterial, stageSummary, ROAST_MODE_TEXT } from '../../batchMaterialStatus';
 import WeightImageViewer from '../../components/WeightImageViewer';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import Container from '../../components/Container';
@@ -14,13 +16,33 @@ import LoadingView from '../../components/LoadingView';
 import EmptyView from '../../components/EmptyView';
 import { ErrorBox } from '../../components/FormBits';
 import { badgeFor, stageLabel } from './BatchListScreen';
+import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import { COLORS, fmt } from '../../theme';
 
+// Columns of the weighed-materials table. `flex` columns stretch to fill the card, the others have a fixed width.
 const SHEET_COLS = [
-  { key: 'date', label: 'DATE', w: 100 }, { key: 'code', label: 'MATERIAL CODE', w: 110 }, { key: 'name', label: 'MATERIAL NAME', w: 220 },
-  { key: 'bags', label: 'NO OF BAGS', w: 90 }, { key: 'wt', label: 'WEIGHT', w: 110 }, { key: 'qty', label: 'WEIGHED QTY', w: 120 },
-  { key: 'img', label: 'PHOTO', w: 80 },
+  { key: 'date', label: 'DATE', w: 96 },
+  { key: 'code', label: 'CODE', w: 92 },
+  { key: 'name', label: 'MATERIAL NAME', flex: 1, min: 150 },
+  { key: 'bags', label: 'BAGS', w: 64, center: true },
+  { key: 'wt', label: 'WEIGHT', w: 112 },
+  { key: 'qty', label: 'WEIGHED QTY', w: 112 },
+  { key: 'img', label: 'PHOTO', w: 72, center: true },
+  { key: 'status', label: 'STATUS', w: 200 },
+  { key: 'act', label: 'ACTIONS', w: 84, center: true },
 ];
+const colStyle = (c) => (c.flex ? { flex: c.flex, minWidth: c.min } : { width: c.w });
+const COL = Object.fromEntries(SHEET_COLS.map((c) => [c.key, c]));
+const cs = (k) => [colStyle(COL[k]), COL[k].center && { alignItems: 'center' }];
+const ct = (k) => (COL[k].center ? { textAlign: 'center' } : null);
+
+// small grey pill with an icon: date, total, machine, process
+const MetaChip = ({ icon, text }) => (
+  <View style={s.metaChip}>
+    <MCI name={icon} size={14} color={COLORS.grey} />
+    <Text style={s.metaChipText} numberOfLines={1}>{text}</Text>
+  </View>
+);
 
 export default function BatchDetailScreen({ route }) {
   const { id } = route.params;
@@ -30,7 +52,9 @@ export default function BatchDetailScreen({ route }) {
   const [error, setError] = useState('');
   const [weigh, setWeigh] = useState(null);       // ingredient being weighed
   const [viewImg, setViewImg] = useState(null);   // ingredient whose weighing machine photo is open
-  const [editOpen, setEditOpen] = useState(false);   // Edit = add an extra material
+  const [editOpen, setEditOpen] = useState(false);   // Add Material = add an extra material
+  const [editMat, setEditMat] = useState(null);       // ingredient being edited
+  const [delMat, setDelMat] = useState(null);         // ingredient waiting for delete confirmation
   const [confirmDone, setConfirmDone] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -53,72 +77,122 @@ export default function BatchDetailScreen({ route }) {
   const batchingOpen = b.status === 'IN_PROGRESS' && b.current_stage === 'BATCHING';
   const batchingDone = b.current_stage !== 'BATCHING';
   // Edit (add a material) is possible on a running batch until Roasting starts. The server checks the roasting entries again.
-  const canEdit = can('batching', 'edit') && b.status === 'IN_PROGRESS' && (b.current_stage === 'BATCHING' || b.current_stage === 'ROASTING');
+  // Add / edit / delete a material is possible on a running batch while it is at Batching, Filtering or Roasting. The server checks every material again.
+  const canEdit = can('batching', 'edit') && b.status === 'IN_PROGRESS' && ['BATCHING', 'FILTERING', 'ROASTING'].includes(b.current_stage);
+  const doneMats = plan ? plan.ingredients.filter((i) => i.is_done) : [];
+  const summary = stageSummary(doneMats);
+
+  const machineName = plan && (plan.ingredients.find((i) => i.weighing_machine_name) || {}).weighing_machine_name;
+  const doneRows = plan ? plan.ingredients.filter((i) => i.is_done) : [];
+  const pendingRows = plan ? plan.ingredients.filter((i) => !i.is_done) : [];
+  const showProgress = !batchingOpen && doneMats.length > 0 && b.status !== 'COMPLETED';
 
   return (
     <ScrollView style={s.wrap} contentContainerStyle={{ paddingBottom: 60 }}>
       <Container>
+        {/* ---------- header card ---------- */}
         <View style={s.head}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Text style={s.title}>{b.batch_no}</Text>
+          <View style={s.headTop}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={s.title}>{b.batch_no}</Text>
+              <Text style={s.sub}>{b.product_name}</Text>
+            </View>
             <View style={[s.badge, { backgroundColor: st.bg }]}><Text style={[s.badgeText, { color: st.color }]}>{st.label}</Text></View>
           </View>
-          <Text style={s.sub}>{b.product_name}</Text>
-          <Text style={s.meta}>Total {fmt(b.planned_qty_kg)} kg  •  {String(b.production_date).slice(0, 10)}</Text>
-          {b.status !== 'COMPLETED' && b.status !== 'CANCELLED' && <Text style={s.meta}>Current process: {stageLabel(b.current_stage)}</Text>}
-          {b.status === 'ON_HOLD' && <Text style={s.hold}>On hold: {b.hold_reason}</Text>}
-          <View style={s.btns}>
-            {/* Hold button removed. Batches that are already on hold can still be resumed. */}
-            {canEdit && (
-              <Button mode="outlined" icon="pencil" textColor={COLORS.primary} style={[s.btn, { borderColor: COLORS.primary }]} onPress={() => setEditOpen(true)}>Edit</Button>)}
-            {can('batching', 'approve') && b.status === 'ON_HOLD' && (
-              <Button mode="contained" icon="play" buttonColor={COLORS.green} style={s.btn} loading={busy} disabled={busy}
-                onPress={() => run(() => api.patch(`/batches/${id}/resume`), 'Batch resumed')}>Resume</Button>)}
+          <View style={s.metaRow}>
+            <MetaChip icon="calendar-month-outline" text={String(b.production_date).slice(0, 10)} />
+            <MetaChip icon="scale-balance" text={`Total ${fmt(b.planned_qty_kg)} kg`} />
+            {!!machineName && <MetaChip icon="scale" text={machineName} />}
+            {b.status !== 'COMPLETED' && b.status !== 'CANCELLED' && <MetaChip icon="progress-clock" text={`Now: ${stageLabel(b.current_stage)}`} />}
           </View>
+          {b.status === 'ON_HOLD' && <Text style={s.hold}>On hold: {b.hold_reason}</Text>}
+          {((canEdit) || (can('batching', 'approve') && b.status === 'ON_HOLD')) && (
+            <View style={s.btns}>
+              {/* Hold button removed. Batches that are already on hold can still be resumed. */}
+              {canEdit && (
+                <Button mode="outlined" icon="plus" textColor={COLORS.primary} style={[s.btn, { borderColor: COLORS.primary }]} onPress={() => setEditOpen(true)}>Add Material</Button>)}
+              {can('batching', 'approve') && b.status === 'ON_HOLD' && (
+                <Button mode="contained" icon="play" buttonColor={COLORS.green} style={s.btn} loading={busy} disabled={busy}
+                  onPress={() => run(() => api.patch(`/batches/${id}/resume`), 'Batch resumed')}>Resume</Button>)}
+            </View>
+          )}
         </View>
 
         {!!plan && (
           <View style={s.section}>
-            <Text style={s.secTitle}>BATCHING</Text>
-            <Text style={s.progress}>{batchingOpen ? `${plan.done_count} of ${plan.ingredients.length} materials weighed  •  ` : `${plan.done_count} materials  •  `}{fmt(plan.total_weighed_kg)} kg{plan.total_required_kg != null ? ` of ${fmt(plan.total_required_kg)} kg` : ''}</Text>
+            <View style={s.secHead}>
+              <Text style={s.secTitle}>BATCHING</Text>
+              <Text style={s.progress}>{batchingOpen ? `${plan.done_count} of ${plan.ingredients.length} materials weighed  •  ` : `${plan.done_count} materials  •  `}{fmt(plan.total_weighed_kg)} kg{plan.total_required_kg != null ? ` of ${fmt(plan.total_required_kg)} kg` : ''}</Text>
+            </View>
 
-            {/* Sheet: same columns as the paper "ARAVAI BATCHING PROCESS PLAN" */}
-            {plan.ingredients.some((i) => i.is_done) && (
-              <ScrollView horizontal showsHorizontalScrollIndicator style={{ marginTop: 6 }}>
-                <View style={{ minWidth: 840 }}>
+            {/* where the materials are now (filtering / roasting) - the batch stage follows these */}
+            {showProgress && (
+              <View style={s.note}>
+                <MCI name="information-outline" size={18} color={COLORS.green} style={{ marginTop: 1 }} />
+                <View style={{ flex: 1, marginLeft: 8 }}>
+                  {!!summary && <Text style={s.noteTitle}>{summary}</Text>}
+                  {!!b.roasting_mode && !!ROAST_MODE_TEXT[b.roasting_mode] && <Text style={s.noteText}>{ROAST_MODE_TEXT[b.roasting_mode]}</Text>}
+                  {doneMats.some((i) => materialStage(i) === 'FILTERING') && <Text style={s.noteText}>Materials waiting for filtering go to roasting only after their filtering is completed.</Text>}
+                </View>
+              </View>
+            )}
+
+            {/* Sheet: same information as the paper "ARAVAI BATCHING PROCESS PLAN" */}
+            {doneRows.length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tableScroll} contentContainerStyle={{ minWidth: '100%' }}>
+                <View style={{ flex: 1, minWidth: 940 }}>
                   <View style={[s.tr, s.trHead]}>
-                    {SHEET_COLS.map((c) => <Text key={c.key} style={[s.th, { width: c.w }]}>{c.label}</Text>)}
+                    {SHEET_COLS.map((c) => <Text key={c.key} style={[s.th, colStyle(c), c.center && { textAlign: 'center' }]} numberOfLines={1}>{c.label}</Text>)}
                   </View>
-                  {plan.ingredients.filter((i) => i.is_done).map((i) => (
-                    <View key={i.material_id} style={s.tr}>
-                      <Text style={[s.td, { width: 100 }]}>{String(i.entry_date || '').slice(0, 10)}</Text>
-                      <Text style={[s.td, { width: 110, fontWeight: '800' }]}>{i.material_code}</Text>
-                      <Text style={[s.td, { width: 220, fontWeight: '800' }]}>{i.material_name}</Text>
-                      <Text style={[s.td, { width: 90 }]}>{i.no_of_bags}</Text>
-                      <Text style={[s.td, { width: 110 }]}>{i.bag_lines && i.bag_lines.length > 1 ? i.bag_lines.map((l) => `${fmt(l.weight_per_bag)} kg × ${l.bags}`).join('\n') : `${fmt(i.weight_per_bag)} kg`}</Text>
-                      <Text style={[s.td, { width: 120, fontWeight: '800' }]}>{fmt(i.weighed_qty)} kg</Text>
-                      {i.weight_image
-                        ? <Pressable style={{ width: 80 }} onPress={() => setViewImg(i)}><Text style={[s.td, { color: COLORS.primary, fontWeight: '800' }]}>View</Text></Pressable>
-                        : <Text style={[s.td, { width: 80 }]}>-</Text>}
-                    </View>
-                  ))}
+                  {doneRows.map((i, n) => {
+                    const mb = materialBadge(i);
+                    return (
+                      <View key={i.material_id} style={[s.tr, n === doneRows.length - 1 && { borderBottomWidth: 0 }]}>
+                        <Text style={[s.td, colStyle(COL.date)]}>{String(i.entry_date || '').slice(0, 10)}</Text>
+                        <View style={colStyle(COL.code)}><View style={s.codePill}><Text style={s.codeText}>{i.material_code}</Text></View></View>
+                        <Text style={[s.td, s.tdName, colStyle(COL.name)]} numberOfLines={2}>{i.material_name}</Text>
+                        <Text style={[s.td, ct('bags'), colStyle(COL.bags)]}>{i.no_of_bags}</Text>
+                        <Text style={[s.td, colStyle(COL.wt)]}>{i.bag_lines && i.bag_lines.length > 1 ? i.bag_lines.map((l) => `${fmt(l.weight_per_bag)} kg × ${l.bags}`).join('\n') : `${fmt(i.weight_per_bag)} kg`}</Text>
+                        <Text style={[s.td, s.tdQty, colStyle(COL.qty)]}>{fmt(i.weighed_qty)} kg</Text>
+                        <View style={cs('img')}>
+                          {i.weight_image
+                            ? <Pressable onPress={() => setViewImg(i)} hitSlop={6} accessibilityLabel={`View photo of ${i.material_name}`} style={s.viewBtn}><MCI name="image-outline" size={15} color={COLORS.primary} /><Text style={s.viewBtnText}>View</Text></Pressable>
+                            : <Text style={[s.td, { color: COLORS.grey, paddingRight: 0 }]}>-</Text>}
+                        </View>
+                        <View style={[colStyle(COL.status), { paddingRight: 8 }]}>
+                          <View style={[s.chip, { backgroundColor: mb.bg }]}><Text style={[s.chipText, { color: mb.color }]} numberOfLines={1}>{mb.label}</Text></View>
+                        </View>
+                        <View style={[colStyle(COL.act), { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }]}>
+                          {canEdit && canEditMaterial(i) && (
+                            <Pressable onPress={() => setEditMat(i)} hitSlop={6} accessibilityLabel={`Edit ${i.material_name}`} style={[s.iconBtn, { backgroundColor: COLORS.primarySoft }]}><MCI name="pencil-outline" size={18} color={COLORS.primary} /></Pressable>)}
+                          {canEdit && canDeleteMaterial(i) && (
+                            <Pressable onPress={() => { setErr(''); setDelMat(i); }} hitSlop={6} accessibilityLabel={`Delete ${i.material_name}`} style={[s.iconBtn, { backgroundColor: COLORS.dangerBg }]}><MCI name="trash-can-outline" size={18} color={COLORS.danger} /></Pressable>)}
+                          {canEdit && !(canEditMaterial(i) || canDeleteMaterial(i)) && <MCI name="lock-outline" size={18} color={COLORS.grey} />}
+                        </View>
+                      </View>
+                    );
+                  })}
                 </View>
               </ScrollView>
             )}
-            {plan.ingredients.some((i) => i.weighing_machine_name) && (
-              <Text style={s.small}>Weighing machine: {plan.ingredients.find((i) => i.weighing_machine_name).weighing_machine_name}</Text>)}
 
-            {batchingOpen && plan.ingredients.filter((i) => !i.is_done).map((i) => (
-              <View key={i.material_id} style={s.ing}>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.ingName}>⏳ {i.material_code}  {i.material_name}</Text>
-                  {i.required_kg != null && <Text style={s.small}>Required {fmt(i.required_kg)} kg</Text>}
-                  {i.stock_short && <Text style={[s.small, { color: COLORS.danger }]}>Stock {fmt(i.current_stock)} kg is not enough</Text>}
-                </View>
-                {can('batching', 'create') && (
-                  <Button mode="contained" compact buttonColor={COLORS.primary} style={{ borderRadius: 10 }} onPress={() => setWeigh(i)}>Weigh</Button>)}
+            {/* materials not weighed yet (only while Batching is open) */}
+            {batchingOpen && pendingRows.length > 0 && (
+              <View style={{ marginTop: 14 }}>
+                <Text style={s.secTitle}>YET TO WEIGH</Text>
+                {pendingRows.map((i) => (
+                  <View key={i.material_id} style={s.ing}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.ingName}>{i.material_name}</Text>
+                      <Text style={s.small}>{i.material_code}{i.required_kg != null ? `  •  Required ${fmt(i.required_kg)} kg` : ''}</Text>
+                      {i.stock_short && <Text style={[s.small, { color: COLORS.danger }]}>Stock {fmt(i.current_stock)} kg is not enough</Text>}
+                    </View>
+                    {can('batching', 'create') && (
+                      <Button mode="contained" compact buttonColor={COLORS.primary} style={{ borderRadius: 10 }} onPress={() => setWeigh(i)}>Weigh</Button>)}
+                  </View>
+                ))}
               </View>
-            ))}
+            )}
 
             {batchingOpen && can('batching', 'edit') && (
               <Button mode="contained" icon="check-all" buttonColor={COLORS.green} style={{ borderRadius: 12, marginTop: 14 }}
@@ -128,9 +202,12 @@ export default function BatchDetailScreen({ route }) {
 
             {batchingDone && b.current_stage !== 'COMPLETED' && (
               <View style={s.done}>
-                <Text style={s.doneTitle}>Batching complete</Text>
-                <Text style={s.doneText}>{fmt(b.current_output_kg)} kg handed to the next stage.</Text>
-                <Text style={s.doneText}>Next process: {stageLabel(b.current_stage)}.{b.current_stage === 'FILTERING' ? ' Open Filtering from the menu to record it; the batch then moves to Roasting.' : ''}</Text>
+                <MCI name="check-circle" size={22} color={COLORS.ok} />
+                <View style={{ flex: 1, marginLeft: 10 }}>
+                  <Text style={s.doneTitle}>Batching complete</Text>
+                  <Text style={s.doneText}>{fmt(b.current_output_kg)} kg handed to the next stage  •  Next: {stageLabel(b.current_stage)}</Text>
+                  {b.current_stage === 'FILTERING' && <Text style={s.doneText}>Open Filtering from the menu to record it. The filtered materials then move to Roasting.</Text>}
+                </View>
               </View>
             )}
           </View>
@@ -143,6 +220,20 @@ export default function BatchDetailScreen({ route }) {
       <BatchEditModal visible={editOpen} batch={b} onDismiss={() => setEditOpen(false)}
         onSaved={(r) => { setEditOpen(false); load(); toast((r.low_stock_alerts && r.low_stock_alerts[0]) || 'Material added to the batch'); }} />
 
+      <BatchMaterialEditModal visible={!!editMat} batch={b} ingredient={editMat} onDismiss={() => setEditMat(null)}
+        onSaved={(r) => { setEditMat(null); load(); toast((r && r.low_stock_alerts && r.low_stock_alerts[0]) || 'Material updated'); }} />
+
+      <ConfirmDialog visible={!!delMat} busy={busy} title={delMat ? `Delete ${delMat.material_name}?` : ''}
+        message={delMat ? (doneMats.length <= 1
+          ? 'A batch needs at least one material. Delete is not possible for the only material of this batch.'
+          : `${fmt(delMat.weighed_qty)} kg of ${delMat.material_name} will be removed from this batch and given back to stock. The batch weight goes down by the same quantity.`) : ''}
+        confirmText="Delete" onCancel={() => setDelMat(null)}
+        onConfirm={async () => {
+          if (doneMats.length <= 1) { setDelMat(null); return; }
+          const m = delMat; setDelMat(null);
+          await run(() => api.delete(`/batches/${id}/materials/${m.material_id}`), `${m.material_name} removed from the batch`);
+        }} />
+
       <WeightImageViewer visible={!!viewImg} batchId={b.id} ingredient={viewImg} onDismiss={() => setViewImg(null)} />
 
       <ConfirmDialog visible={confirmDone} title="Complete batching?" message={`${fmt(plan?.total_weighed_kg)} kg will move to the next stage. You cannot add more weighing after this.`}
@@ -154,26 +245,43 @@ export default function BatchDetailScreen({ route }) {
 
 const s = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: COLORS.bg },
-  head: { backgroundColor: '#fff', margin: 12, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border },
-  title: { fontSize: 22, fontWeight: '900', color: COLORS.text },
-  sub: { fontSize: 15, fontWeight: '700', color: COLORS.text, marginTop: 4 },
-  meta: { color: COLORS.grey, fontWeight: '600', marginTop: 4 },
+  head: { backgroundColor: '#fff', margin: 12, borderRadius: 18, padding: 18, borderWidth: 1, borderColor: COLORS.border },
+  headTop: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+  title: { fontSize: 22, fontWeight: '900', color: COLORS.text, letterSpacing: -0.2 },
+  sub: { fontSize: 15, fontWeight: '700', color: COLORS.textSoft, marginTop: 2 },
+  metaRow: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 12 },
+  metaChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.greyBg, borderRadius: 20, paddingHorizontal: 11, paddingVertical: 5, marginRight: 8, marginBottom: 6, maxWidth: '100%' },
+  metaChipText: { marginLeft: 6, fontSize: 12.5, fontWeight: '700', color: COLORS.textSoft },
   hold: { color: COLORS.warn, fontWeight: '800', marginTop: 8 },
-  btns: { flexDirection: 'row', marginTop: 12 },
+  btns: { flexDirection: 'row', marginTop: 10, paddingTop: 14, borderTopWidth: 1, borderTopColor: COLORS.line },
   btn: { borderRadius: 10, marginRight: 8 },
-  badge: { borderRadius: 10, paddingHorizontal: 9, paddingVertical: 3 },
+  badge: { borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4, marginLeft: 10 },
   badgeText: { fontSize: 10.5, fontWeight: '900', letterSpacing: 0.4 },
-  section: { backgroundColor: '#fff', marginHorizontal: 12, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border },
+  section: { backgroundColor: '#fff', marginHorizontal: 12, borderRadius: 18, padding: 18, borderWidth: 1, borderColor: COLORS.border },
+  secHead: { marginBottom: 12 },
   secTitle: { fontSize: 11, fontWeight: '900', letterSpacing: 1.4, color: COLORS.grey },
-  progress: { fontSize: 14, fontWeight: '800', color: COLORS.text, marginTop: 6, marginBottom: 6 },
-  ing: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  progress: { fontSize: 15, fontWeight: '800', color: COLORS.text, marginTop: 4 },
+  note: { flexDirection: 'row', alignItems: 'flex-start', backgroundColor: COLORS.greenBg, borderRadius: 12, padding: 12, marginBottom: 12 },
+  noteTitle: { fontSize: 13.5, fontWeight: '800', color: COLORS.green },
+  noteText: { fontSize: 12.5, fontWeight: '600', color: COLORS.textSoft, marginTop: 2, lineHeight: 18 },
+  tableScroll: { borderWidth: 1, borderColor: COLORS.border, borderRadius: 12 },
+  tr: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: COLORS.line, paddingVertical: 11, paddingHorizontal: 10 },
+  trHead: { backgroundColor: COLORS.greyBg, borderBottomWidth: 0, paddingVertical: 10 },
+  th: { fontSize: 11, fontWeight: '900', letterSpacing: 0.6, color: COLORS.grey, paddingRight: 8 },
+  td: { fontSize: 14, color: COLORS.text, fontWeight: '600', paddingRight: 8 },
+  tdName: { fontWeight: '800', fontSize: 14.5 },
+  tdQty: { fontWeight: '900' },
+  codePill: { alignSelf: 'flex-start', backgroundColor: COLORS.greyBg, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },
+  codeText: { fontSize: 11.5, fontWeight: '900', color: COLORS.textSoft },
+  viewBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primarySoft, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  viewBtnText: { marginLeft: 4, fontSize: 12, fontWeight: '800', color: COLORS.primary },
+  chip: { alignSelf: 'flex-start', borderRadius: 8, paddingHorizontal: 9, paddingVertical: 4 },
+  chipText: { fontSize: 10.5, fontWeight: '900', letterSpacing: 0.4 },
+  iconBtn: { width: 32, height: 32, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginHorizontal: 3 },
+  ing: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.line },
   ingName: { fontSize: 15, fontWeight: '800', color: COLORS.text },
   small: { fontSize: 12.5, color: COLORS.grey, fontWeight: '600', marginTop: 2 },
-  done: { backgroundColor: COLORS.okBg, borderRadius: 12, padding: 12, marginTop: 14 },
+  done: { flexDirection: 'row', alignItems: 'flex-start', backgroundColor: COLORS.okBg, borderRadius: 12, padding: 14, marginTop: 14 },
   doneTitle: { color: COLORS.ok, fontWeight: '900', fontSize: 15 },
-  tr: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: COLORS.border, paddingVertical: 10, paddingHorizontal: 6 },
-  trHead: { backgroundColor: COLORS.greyBg, borderRadius: 8, borderBottomWidth: 0 },
-  th: { fontSize: 11, fontWeight: '900', letterSpacing: 0.6, color: COLORS.grey },
-  td: { fontSize: 14, color: COLORS.text, fontWeight: '600', paddingRight: 8 },
-  doneText: { color: COLORS.text, marginTop: 3, fontWeight: '600' },
+  doneText: { color: COLORS.textSoft, marginTop: 3, fontWeight: '600', fontSize: 13 },
 });

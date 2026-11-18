@@ -9,6 +9,7 @@ module.exports = async function ensureBatchWeightImages(pool, log = console) {
       await pool.query(`ALTER TABLE batch_weight_images MODIFY batch_id ${c[0].COLUMN_TYPE} NULL`);
       log.log('Batch weight images: batch_id now allows NULL');
     }
+    await addColumns(pool, db, log);
     return;
   }
 
@@ -54,4 +55,33 @@ module.exports = async function ensureBatchWeightImages(pool, log = console) {
     try { await pool.query(`ALTER TABLE batch_weight_images ADD CONSTRAINT ${name} FOREIGN KEY (${col}) REFERENCES ${ref} (id)`); }
     catch (e) { log.warn(`Batch weight images: foreign key ${name} not added (${e.message}). The feature still works without it.`); }
   }
+  await addColumns(pool, db, log);
 };
+
+// Machine check + tare / net weight (see migrations/2026_11_batch_weight_tare.sql). Adds only what is missing; nothing is dropped or rewritten.
+//   machine_master.tare_weight_kg   optional tare of the weighing machine (container / platform). NULL or 0 = no tare, net = gross
+//   batch_weight_images.machine_id  machine whose QR was scanned for this photo
+//   batch_weight_images.tare_weight / net_weight   tare applied and net weight (= gross read from the display - tare)
+// detected_weight keeps meaning "what the display shows" (gross); entered_weight is the quantity that will be saved (net).
+async function addColumns(pool, db, log) {
+  const has = async (table, col) => {
+    const [[{ n }]] = await pool.query('SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?', [db, table, col]);
+    return Number(n) > 0;
+  };
+  const add = async (table, col, ddl) => {
+    if (await has(table, col)) return;
+    await pool.query(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+    log.log(`Batch weight images: added ${table}.${col}`);
+  };
+  await add('machine_master', 'tare_weight_kg', 'DECIMAL(10,3) NULL');
+  await add('batch_weight_images', 'tare_weight', 'DECIMAL(12,3) NULL');
+  await add('batch_weight_images', 'net_weight', 'DECIMAL(12,3) NULL');
+  if (!(await has('batch_weight_images', 'machine_id'))) {
+    const [t] = await pool.query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'machine_master' AND COLUMN_NAME = 'id'", [db]);
+    const type = /^[a-z]+(\(\d+\))?( unsigned)?$/i.test(t[0]?.COLUMN_TYPE || '') ? t[0].COLUMN_TYPE : 'INT';
+    await pool.query(`ALTER TABLE batch_weight_images ADD COLUMN machine_id ${type} NULL`);
+    log.log('Batch weight images: added batch_weight_images.machine_id');
+    try { await pool.query('ALTER TABLE batch_weight_images ADD CONSTRAINT fk_bwi_machine FOREIGN KEY (machine_id) REFERENCES machine_master (id)'); }
+    catch (e) { log.warn(`Batch weight images: foreign key fk_bwi_machine not added (${e.message}). The feature still works without it.`); }
+  }
+}

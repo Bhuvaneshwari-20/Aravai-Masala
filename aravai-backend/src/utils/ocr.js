@@ -11,6 +11,9 @@
 //  * several different numbers on the display and no unit to tell them apart -> no value (UNREADABLE)
 //  * the 3 image variants disagree -> no value (UNREADABLE)
 //  * the entered weight is NEVER given to the OCR or used to pick between candidates.
+//  * decimals: LCD / LED decimal points are tiny and often lost, which turns 20.450 into 20450. Set WEIGHING_DISPLAY_DECIMALS
+//    (e.g. 3 for a display that always shows 3 decimals): a reading without exactly that many decimals is NOT trusted (UNREADABLE).
+//    WEIGHING_MAX_WEIGHT_KG (optional) rejects readings above the machine's capacity for the same reason.
 const path = require('path');
 const sharp = require('sharp');
 
@@ -50,6 +53,24 @@ async function terminate() {
 /* ---------- text -> weight ---------- */
 const NUM = /^(\d+(?:[.,]\d{1,3})?)(kg|g)?$/i;
 
+// Display format rules from .env. Unset / 0 = not enforced (old behaviour).
+function displayRules() {
+  const n = (k) => { const x = Number(process.env[k]); return Number.isFinite(x) && x > 0 ? x : 0; };
+  return { decimals: Math.floor(n('WEIGHING_DISPLAY_DECIMALS')), maxKg: n('WEIGHING_MAX_WEIGHT_KG') };
+}
+// does a read value follow the display format?  raw = the digits as read, e.g. "20.450"
+function followsDisplay(raw, value, unit, rules) {
+  if (rules.decimals) {
+    const dec = (String(raw).split('.')[1] || '').length;
+    if (dec !== rules.decimals) return false;
+  }
+  if (rules.maxKg) {
+    const kg = String(unit || '').toLowerCase() === 'g' ? value / 1000 : value;
+    if (kg > rules.maxKg) return false;
+  }
+  return true;
+}
+
 // words = [{ text, confidence }] in reading order
 function candidatesFrom(words) {
   const out = [];
@@ -65,7 +86,7 @@ function candidatesFrom(words) {
       const nx = String(words[i + 1].text || '').trim().toLowerCase();
       if (nx === 'kg' || nx === 'g') unit = nx;
     }
-    out.push({ value, unit, hasDot: raw.includes('.'), confidence: Number(words[i].confidence) || 0, token: t });
+    out.push({ value, unit, hasDot: raw.includes('.'), raw, confidence: Number(words[i].confidence) || 0, token: t });
   }
   return out;
 }
@@ -74,6 +95,12 @@ function candidatesFrom(words) {
 function pickWeight(words) {
   let c = candidatesFrom(words);
   if (!c.length) return { reason: 'No number found on the display' };
+  const rules = displayRules();
+  if (rules.decimals || rules.maxKg) {
+    const ok = c.filter((x) => followsDisplay(x.raw, x.value, x.unit, rules));
+    if (!ok.length) return { reason: rules.decimals ? `Decimal point not read correctly (the display shows ${rules.decimals} decimals). Retake the photo` : 'The reading is above the machine capacity' };
+    c = ok;
+  }
   const withUnit = c.filter((x) => x.unit);
   if (withUnit.length) c = withUnit;
   else if (c.some((x) => x.hasDot)) c = c.filter((x) => x.hasDot); // scales show 20.000, stray digits do not
@@ -152,8 +179,8 @@ async function readAnthropic(buffer) {
   const prompt =
     'This is a photo of an industrial weighing machine indicator. Read ONLY the main weight number shown on the digital display ' +
     '(the large LED / 7-segment digits). Ignore printed labels, stickers, "Max"/"Min" capacity text and QR codes. ' +
-    'Include the decimal point exactly as shown. If the display is not visible, blank, or you are not sure about every digit, say so. ' +
-    'Reply with JSON only, no other text: {"readable": true|false, "value": <number or null>, "unit": "kg"|"g"|null}';
+    'Include the decimal point exactly as shown. If the display is not visible, blank, or you are not sure about every digit or the position of the decimal point, say so. ' +
+    'Reply with JSON only, no other text: {"readable": true|false, "display": "<the digits exactly as shown, with the decimal point, e.g. 20.450>", "value": <number or null>, "unit": "kg"|"g"|null}';
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
@@ -170,9 +197,15 @@ async function readAnthropic(buffer) {
   const text = (data.content || []).map((c) => c.text || '').join('').trim();
   let j;
   try { j = JSON.parse(text.replace(/```json|```/g, '').trim()); } catch (e) { j = null; }
-  const value = j && j.readable && Number.isFinite(Number(j.value)) && Number(j.value) > 0 ? Number(j.value) : null;
+  let value = j && j.readable && Number.isFinite(Number(j.value)) && Number(j.value) > 0 ? Number(j.value) : null;
   if (value === null) return { value: null, unit: null, confidence: null, text: text.slice(0, 250), engine: 'anthropic', reason: 'No reliable number found in the image' };
   const unit = j.unit === 'g' || j.unit === 'kg' ? j.unit : 'kg';
+  // the digits as shown and the number must agree (catches a dropped decimal point), and must follow the display format
+  const shown = String(j.display ?? '').replace(/[^0-9.]/g, '');
+  if (shown && Math.abs(Number(shown) - value) > 1e-9) value = null;
+  const rules = displayRules();
+  if (value !== null && (rules.decimals || rules.maxKg) && !followsDisplay(shown || String(value), value, unit, rules)) value = null;
+  if (value === null) return { value: null, unit: null, confidence: null, text: text.slice(0, 250), engine: 'anthropic', reason: 'Decimal point or digits could not be read reliably. Retake the photo' };
   return { value, unit, confidence: null, text: text.slice(0, 250), engine: 'anthropic:' + model, reason: null };
 }
 

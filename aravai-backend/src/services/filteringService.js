@@ -7,6 +7,14 @@ const batchService = require('./batchService');
 
 const STAGES_MAX = 5;
 
+// Lock a running batch whatever stage it is at (used for PARALLEL batches, which wait at ROASTING while their ticked materials are filtered)
+async function lockBatchAny(conn, batchId) {
+  const [rows] = await conn.query('SELECT * FROM batch_master WHERE id = ? FOR UPDATE', [batchId]);
+  if (!rows.length) throw new AppError('Batch not found', 404);
+  if (['COMPLETED', 'CANCELLED'].includes(rows[0].status)) throw new AppError(`Batch ${rows[0].batch_no} is already ${rows[0].status.toLowerCase()}`, 409);
+  return rows[0];
+}
+
 // Materials of a batch that were ticked "Filter" in Batching, with the weight weighed for each one (= its I/P in Filtering)
 async function flaggedMaterials(db, batchIds) {
   if (!batchIds.length) return [];
@@ -59,11 +67,16 @@ async function list(q) {
     JOIN product_master p ON p.id = b.product_id
     LEFT JOIN recipe_master r ON r.id = b.recipe_id
     LEFT JOIN machine_master wm ON wm.id = b.weighing_machine_id
-    WHERE b.current_stage = 'FILTERING' AND b.status IN ('IN_PROGRESS','ON_HOLD')${like}`;
+    WHERE b.status IN ('IN_PROGRESS','ON_HOLD')
+      AND (b.current_stage = 'FILTERING'
+           OR (b.current_stage = 'ROASTING' AND b.roasting_mode = 'PARALLEL'
+               AND EXISTS (SELECT 1 FROM batching_details x WHERE x.batch_id = b.id AND x.needs_filtering = 1)
+               AND NOT EXISTS (SELECT 1 FROM filtering_details fd WHERE fd.batch_id = b.id)))${like}`;
   const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total ${base}`, args);
   const [rows] = await pool.query(
     `SELECT b.id AS batch_id, b.batch_no, b.production_date, b.status, b.hold_reason, b.current_output_kg AS input_kg,
             p.product_name, r.recipe_no, r.default_filter_stages AS recipe_stages,
+            b.current_stage, b.roasting_mode,
             wm.id AS weighing_machine_id, wm.machine_code AS weighing_machine_code, wm.machine_name AS weighing_machine_name,
             (SELECT GROUP_CONCAT(m.material_name ORDER BY bd.id SEPARATOR ', ')
                FROM batching_details bd JOIN materials m ON m.id = bd.material_id
@@ -104,10 +117,14 @@ async function create(body, user, ip) {
   const remarks = v.optStr(body.remarks, 'Remarks', 255);
 
   return withTransaction(async (conn) => {
-    const b = await lockBatch(conn, batchId, 'FILTERING'); // must be waiting at the FILTERING stage
+    // must be waiting at the FILTERING stage - or be a PARALLEL batch: Roasting already runs for the unfiltered materials and the ticked ones are still to be filtered
+    const [[cur]] = await conn.query('SELECT current_stage, roasting_mode FROM batch_master WHERE id = ?', [batchId]);
+    const parallel = !!cur && cur.current_stage === 'ROASTING' && cur.roasting_mode === 'PARALLEL';
+    const b = parallel ? await lockBatchAny(conn, batchId) : await lockBatch(conn, batchId, 'FILTERING');
     if (b.status === 'ON_HOLD') throw new AppError(`Batch ${b.batch_no} is on hold${b.hold_reason ? ` (${b.hold_reason})` : ''}. Resume it first`);
     await checkUsers(conn, [doneBy, checkedBy]);
 
+    if (parallel && !perMaterial) throw new AppError('Enter the O/P weight of every material that is being filtered');
     const input = Number(b.current_output_kg);
     let output; let wastage; let mats = [];
     if (perMaterial) {
@@ -132,6 +149,11 @@ async function create(body, user, ip) {
       wastage = r3(input - output);
     }
     const loss = r2((wastage / input) * 100);
+    if (parallel) {
+      // Roasting of the other materials is already running: the weight handed to Roasting may not drop below what is already roasted
+      const [[used]] = await conn.query("SELECT COALESCE(SUM(input_weight), 0) AS qty FROM roasting_details WHERE batch_id = ? AND status <> 'REJECTED'", [batchId]);
+      if (output < Number(used.qty) - 0.0005) throw new AppError(`Filtering loss is too high: only ${output} kg is left for Roasting but ${r3(Number(used.qty))} kg is already roasted`);
+    }
 
     let id;
     try {
@@ -152,11 +174,11 @@ async function create(body, user, ip) {
 
     // the filtered quantity goes on to roasting
     await conn.query(
-      `UPDATE batch_master SET current_stage = 'ROASTING', current_output_kg = ?, total_wastage_kg = total_wastage_kg + ? WHERE id = ?`,
+      `UPDATE batch_master SET current_stage = 'ROASTING', current_output_kg = ?, total_wastage_kg = total_wastage_kg + ? WHERE id = ?`, // PARALLEL batches are already at ROASTING: only the weight changes
       [output, wastage, batchId]);
 
     await audit({ userId: user.id, action: 'CREATE', table: 'filtering_details', recordId: id,
-      newValues: { batch_no: b.batch_no, stages, input, output, wastage, loss, doneBy, checkedBy, materials: mats, next_stage: 'ROASTING' }, ip }, conn);
+      newValues: { batch_no: b.batch_no, stages, input, output, wastage, loss, doneBy, checkedBy, materials: mats, next_stage: 'ROASTING', roasting_mode: b.roasting_mode }, ip }, conn);
     return { id, batch_id: batchId, batch_no: b.batch_no, input_weight: input, output_weight: output,
       wastage_weight: wastage, loss_percent: loss, next_stage: 'ROASTING', materials: mats };
   });

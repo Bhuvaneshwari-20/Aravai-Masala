@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import api, { setToken } from './api';
 import { storage } from './storage';
+import { roleCanSee } from './menu';
 
 const Ctx = createContext(null);
 export const useAuth = () => useContext(Ctx);
@@ -40,6 +41,8 @@ export function AuthProvider({ children }) {
 
   const can = (module, action = 'view') => {
     if (!user) return false;
+    // Role level first: Super Admin = all, Admin = Masters + Stock & Reports, User level = Production only
+    if (!roleCanSee(user.role_name, module)) return false;
     if (user.permissions === 'ALL') return true;
     // Read-only screens that follow an existing permission (no extra permission row needed)
     const FOLLOWS = { tracking: 'batching', material_overview: 'material' };

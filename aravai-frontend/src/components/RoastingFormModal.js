@@ -9,6 +9,7 @@ import FormRow from './FormRow';
 import SelectField from './SelectField';
 import TimeField from './TimeField';
 import WeighingMachineInfo from './WeighingMachineInfo';
+import { materialStage } from '../batchMaterialStatus';
 import { COLORS } from '../theme';
 
 const today = () => {
@@ -45,6 +46,7 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
   const [loadingMat, setLoadingMat] = useState(false);
   const [batErr, setBatErr] = useState(''); // real error when the batch list / material list could not be loaded
   const [matErr, setMatErr] = useState('');
+  const [blocked, setBlocked] = useState([]); // materials of the batch that are still waiting for Filtering: they cannot be roasted yet
   const [alertAt, setAlertAt] = useState(12);
   const keyRef = useRef(0);
   const blankRow = () => { keyRef.current += 1; return { key: keyRef.current, material_id: null, input_weight: '', output_weight: '', start_time: '', end_time: '' }; };
@@ -91,11 +93,17 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
 
   // Batch selected -> the materials of that batch load automatically
   useEffect(() => {
-    if (!visible || !f.batch_id) { setMaterialRows([]); setMatErr(''); return undefined; }
+    if (!visible || !f.batch_id) { setMaterialRows([]); setBlocked([]); setMatErr(''); return undefined; }
     let off = false; setLoadingMat(true); setMatErr('');
     api.get('/roasting/batch-materials', { params: { batch_id: f.batch_id, exclude_id: item?.id || undefined, current_material_id: item?.material_id || undefined } })
-      .then((r) => { if (!off) setMaterialRows(r.data.data.items); })
-      .catch((e) => { if (!off) { setMaterialRows([]); setMatErr(errMsg(e)); } })
+      .then((r) => {
+        if (off) return;
+        const all = r.data.data.items;
+        // a material that is ticked for Filtering can only be roasted after its Filtering is completed (the server checks this again)
+        setMaterialRows(all.filter((m) => materialStage(m) !== 'FILTERING'));
+        setBlocked(all.filter((m) => materialStage(m) === 'FILTERING'));
+      })
+      .catch((e) => { if (!off) { setMaterialRows([]); setBlocked([]); setMatErr(errMsg(e)); } })
       .finally(() => { if (!off) setLoadingMat(false); });
     return () => { off = true; };
   }, [visible, f.batch_id, item]);
@@ -132,7 +140,9 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
     return i > 0 && r.output_weight !== '' && o > 0 && o <= i ? Math.round(((i - o) / i) * 10000) / 100 : null;
   };
   // batch is still at Roasting but every material is already roasted (entries saved earlier without the tick)
-  const nothingToRoast = !isEdit && !!f.batch_id && !loadingMat && !matErr && materialRows.length === 0;
+  const nothingToRoast = !isEdit && !!f.batch_id && !loadingMat && !matErr && materialRows.length === 0 && blocked.length === 0;
+  // only filtered-pending materials are left: nothing can be roasted until Filtering is done (and the batch must NOT be sent on)
+  const waitingOnly = !isEdit && !!f.batch_id && !loadingMat && !matErr && materialRows.length === 0 && blocked.length > 0;
   const sendToGrinding = async () => {
     setSaving(true); setErr('');
     try { await api.post('/roasting/finish', { batch_id: f.batch_id }); setSaving(false); onSaved && onSaved(false); } catch (e) { setErr(errMsg(e)); setSaving(false); }
@@ -221,7 +231,7 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
         <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
           <Text numberOfLines={3} style={{ flex: 1, marginRight: 12, color: COLORS.danger, fontWeight: '700', fontSize: 12 }}>{err}</Text>
           <Button mode="outlined" onPress={onDismiss} disabled={saving} textColor={COLORS.text} style={{ borderRadius: 10, borderColor: COLORS.border, marginRight: 10 }}>Cancel</Button>
-          <Button mode="contained" onPress={save} loading={saving} disabled={saving || loading || nothingToRoast} buttonColor={COLORS.green} style={{ borderRadius: 10 }} icon="check">
+          <Button mode="contained" onPress={save} loading={saving} disabled={saving || loading || nothingToRoast || waitingOnly} buttonColor={COLORS.green} style={{ borderRadius: 10 }} icon="check">
             {isEdit ? 'Update Entry' : 'Save Roasting'}
           </Button>
         </View>
@@ -272,7 +282,15 @@ export default function RoastingFormModal({ visible, item, onDismiss, onSaved })
                   <Text style={{ color: COLORS.danger, marginLeft: 8, flex: 1, fontWeight: '600' }}>Could not load the materials of this batch: {matErr}</Text>
                 </View>
               )}
-              {nothingToRoast ? (
+              {blocked.length > 0 && (
+                <View style={{ backgroundColor: COLORS.warnBg, borderRadius: 12, padding: 12, marginBottom: 10 }}>
+                  <Text style={{ color: COLORS.warn, fontWeight: '800' }}>Waiting for Filtering: {blocked.map((m) => m.material_name).join(', ')}</Text>
+                  <Text style={{ color: COLORS.warn, fontSize: 12, marginTop: 4 }}>
+                    {waitingOnly ? 'Nothing in this batch can be roasted yet. Complete Filtering first.' : 'These materials cannot be roasted until their Filtering is completed. The other materials can be roasted now.'}
+                  </Text>
+                </View>
+              )}
+              {waitingOnly ? null : nothingToRoast ? (
                 <View style={{ backgroundColor: COLORS.greyBg, borderRadius: 12, padding: 12, marginBottom: 10 }}>
                   <Text style={{ color: COLORS.text, fontWeight: '700' }}>Every material of this batch is already roasted.</Text>
                   <Text style={{ color: COLORS.grey, fontSize: 12, marginTop: 4, marginBottom: 8 }}>The batch is still waiting at Roasting. Send it on to Grinding.</Text>

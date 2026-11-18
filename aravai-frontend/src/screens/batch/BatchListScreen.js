@@ -28,9 +28,14 @@ export const STATUS = {
 // Process (stage) a batch is currently in. Order: Batching -> Roasting -> Blending -> Grinding -> Final Blending -> Packing
 export const stageLabel = (st) => String(st || '').toLowerCase().split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 
+// Stage text for a batch. In PARALLEL roasting mode, Filtering runs alongside Roasting, so show both.
+export const stageText = (b) => (b.roasting_mode === 'PARALLEL' && b.current_stage === 'ROASTING'
+  ? 'Filtering + Roasting'
+  : stageLabel(b.current_stage));
+
 // What the card badge shows: the running process while the batch is IN_PROGRESS, else the status (Hold / Completed / Cancelled)
 export const badgeFor = (b) => (b.status === 'IN_PROGRESS' && b.current_stage && b.current_stage !== 'COMPLETED'
-  ? { label: stageLabel(b.current_stage).toUpperCase(), color: COLORS.ok, bg: COLORS.okBg }
+  ? { label: stageText(b).toUpperCase(), color: COLORS.ok, bg: COLORS.okBg }
   : STATUS[b.status] || STATUS.OPEN);
 
 export default function BatchListScreen({ navigation }) {
@@ -63,7 +68,7 @@ export default function BatchListScreen({ navigation }) {
         <Container>
           <PressableScale to={0.98} style={s.banner} onPress={() => navigation.navigate('BatchDetail', { id: active.id })}>
             <Text style={s.bannerTitle}>Active batch: {active.batch_no}</Text>
-            <Text style={s.bannerSub}>{active.product_name}  •  {active.status === 'ON_HOLD' ? 'ON HOLD' : 'Running'}  •  Process: {stageLabel(active.current_stage)}</Text>
+            <Text style={s.bannerSub}>{active.product_name}  •  {active.status === 'ON_HOLD' ? 'ON HOLD' : 'Running'}  •  Process: {stageText(active)}</Text>
             <Text style={s.bannerHint}>Tap to open.</Text>
           </PressableScale>
         </Container>
@@ -85,7 +90,7 @@ export default function BatchListScreen({ navigation }) {
                   right={<ChevronDot />} onPress={() => navigation.navigate('BatchDetail', { id: item.id })}
                   footer={<Badge tone={toneOf(st.color)} text={st.label} />}>
                   <InfoLine icon="calendar-blank-outline" text={String(item.production_date).slice(0, 10)} />
-                  <InfoLine icon="progress-clock" text={`Process: ${running ? stageLabel(item.current_stage) : st.label.charAt(0) + st.label.slice(1).toLowerCase()}`} />
+                  <InfoLine icon="progress-clock" text={`Process: ${running ? stageText(item) :st.label.charAt(0) + st.label.slice(1).toLowerCase()}`} />
                 </InfoCard>
               );
             }} />
@@ -93,7 +98,7 @@ export default function BatchListScreen({ navigation }) {
       </Container>
 
       <StartBatchModal visible={showStart} onDismiss={() => setShowStart(false)}
-        onSaved={(b) => { setShowStart(false); list.reload(); loadActive(); toast(`Batch ${b.batch_no} saved - next: ${stageLabel(b.current_stage)}`); }} />
+        onSaved={(b) => { setShowStart(false); list.reload(); loadActive(); toast(`Batch ${b.batch_no} saved - next: ${b.roasting_mode === 'PARALLEL' ? 'Filtering + Roasting' : stageLabel(b.current_stage)}`); }} />
     </View>
   );
 }

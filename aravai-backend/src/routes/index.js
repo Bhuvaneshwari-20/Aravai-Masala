@@ -12,11 +12,12 @@ router.use('/stock', require('./stock'));
 router.use('/grams', require('./grams'));
 router.use('/products', require('./products'));
 router.use('/recipes', require('./recipes'));
+// weighing photo routes first: /batches/:id/weight-images/:imageId/file accepts ?token= (for <Image>), but routes/batches.js runs authenticate on everything under /batches before it
+router.use(require('./batchWeightImage.routes'));
 router.use('/batches', require('./batches'));
 router.use('/machines', require('./machines'));
 router.use('/blending', require('./blending'));
 router.use('/packing', require('./packing')); 
 router.use('/grinding', require('./grinding'));
 router.use('/mesh', require('./mesh'));
-router.use(require('./batchWeightImage.routes'));
 module.exports = router;

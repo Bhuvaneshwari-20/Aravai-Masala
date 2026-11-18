@@ -122,7 +122,7 @@ export default function FilteringListScreen() {
       </Container>
 
       <FilteringFormModal visible={form.open} batch={form.batch} onDismiss={() => setForm({ open: false, batch: null })}
-        onSaved={(r) => { setForm({ open: false, batch: null }); list.reload(); toast(`${r.batch_no} filtered - sent to Roasting`); }} />
+        onSaved={(r) => { setForm({ open: false, batch: null }); list.reload(); toast(`${r.batch_no} filtered - ready for Roasting`); }} />
     </View>
   );
 }

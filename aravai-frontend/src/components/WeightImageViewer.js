@@ -30,6 +30,8 @@ export default function WeightImageViewer({ visible, batchId, ingredient, onDism
             <Text style={s.tap}>Tap the photo to {big ? 'shrink' : 'enlarge'}</Text>
           </Pressable>)}
         <Line k="Entered weight" v={fmtW(w.entered_weight)} bold />
+        {!!(w.detected_machine_code || w.detected_machine_name) && <Line k="Machine on photo" v={[w.detected_machine_code, w.detected_machine_name].filter(Boolean).join(' - ')} bold />}
+        {!!w.machine_status && <Line k="Machine check" v={w.machine_status === 'NOT_READ' ? 'NOT READ' : w.machine_status} bold />}
         <Line k="Machine display weight" v={w.detected_weight == null ? 'Not read' : fmtW(w.detected_weight)} bold />
         {w.status === 'MANUAL' && <Line k="Verified" v={`Manually by ${w.verified_by_name || 'supervisor'}: ${w.manual_reason || ''}`} />}
         <Line k="Photo by" v={w.uploaded_by_name} />

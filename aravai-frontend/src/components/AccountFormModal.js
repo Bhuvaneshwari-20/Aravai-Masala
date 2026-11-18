@@ -5,25 +5,20 @@ import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import api, { errMsg } from '../api';
 import ModalShell from './ModalShell';
 import FormField from './FormField';
-import SelectField from './SelectField';
 import { useAuth } from '../AuthContext';
 import { COLORS } from '../theme';
 
-// Create (no account) or Edit (account) an Admin / staff user, as a popup.
-// Super Admin -> creates Admins (role is fixed).   Admin -> creates staff users and chooses their Role.
+// Create (no account) or Edit (account) an Admin / User, as a popup.
+// Super Admin -> creates Admins.   Admin -> creates Users (role is fixed, no role picker).
 export default function AccountFormModal({ visible, account, onDismiss, onSaved }) {
   const { user } = useAuth();
   const isSuper = user.role_name === 'Super Admin';
   const noun = isSuper ? 'Admin' : 'User';
   const isEdit = !!account;
-  const needsRole = !isSuper && !isEdit;            // Admin adding a new user
 
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [roleId, setRoleId] = useState(null);
-  const [roles, setRoles] = useState([]);
-  const [rolesLoading, setRolesLoading] = useState(false);
   const [errors, setErrors] = useState({});
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
@@ -31,14 +26,7 @@ export default function AccountFormModal({ visible, account, onDismiss, onSaved 
   useEffect(() => {
     if (!visible) return;
     setName(account?.full_name || ''); setUsername(account?.username || ''); setPassword('');
-    setRoleId(null); setErrors({}); setErr(''); setSaving(false);
-    if (needsRole) {
-      setRolesLoading(true);
-      api.get('/accounts/roles')
-        .then((r) => setRoles(r.data.data.map((x) => ({ value: x.id, label: x.role_name }))))
-        .catch((e) => setErr(`Could not load roles: ${errMsg(e)}`))
-        .finally(() => setRolesLoading(false));
-    }
+    setErrors({}); setErr(''); setSaving(false);
   }, [visible, account]); // eslint-disable-line
 
   const validate = () => {
@@ -46,7 +34,6 @@ export default function AccountFormModal({ visible, account, onDismiss, onSaved 
     if (!name.trim()) e.name = 'Name is required';
     if (!isEdit && !username.trim()) e.username = 'Username is required';
     if ((!isEdit || password) && password.length < 8) e.password = 'Password must be at least 8 characters';
-    if (needsRole && !roleId) e.role = 'Select a role';
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -56,7 +43,7 @@ export default function AccountFormModal({ visible, account, onDismiss, onSaved 
     setSaving(true); setErr('');
     try {
       if (isEdit) await api.put(`/accounts/${account.id}`, { full_name: name.trim(), password: password || undefined });
-      else await api.post('/accounts', { full_name: name.trim(), username: username.trim(), password, role_id: roleId || undefined });
+      else await api.post('/accounts', { full_name: name.trim(), username: username.trim(), password });
       setSaving(false);
       onSaved && onSaved(isEdit);
     } catch (e) { setErr(errMsg(e)); setSaving(false); }
@@ -68,7 +55,7 @@ export default function AccountFormModal({ visible, account, onDismiss, onSaved 
       footer={(
         <View style={{ flexDirection: 'row' }}>
           <Button mode="outlined" onPress={onDismiss} disabled={saving} textColor={COLORS.text} style={{ borderRadius: 10, borderColor: COLORS.border, marginRight: 10 }}>Cancel</Button>
-          <Button mode="contained" onPress={save} loading={saving} disabled={saving || (needsRole && rolesLoading)} buttonColor={COLORS.green} style={{ borderRadius: 10 }} icon="check">
+          <Button mode="contained" onPress={save} loading={saving} disabled={saving} buttonColor={COLORS.green} style={{ borderRadius: 10 }} icon="check">
             {isEdit ? 'Update' : `Save ${noun}`}
           </Button>
         </View>
@@ -79,15 +66,6 @@ export default function AccountFormModal({ visible, account, onDismiss, onSaved 
           autoCapitalize="none" autoCorrect={false} disabled={isEdit} />
         <FormField label={isEdit ? 'New password (leave blank to keep)' : 'Password * (min 8 characters)'}
           value={password} onChangeText={setPassword} error={errors.password} secureTextEntry autoCapitalize="none" />
-
-        {/* Role */}
-        {needsRole ? (
-          <SelectField label="Role *" value={roleId} options={roles} onChange={setRoleId}
-            error={errors.role} disabled={rolesLoading} />
-        ) : (
-          <FormField label="Role" value={isEdit ? account.role_name : 'Admin'} onChangeText={() => {}} disabled />
-        )}
-
         {!!err && (
           <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.dangerBg, borderRadius: 10, padding: 10, marginTop: 8 }}>
             <MCI name="alert-circle" size={16} color={COLORS.danger} />

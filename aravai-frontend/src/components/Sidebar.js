@@ -5,17 +5,19 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import { useAuth } from '../AuthContext';
 import { useUi } from '../ui';
-import { MENU, GROUPS } from '../menu';
+import { MENU, groupsForRole } from '../menu';
 import { ICON } from '../icons';
 import { SIDEBAR_W } from '../hooks/useLayout';
 
 const GOLD = '#F2A900';
 
 // Persistent left navigation (web / wide screens). Flat, quiet, with a gold active marker.
+// Role levels: Super Admin = all sections, Admin = Masters + Stock & Reports, User = Production only.
 export default function Sidebar({ navRef, current }) {
   const { user, can, logout } = useAuth();
   const { toast } = useUi();
-  const groups = GROUPS.map((g) => ({ ...g, items: g.modules.map((m) => MENU.find((x) => x.module === m)).filter((m) => m && can(m.module, 'view')) }))
+  const groups = groupsForRole(user.role_name)
+    .map((g) => ({ ...g, items: g.modules.map((m) => MENU.find((x) => x.module === m)).filter((m) => m && can(m.module, 'view')) }))
     .filter((g) => g.items.length);
 
   const go = (item) => {

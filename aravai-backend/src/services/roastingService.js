@@ -3,6 +3,7 @@ const h = require('../utils/productionHelpers');
 const AppError = require('../utils/AppError');
 const { audit } = require('../utils/audit');
 const v = require('../utils/validate');
+const ms = require('../utils/materialStages'); // material-level status: a material ticked for Filtering cannot be roasted before its Filtering is completed
 
 // Loss % above this is flagged as an alert (set ROASTING_LOSS_ALERT_PERCENT in .env to change)
 const LOSS_ALERT = Number(process.env.ROASTING_LOSS_ALERT_PERCENT) || 12;
@@ -105,6 +106,10 @@ async function clean(body, old = null, selfId = 0) {
     if (!unchanged) {
       if (b.status !== 'IN_PROGRESS') throw new AppError(`Batch ${b.batch_no} is ${b.status.toLowerCase().replace('_', ' ')}`);
       if (b.current_stage !== 'ROASTING') throw new AppError(`Batch ${b.batch_no} is not at the Roasting stage (it is at ${b.current_stage})`);
+    }
+    if (!unchanged) {
+      const waiting = await ms.pendingFilterMaterials(pool, batch_id);
+      if (waiting.some((w) => w.material_id === material_id)) throw new AppError('This material is marked for Filtering. It can be roasted only after its Filtering is completed');
     }
     weighedInfo = { batch_no: b.batch_no, ...(await batchMaterialQty(batch_id, material_id, selfId)) };
     if (weighedInfo.weighed === null) throw new AppError(`This material was not weighed in batch ${b.batch_no}`);
@@ -215,7 +220,7 @@ async function options() {
 async function batchOptions(q) {
   const currentBatch = v.clean(q.current_batch_id) === null ? 0 : v.toId(q.current_batch_id, 'batch');
   const [rows] = await pool.query(
-    `SELECT b.id AS batch_id, b.batch_no, b.production_date, p.product_name, r.recipe_no,
+    `SELECT b.id AS batch_id, b.batch_no, b.production_date, p.product_name, r.recipe_no, b.roasting_mode,
             wm.id AS weighing_machine_id, wm.machine_code AS weighing_machine_code, wm.machine_name AS weighing_machine_name
        FROM batch_master b
        JOIN product_master p ON p.id = b.product_id
@@ -247,10 +252,13 @@ async function batchMaterials(q) {
     filtered = new Map(fm.map((x) => [x.material_id, Number(x.output_weight)]));
   } catch (e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; } // table is created by migration v6
   const left = await batchLeftToRoast(batchId, excludeId); // never offer more than the earlier stages handed over
+  const [[bRow]] = await pool.query('SELECT id, current_stage FROM batch_master WHERE id = ?', [batchId]);
+  const states = bRow ? await ms.materialStateMap(pool, bRow) : new Map();
   const items = rows.map((m) => {
     const filteredQty = filtered.has(m.material_id) ? filtered.get(m.material_id) : null;
     const own = r3((filteredQty !== null ? filteredQty : Number(m.weighed_qty)) - Number(m.roasted_qty));
-    return { ...m, filtered_qty: filteredQty, remaining_qty: left === null ? own : Math.max(Math.min(own, left), 0), batch_left_kg: left };
+    const stt = states.get(m.material_id);
+    return { ...m, stage: stt ? stt.stage : undefined, needs_filtering: !!(stt && stt.needs_filtering), filtered_qty: filteredQty, remaining_qty: left === null ? own : Math.max(Math.min(own, left), 0), batch_left_kg: left };
   }).filter((m) => m.remaining_qty > 0 || m.material_id === currentMaterial);
   return { items };
 }
@@ -380,7 +388,9 @@ async function createMulti(body, user, ip) {
       saved.push(r.insertId);
       await auditEntry(user, r.insertId, d, ip, conn);
     }
-    const moved = await finishRoasting(conn, batchId, user, ip);
+    // PARALLEL batch: the materials ticked for Filtering are not roasted yet, so the batch must stay at Roasting
+    const waiting = await ms.pendingFilterMaterials(conn, batchId);
+    const moved = waiting.length ? null : await finishRoasting(conn, batchId, user, ip);
     return { saved, moved };
   });
   const items = [];
@@ -393,6 +403,8 @@ async function finishBatch(body, user, ip) {
   const batchId = v.toId(body.batch_id, 'batch');
   const moved = await withTransaction(async (conn) => {
     await h.lockBatch(conn, batchId, 'ROASTING');
+    const waiting = await ms.pendingFilterMaterials(conn, batchId);
+    if (waiting.length) throw new AppError(`Filtering is not completed for ${waiting.map((w) => w.material_name).join(', ')}. The batch cannot go to Grinding yet`);
     return finishRoasting(conn, batchId, user, ip);
   });
   return { batch_id: batchId, batch_moved: moved };
@@ -409,10 +421,12 @@ async function create(body, user, ip) {
   }
   const out = await withTransaction(async (conn) => {
     if (d.batch_id) await h.lockBatch(conn, d.batch_id, 'ROASTING');
+    const waiting = d.batch_id ? await ms.pendingFilterMaterials(conn, d.batch_id) : [];
+    if (finish && waiting.length) throw new AppError(`Filtering is not completed for ${waiting.map((w) => w.material_name).join(', ')}. The batch cannot go to Grinding yet`);
     const [r] = await conn.query(INSERT_SQL, [...cols(d), user.id]);
     let moved = null;
     if (finish) moved = await finishRoasting(conn, d.batch_id, user, ip);
-    else if (d.batch_id && d.status === 'COMPLETED' && await nothingLeftToRoast(conn, d.batch_id)) moved = await finishRoasting(conn, d.batch_id, user, ip, { soft: true });
+    else if (d.batch_id && !waiting.length && d.status === 'COMPLETED' && await nothingLeftToRoast(conn, d.batch_id)) moved = await finishRoasting(conn, d.batch_id, user, ip, { soft: true });
     await auditEntry(user, r.insertId, d, ip, conn);
     return { id: r.insertId, moved };
   });

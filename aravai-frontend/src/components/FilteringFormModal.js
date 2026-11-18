@@ -133,7 +133,7 @@ export default function FilteringFormModal({ visible, batch, onDismiss, onSaved 
   return (
     <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon="filter-variant" maxWidth={640}
       title="Filtering" subtitle={batch ? `${batch.batch_no} · ${batch.product_name}` : ''}
-      footer={<ModalFooter onCancel={onDismiss} onSave={save} saving={saving} label="Save & Send to Roasting" />}>
+      footer={<ModalFooter onCancel={onDismiss} onSave={save} saving={saving} label="Save Filtering" />}>
       <View>
         <Label>FILTERING</Label>
         <WeighingMachineInfo batch={batch} />
