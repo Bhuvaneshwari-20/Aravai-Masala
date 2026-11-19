@@ -24,14 +24,15 @@ export default function Sidebar({ navRef, current }) {
     if (!item.screen) return toast(`${item.label} will be available in an upcoming phase`);
     if (navRef.isReady()) navRef.navigate(item.screen);
   };
-  const isActive = (item) => !!item.screen && current.startsWith(item.screen.replace('List', ''));
+  // Products & Recipes is one page now, so the old Recipe screens also light up this entry
+ const isActive = (item) => !!item.screen && current.startsWith(item.screen.replace('List', ''));
   const homeOn = current === 'Home';
 
   const Row = ({ on, icon, label, soon, onPress, accent }) => (
     <Pressable onPress={onPress} accessibilityRole="button" style={({ hovered }) => [s.row, hovered && !on && s.rowHover, on && s.rowOn]}>
       {on && <View style={s.bar} />}
-      <MCI name={icon} size={19} color={on ? GOLD : '#FFFFFF'} />
-      <Text style={[s.rowText, on && s.rowTextOn]} numberOfLines={1}>{label}</Text>
+      <View style={s.iconBox}><MCI name={icon} size={19} color={on ? GOLD : '#FFFFFF'} /></View>
+      <Text style={[s.rowText, on && s.rowTextOn]} numberOfLines={2}>{label}</Text>
       {soon && <View style={s.soon}><Text style={s.soonText}>SOON</Text></View>}
       {!soon && !!accent && <View style={[s.groupDot, { backgroundColor: accent }]} />}
     </Pressable>
@@ -80,11 +81,12 @@ const s = StyleSheet.create({
   brandName: { color: '#fff', fontWeight: '900', fontSize: 14.5, letterSpacing: 1.3 },
   brandSub: { color: 'rgba(255,255,255,0.8)', fontSize: 11, fontWeight: '600', marginTop: 2 },
   label: { color: '#F2A900', fontSize: 11, fontWeight: '900', letterSpacing: 1.6, marginBottom: 6, marginLeft: 12 },
-  row: { flexDirection: 'row', alignItems: 'center', height: 42, paddingHorizontal: 12, borderRadius: 12, marginBottom: 2, overflow: 'hidden' },
+  iconBox: { width: 24, alignItems: 'center', justifyContent: 'center' },
+  row: { flexDirection: 'row', alignItems: 'center', minHeight: 42, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 12, marginBottom: 2, overflow: 'hidden' },
   rowHover: { backgroundColor: 'rgba(255,255,255,0.07)' },
   rowOn: { backgroundColor: 'rgba(255,255,255,0.16)' },
-  bar: { position: 'absolute', left: 0, top: 9, bottom: 9, width: 3.5, borderTopRightRadius: 3, borderBottomRightRadius: 3, backgroundColor: GOLD },
-  rowText: { flex: 1, marginLeft: 12, color: '#FFFFFF', fontSize: 14.5, fontWeight: '700', letterSpacing: 0.1 },
+  bar: { position: 'absolute', left: 0, top: 8, bottom: 8, width: 3.5, borderTopRightRadius: 3, borderBottomRightRadius: 3, backgroundColor: GOLD },
+  rowText: { flex: 1, marginLeft: 12, color: '#FFFFFF', fontSize: 14, lineHeight: 18, fontWeight: '700', letterSpacing: 0.1 },
   rowTextOn: { color: '#FFD98A', fontWeight: '900' },
   soon: { backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 1 },
   soonText: { fontSize: 9, color: 'rgba(255,255,255,0.85)', fontWeight: '800', letterSpacing: 0.7 },

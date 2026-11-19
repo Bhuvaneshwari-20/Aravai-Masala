@@ -23,7 +23,8 @@ const TXN_BATCH_JOIN = `LEFT JOIN batch_master tb ON tb.id = t.batch_id OR (t.ba
 async function summary(q) {
   const search = v.clean(q.search);
   const args = [];
-  let where = 'WHERE m.is_active = 1';
+  // only materials that already have a Material Receipt (or opening stock) are tracked here
+  let where = "WHERE m.is_active = 1 AND EXISTS (SELECT 1 FROM material_stock_transactions t WHERE t.material_id = m.id AND t.txn_type IN ('INWARD','OPENING'))";
   if (search) { where += ' AND (m.material_name LIKE ? OR m.material_code LIKE ?)'; args.push(`%${search}%`, `%${search}%`); }
   if (v.clean(q.category_id)) { where += ' AND m.category_id = ?'; args.push(v.toId(q.category_id, 'category')); }
 

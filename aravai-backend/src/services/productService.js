@@ -87,8 +87,8 @@ async function insertPack(conn, productId, p, userId) {
   const [dup] = await conn.query('SELECT id FROM product_packing_rates WHERE sku_code = ?', [p.sku_code]);
   if (dup.length) throw new AppError(`SKU code ${p.sku_code} is already used`, 409);
   const [r] = await conn.query(
-    `INSERT INTO product_packing_rates (product_id, sku_code, packing_size_label, weight_grams, mrp, bag_rate, production_rate, bag_material_cost)
-     VALUES (?,?,?,?,?,?,?,?)`,
+    `INSERT INTO product_packing_rates (product_id, sku_code, packing_size_label, weight_grams, mrp, bag_rate, production_rate, bag_material_cost, is_active)
+     VALUES (?,?,?,?,?,?,?,?,1)`,
     [productId, p.sku_code, p.packing_size_label, p.weight_grams, p.mrp, p.bag_rate, p.production_rate, p.bag_material_cost]);
   await setMrp(conn, r.insertId, p.mrp, p.effective_from, userId);
   return r.insertId;
@@ -110,26 +110,49 @@ async function list(q) {
   if (search) { where.push('(p.product_name LIKE ? OR p.product_code LIKE ?)'); args.push(`%${search}%`, `%${search}%`); }
   if (q.active === 'true') where.push('p.is_active = 1');
   else if (q.active === 'false') where.push('p.is_active = 0');
-  const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const base = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const withRecipe = q.include === 'recipe';
+  const HAS_RECIPE = 'EXISTS (SELECT 1 FROM recipe_master r WHERE r.product_id = p.id)';
+
+  // ?recipe=with | without  -> filter done in SQL, so paging stays correct (only together with include=recipe)
+  const rf = withRecipe ? v.clean(q.recipe) : null;
+  if (rf && rf !== 'with' && rf !== 'without') throw new AppError('recipe filter must be "with" or "without"');
+  const listWhere = rf ? [...where, rf === 'with' ? HAS_RECIPE : `NOT ${HAS_RECIPE}`] : where;
+  const w = listWhere.length ? `WHERE ${listWhere.join(' AND ')}` : '';
+
   const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM product_master p ${w}`, args);
   const [rows] = await pool.query(`SELECT p.* FROM product_master p ${w} ORDER BY p.product_name LIMIT ? OFFSET ?`, [...args, limit, offset]);
   const packs = await loadPacks(pool, rows.map((r) => r.id));
-  const items = rows.map((r) => ({ ...shapeProduct(r), packs: packs.get(r.id) }));
-  return { items, page, limit, total, total_pages: Math.max(Math.ceil(total / limit), 1) };
+  // ?include=recipe -> current recipe (latest version + its materials) of every product, in 2 queries for the whole page
+  const recipes = withRecipe ? await require('./recipeService').currentByProducts(pool, rows.map((r) => r.id)) : null;
+  const items = rows.map((r) => ({ ...shapeProduct(r), packs: packs.get(r.id), ...(recipes ? { current_recipe: recipes.get(r.id) || null } : {}) }));
+
+  // Totals for the whole result set (search applied, recipe filter NOT applied) -> screen counters stay correct while paging / filtering
+  const [[sum]] = await pool.query(
+    `SELECT COUNT(*) AS total, ${withRecipe ? `COALESCE(SUM(${HAS_RECIPE}), 0)` : '0'} AS with_recipe FROM product_master p ${base}`, args);
+  const [[pk]] = await pool.query(
+    `SELECT COUNT(*) AS packs, COALESCE(SUM(k.mrp), 0) AS mrp_total FROM product_packing_rates k JOIN product_master p ON p.id = k.product_id ${base}`, args);
+  const summary = { total: Number(sum.total), packs: Number(pk.packs), mrp_total: Number(pk.mrp_total) };
+  if (withRecipe) { summary.with_recipe = Number(sum.with_recipe); summary.without_recipe = summary.total - summary.with_recipe; }
+
+  return { items, page, limit, total, total_pages: Math.max(Math.ceil(total / limit), 1), summary };
 }
 
 // Product + at least one pack size with MRP (flow step 4)
 async function create(body, userId, ip) {
   const name = v.reqStr(body.product_name, 'Product name', 120);
   const category = v.optStr(body.category, 'Category', 80);
-  if (!Array.isArray(body.packs) || !body.packs.length) throw new AppError('Add at least one pack size with MRP');
-  if (body.packs.length > 20) throw new AppError('Too many pack sizes');
+  // A product can be saved with only its name (Ingredients screen). Sizes + MRP are added later in Product & MRP.
+  const packsIn = body.packs === undefined || body.packs === null ? [] : body.packs;
+  if (!Array.isArray(packsIn)) throw new AppError('Pack sizes must be a list');
+  if (packsIn.length > 20) throw new AppError('Too many pack sizes');
 
   return withTransaction(async (conn) => {
     const [dup] = await conn.query('SELECT id FROM product_master WHERE product_name = ?', [name]);
     if (dup.length) throw new AppError('A product with this name already exists', 409);
     const code = await nextNumber(conn, 'PRODUCT');
-    const packs = body.packs.map((p) => cleanPack(p, code));
+    const packs = packsIn.map((p) => cleanPack(p, code));
     const weights = new Set();
     for (const p of packs) {
       await assertGram(conn, p.weight_grams);
@@ -222,8 +245,40 @@ async function updatePack(productIdRaw, packIdRaw, body, userId, ip) {
   });
 }
 
+// Delete ONE pack size (and its MRP history). Blocked when it is the only pack, or when packing / stock already uses it.
+async function removePack(productIdRaw, packIdRaw, userId, ip) {
+  const productId = v.toId(productIdRaw, 'product id');
+  const packId = v.toId(packIdRaw, 'pack id');
+  return withTransaction(async (conn) => {
+    const [rows] = await conn.query('SELECT * FROM product_packing_rates WHERE id = ? AND product_id = ? FOR UPDATE', [packId, productId]);
+    if (!rows.length) throw new AppError('Pack size not found', 404);
+    const [[cnt]] = await conn.query('SELECT COUNT(*) AS c FROM product_packing_rates WHERE product_id = ?', [productId]);
+    if (Number(cnt.c) <= 1) throw new AppError('A product needs at least one pack size. Add another pack first, or mark this one inactive.', 409);
+    const uses = [
+      ['packing entry', 'packing entries', 'SELECT COUNT(*) AS c FROM packing_details WHERE packing_rate_id = ?'],
+      ['finished stock record', 'finished stock records', 'SELECT COUNT(*) AS c FROM finished_goods_stock WHERE packing_rate_id = ?'],
+    ];
+    for (const [one, many, sql] of uses) {
+      let c = 0;
+      try { [[{ c }]] = await conn.query(sql, [packId]); }
+      catch (e) { if (e.code === 'ER_NO_SUCH_TABLE' || e.code === 'ER_BAD_FIELD_ERROR') continue; throw e; }
+      if (c > 0) throw new AppError(`${rows[0].packing_size_label} is used in ${c} ${c > 1 ? many : one} and cannot be deleted. Mark it inactive instead`, 409);
+    }
+    await conn.query('DELETE FROM product_mrp WHERE packing_rate_id = ?', [packId]);
+    await conn.query('DELETE FROM product_rate_history WHERE packing_rate_id = ?', [packId]);
+    try { await conn.query('DELETE FROM product_packing_rates WHERE id = ?', [packId]); }
+    catch (e) {
+      if (e.code === 'ER_ROW_IS_REFERENCED_2' || e.code === 'ER_ROW_IS_REFERENCED') throw new AppError(`${rows[0].packing_size_label} is used in other records and cannot be deleted`, 409);
+      throw e;
+    }
+    await audit({ userId, action: 'DELETE', table: 'product_packing_rates', recordId: packId, oldValues: rows[0], ip }, conn);
+    return getById(productId, conn);
+  });
+}
+
 // Delete a product with all its pack sizes / MRP history. Blocked when production data already refers to it.
-async function remove(idRaw, userId, ip) {
+// withRecipe = true: its recipe (every version + materials) is deleted too, so the product disappears completely.
+async function remove(idRaw, userId, ip, withRecipe = false) {
   const id = v.toId(idRaw, 'product id');
   return withTransaction(async (conn) => {
     const [rows] = await conn.query('SELECT * FROM product_master WHERE id = ? FOR UPDATE', [id]);
@@ -237,11 +292,26 @@ async function remove(idRaw, userId, ip) {
       ['finished_goods_stock', 'finished stock record', 'finished stock records',
         'SELECT COUNT(*) AS n FROM finished_goods_stock WHERE packing_rate_id IN (SELECT id FROM product_packing_rates WHERE product_id = ?)'],
     ];
-    for (const [, one, many, sql] of uses) {
+    for (const [table, one, many, sql] of uses) {
+      if (withRecipe && table === 'recipe_master') continue; // the recipe goes together with the product
       let n = 0;
       try { [[{ n }]] = await conn.query(sql, [id]); }
       catch (e) { if (e.code === 'ER_NO_SUCH_TABLE' || e.code === 'ER_BAD_FIELD_ERROR') continue; throw e; } // table/column not in this database
       if (n > 0) throw new AppError(`${rows[0].product_name} is used in ${n} ${n > 1 ? many : one} and cannot be deleted. Deactivate it instead`, 409);
+    }
+    let recipeVersions = 0;
+    if (withRecipe) {
+      const [vers] = await conn.query('SELECT id FROM recipe_master WHERE product_id = ?', [id]);
+      recipeVersions = vers.length;
+      if (vers.length) {
+        try {
+          await conn.query('DELETE FROM recipe_details WHERE recipe_id IN (?)', [vers.map((x) => x.id)]);
+          await conn.query('DELETE FROM recipe_master WHERE product_id = ?', [id]);
+        } catch (e) {
+          if (e.code === 'ER_ROW_IS_REFERENCED_2' || e.code === 'ER_ROW_IS_REFERENCED') throw new AppError(`${rows[0].product_name} recipe is used in other records and cannot be deleted`, 409);
+          throw e;
+        }
+      }
     }
     const [packs] = await conn.query('SELECT id FROM product_packing_rates WHERE product_id = ?', [id]);
     const packIds = packs.map((x) => x.id);
@@ -259,9 +329,9 @@ async function remove(idRaw, userId, ip) {
       if (e.code === 'ER_ROW_IS_REFERENCED_2' || e.code === 'ER_ROW_IS_REFERENCED') throw new AppError(`${rows[0].product_name} is used in other records and cannot be deleted`, 409);
       throw e;
     }
-    await audit({ userId, action: 'DELETE', table: 'product_master', recordId: id, oldValues: before, ip }, conn);
+    await audit({ userId, action: 'DELETE', table: 'product_master', recordId: id, oldValues: before, newValues: withRecipe ? { deleted_recipe_versions: recipeVersions } : null, ip }, conn);
     return { id };
   });
 }
 
-module.exports = { list, getById, create, update, addPack, updatePack, remove };
+module.exports = { list, getById, create, update, addPack, updatePack, removePack, remove };

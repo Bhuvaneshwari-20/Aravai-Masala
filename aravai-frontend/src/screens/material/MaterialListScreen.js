@@ -136,13 +136,12 @@ export default function MaterialListScreen({ navigation, route }) {
     sort: 'latest', // newest material first
     search: dSearch || undefined,
     low_stock: filter === 'low' ? 'true' : undefined,
-    active: filter === 'active' ? 'true' : filter === 'inactive' ? 'false' : undefined,
   });
 
   const loadCounts = useCallback(() => {
-    Promise.allSettled([count({}), count({ low_stock: 'true' }), count({ active: 'true' }), count({ active: 'false' })]).then((r) => {
+    Promise.allSettled([count({}), count({ low_stock: 'true' })]).then((r) => {
       const v = (i) => (r[i].status === 'fulfilled' ? r[i].value : undefined);
-      setCounts({ all: v(0), low: v(1), active: v(2), inactive: v(3) });
+      setCounts({ all: v(0), low: v(1) });
     });
   }, []);
   useEffect(() => { loadCounts(); }, [loadCounts]);
@@ -157,8 +156,6 @@ export default function MaterialListScreen({ navigation, route }) {
   const chips = [
     { value: 'all', label: 'All', count: counts.all },
     { value: 'low', label: 'Low stock', count: counts.low },
-    { value: 'active', label: 'Active', count: counts.active },
-    { value: 'inactive', label: 'Inactive', count: counts.inactive },
   ];
   const onEdit = can('material', 'edit') ? (item) => setEditId(item.id) : null;
   const onDelete = can('material', 'delete') ? (item) => setDel(item) : null;
@@ -185,10 +182,6 @@ export default function MaterialListScreen({ navigation, route }) {
             <StatCard icon="package-variant" color="#0E7490" value={counts.all === undefined ? undefined : fmt(counts.all)} label="Total materials" active={filter === 'all'} onPress={() => setFilter('all')} />
             <View style={{ width: 12 }} />
             <StatCard icon="alert-circle" color="#DC2626" value={counts.low === undefined ? undefined : fmt(counts.low)} label="Low stock" active={filter === 'low'} onPress={() => pick('low')} />
-            <View style={{ width: 12 }} />
-            <StatCard icon="check-circle" color="#16A34A" value={counts.active === undefined ? undefined : fmt(counts.active)} label="Active" active={filter === 'active'} onPress={() => pick('active')} />
-            <View style={{ width: 12 }} />
-            <StatCard icon="pause-circle" color="#85786F" value={counts.inactive === undefined ? undefined : fmt(counts.inactive)} label="Inactive" active={filter === 'inactive'} onPress={() => pick('inactive')} />
           </View>
         )}
         {isPhone && <FilterChips options={chips} value={filter} onChange={setFilter} style={{ marginTop: 6, marginHorizontal: -pad }} />}

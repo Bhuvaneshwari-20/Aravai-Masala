@@ -105,7 +105,7 @@ async function checkMaterials(conn, ids) {
   if (mats.length !== ids.length) throw new AppError('One or more materials do not exist');
   for (const m of mats) {
     if (!m.is_active) throw new AppError(`${m.material_name} is inactive`);
-    if (m.unit !== 'KG') throw new AppError(`${m.material_name} is in ${m.unit}. Only KG materials can be used in a recipe`);
+    if (m.unit !== 'KG' && m.unit !== 'GRAM') throw new AppError(`${m.material_name} is in ${m.unit}. Only GRAM or KG materials can be used in a recipe`);
   }
 }
 
@@ -186,12 +186,12 @@ async function update(idRaw, body, userId, ip) {
 }
 
 // ---- used by New Batch (+ Add Material): needs batching permission only, not recipe permission ----
-// KG materials that are active and not yet in the product's current recipe.
+// GRAM / KG materials that are active and not yet in the product's current recipe.
 async function addableMaterials(q) {
   const productId = v.toId(q.product_id, 'product');
   const [rows] = await pool.query(
     `SELECT m.id, m.material_code, m.material_name, m.unit FROM materials m
-     WHERE m.is_active = 1 AND m.unit = 'KG'
+     WHERE m.is_active = 1 AND m.unit IN ('KG','GRAM')
        AND m.id NOT IN (SELECT d.material_id FROM recipe_details d JOIN recipe_master r ON r.id = d.recipe_id
                         WHERE r.product_id = ? AND r.is_active = 1)
      ORDER BY m.material_name`, [productId]);
@@ -222,4 +222,81 @@ async function setStatus(idRaw, body, userId, ip) {
   });
 }
 
-module.exports = { list, getById, create, update, setStatus, addableMaterials, addMaterial };
+// ---- Product page (Product + MRP + Recipe on one screen) ----
+// Materials of many recipe versions in ONE query -> Map(recipe_id -> ingredients[])
+async function loadIngredients(db, recipeIds) {
+  const map = new Map(recipeIds.map((id) => [id, []]));
+  if (!recipeIds.length) return map;
+  const [rows] = await db.query(
+    `SELECT d.id, d.recipe_id, d.material_id, m.material_code, m.material_name, m.unit, d.quantity_kg, d.percentage
+     FROM recipe_details d JOIN materials m ON m.id = d.material_id WHERE d.recipe_id IN (?) ORDER BY d.id`, [recipeIds]);
+  rows.forEach((r) => map.get(r.recipe_id).push(r));
+  return map;
+}
+
+// Latest version (highest version_no) of each product, with its materials -> Map(product_id -> recipe)
+// Used by the product list so the page shows the current recipe without one request per product.
+async function currentByProducts(db, productIds) {
+  const out = new Map();
+  if (!productIds.length) return out;
+  const [rows] = await db.query(
+    `SELECT r.id, r.recipe_no, r.product_id, r.version_no, r.is_active, r.remarks, r.created_by, r.created_at, u.full_name AS created_by_name
+     FROM recipe_master r LEFT JOIN users u ON u.id = r.created_by
+     WHERE r.product_id IN (?) AND r.version_no = (SELECT MAX(x.version_no) FROM recipe_master x WHERE x.product_id = r.product_id)
+     ORDER BY r.id`, [productIds]);
+  const ing = await loadIngredients(db, rows.map((r) => r.id));
+  rows.forEach((r) => out.set(r.product_id, { ...shape(r), ingredients: ing.get(r.id) }));
+  return out;
+}
+
+// Every version of one product with its materials, oldest -> newest (2 queries, whatever the number of versions).
+// The screen compares each version with the one before it to show what changed.
+async function history(productIdRaw) {
+  const productId = v.toId(productIdRaw, 'product');
+  const [[prod]] = await pool.query('SELECT id, product_code, product_name FROM product_master WHERE id = ?', [productId]);
+  if (!prod) throw new AppError('Product not found', 404);
+  const [rows] = await pool.query(
+    `SELECT r.id, r.recipe_no, r.product_id, r.version_no, r.is_active, r.remarks, r.created_by, r.created_at, u.full_name AS created_by_name
+     FROM recipe_master r LEFT JOIN users u ON u.id = r.created_by
+     WHERE r.product_id = ? ORDER BY r.version_no ASC, r.id ASC`, [productId]);
+  const ing = await loadIngredients(pool, rows.map((r) => r.id));
+  const versions = rows.map((r, i) => ({ ...shape(r), is_latest: i === rows.length - 1, ingredients: ing.get(r.id) }));
+  return { product_id: prod.id, product_code: prod.product_code, product_name: prod.product_name, latest_version_no: rows.length ? rows[rows.length - 1].version_no : null, versions };
+}
+
+// Delete the WHOLE recipe of a product (every version + its materials). The product itself stays.
+// Blocked when a batch / blending record already uses one of the versions - those records must keep their recipe.
+async function removeForProduct(productIdRaw, userId, ip) {
+  const productId = v.toId(productIdRaw, 'product');
+  return withTransaction(async (conn) => {
+    const [prod] = await conn.query('SELECT id, product_name FROM product_master WHERE id = ? FOR UPDATE', [productId]);
+    if (!prod.length) throw new AppError('Product not found', 404);
+    const [vers] = await conn.query('SELECT id, recipe_no, version_no FROM recipe_master WHERE product_id = ?', [productId]);
+    if (!vers.length) throw new AppError('This product has no recipe', 404);
+    const ids = vers.map((x) => x.id);
+
+    const uses = [
+      ['batch', 'batches', 'SELECT COUNT(*) AS n FROM batch_master WHERE recipe_id IN (?)'],
+      ['blending entry', 'blending entries', 'SELECT COUNT(*) AS n FROM blending_details WHERE recipe_id IN (?)'],
+    ];
+    for (const [one, many, sql] of uses) {
+      let n = 0;
+      try { [[{ n }]] = await conn.query(sql, [ids]); }
+      catch (e) { if (e.code === 'ER_NO_SUCH_TABLE' || e.code === 'ER_BAD_FIELD_ERROR') continue; throw e; } // not in this database
+      if (n > 0) throw new AppError(`The recipe of ${prod[0].product_name} is used in ${n} ${n > 1 ? many : one} and cannot be deleted. Edit the ingredients instead`, 409);
+    }
+
+    try {
+      await conn.query('DELETE FROM recipe_details WHERE recipe_id IN (?)', [ids]);
+      await conn.query('DELETE FROM recipe_master WHERE product_id = ?', [productId]);
+    } catch (e) {
+      if (e.code === 'ER_ROW_IS_REFERENCED_2' || e.code === 'ER_ROW_IS_REFERENCED') throw new AppError(`The recipe of ${prod[0].product_name} is used in other records and cannot be deleted`, 409);
+      throw e;
+    }
+    await audit({ userId, action: 'DELETE', table: 'recipe_master', recordId: productId,
+      oldValues: { product_id: productId, product_name: prod[0].product_name, versions: vers }, ip }, conn);
+    return { product_id: productId, deleted_versions: ids.length };
+  });
+}
+
+module.exports = { list, getById, create, update, setStatus, addableMaterials, addMaterial, currentByProducts, history, removeForProduct };

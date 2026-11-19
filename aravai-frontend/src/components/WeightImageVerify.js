@@ -6,15 +6,12 @@ import PhotoCapture from './PhotoCapture';
 import FormField from './FormField';
 import { ErrorBox, InfoBox, Label } from './FormBits';
 import {
-  bwStatus, bwPassed, uploadWeightImage, manualVerifyWeightImage, pickWeightImage,
-  machineCheck, machineStatusInfo, weightImageErrMsg,
+  bwStatus, bwPassed, uploadWeightImage, manualVerifyWeightImage, pickWeightImage, weightImageErrMsg,
 } from '../batchWeightImage';
 import { fmtW } from '../weighing';
 import { COLORS } from '../theme';
 
 const r3 = (n) => Math.round(Number(n) * 1000) / 1000;
-const expLabel = (m) => (m ? [m.code, m.name].filter(Boolean).join(' - ') : '');
-const expKey = (m) => (m && m.id != null ? String(m.id) : '');
 
 // Photo check of the weighing machine display for one batching entry.
 //   capture (camera) or upload (gallery / file)  ->  server reads Machine ID, Machine name and weight  ->  machine + weight are checked.
@@ -32,7 +29,6 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
   const [pending, setPending] = useState(null); // { uri } chosen, but not sent yet (compare mode and no weight typed yet)
   const [previewUri, setPreviewUri] = useState(null); // photo shown on screen (the one being read / last read), kept after a failed read
   const [result, setResult] = useState(null);   // server answer
-  const [sentMachine, setSentMachine] = useState(''); // machine id the server compared the photo with
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [reason, setReason] = useState('');
@@ -43,12 +39,11 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
   const entered = Number(enteredWeight) || 0;
   const stale = !!result && Math.abs(Number(result.entered_weight) - entered) > 0.0000001;
   const current = result && !stale ? result : null;
-  const mc = current ? machineCheck(current, expectedMachine, sentMachine === expKey(expectedMachine)) : null;
-  const machineSt = mc ? mc.status : null;
+  // Weight-only verification: the photo is checked only for its displayed weight.
   const weightOk = !!current && bwPassed(current.status);
-  const passed = weightOk && machineSt !== 'MISMATCH';
+  const passed = weightOk;
 
-  useEffect(() => { onChange && onChange({ imageId: current ? current.id : null, passed, status: current ? current.status : null, stale, machineStatus: machineSt }); }, [current && current.id, current && current.status, passed, stale, machineSt]); // eslint-disable-line
+  useEffect(() => { onChange && onChange({ imageId: current ? current.id : null, passed, status: current ? current.status : null, stale, machineStatus: 'NOT_CHECKED' }); }, [current && current.id, current && current.status, passed, stale]); // eslint-disable-line
 
   // compare = true: check the photo against the typed weighed quantity (old behaviour, also used by "Verify again with the same photo")
   const verify = async (uri, compare = false) => {
@@ -62,7 +57,6 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
       setReason(''); setReasonErr('');
       const detected = r.detected_weight === null || r.detected_weight === undefined || r.detected_weight === '' ? NaN : Number(r.detected_weight);
       const read = Number.isFinite(detected) && detected > 0 && r.status !== 'UNREADABLE';
-      setSentMachine(expKey(expectedMachine));
       if (auto && !read) {
         // nothing could be read: do not fill anything. The operator retakes the photo, or types the weight and verifies it against this photo.
         setResult(null); setMode('idle');
@@ -71,9 +65,8 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
         // auto mode: the weighed quantity IS the detected weight, so the result is not "stale" against it
         const res = auto ? { ...r, entered_weight: r3(detected) } : r;
         setResult(res); setMode('idle');
-        const m = machineCheck(res, expectedMachine, true);
-        // a photo of another machine must not fill in a weight
-        if (auto && onDetected && m.status !== 'MISMATCH') onDetected(r3(detected));
+        // Weight-only verification: fill the detected weight without requiring machine ID / QR recognition.
+        if (auto && onDetected) onDetected(r3(detected));
       }
     } catch (e) { if (live.current) setErr(weightImageErrMsg(e)); }
     if (live.current) setBusy(false);
@@ -109,20 +102,16 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
   const clearAll = () => { setResult(null); setPending(null); setPreviewUri(null); setMode('idle'); setErr(''); };
 
   const st = current ? bwStatus(current.status) : null;
-  const ms = machineSt ? machineStatusInfo(machineSt) : null;
   const detectedKg = current && current.detected_weight != null && current.detected_weight !== '' ? current.detected_weight : null;
-  const machineBad = machineSt === 'MISMATCH';
-  const headBadge = machineBad ? { label: 'MACHINE MISMATCH', color: COLORS.danger, bg: COLORS.dangerBg } : st;
-  const note = !current ? '' : machineBad
-    ? `The photo shows ${mc.label || 'a different machine'}, but this weighing must be done on ${expLabel(expectedMachine) || 'the assigned machine'}. Saving is blocked. Photograph the display of the correct machine.`
-    : {
+  const headBadge = st;
+  const note = !current ? '' : {
       MATCH: autoFill ? `Weight ${fmtW(detectedKg)} was read from the machine display and filled in as the Weighed Qty.` : 'The weight on the machine display is the same as the weight you entered.',
       MANUAL: `Verified manually${current.manual_reason ? `: ${current.manual_reason}` : '.'}`,
       MISMATCH: `The machine display shows ${fmtW(current.detected_weight)} but you entered ${fmtW(current.entered_weight)}. Saving is blocked. Check the weight you entered, or weigh again and take a new photo.`,
       UNREADABLE: 'The weight could not be read from the photo. Retake a clearer photo (hold steady, avoid glare, whole display in view) or ask for manual verification.',
     }[current.status];
 
-  const busyText = autoFill ? 'Reading machine ID, name and weight…' : 'Checking the weight on the photo…';
+  const busyText = autoFill ? 'Reading weight from the display…' : 'Checking the weight on the photo…';
   const hasImage = !!previewUri;
   const canAct = !busy && !blockedReason;
 
@@ -162,23 +151,19 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
         <View style={{ marginTop: 10 }}>
           <View style={[s.badge, { backgroundColor: headBadge.bg }]}>
             <MCI name={passed ? 'check-circle' : 'alert-circle'} size={18} color={headBadge.color} />
-            <Text style={[s.badgeText, { color: headBadge.color }]}>{autoFill && current.status === 'MATCH' && !machineBad ? 'READ SUCCESSFULLY' : headBadge.label}</Text>
+            <Text style={[s.badgeText, { color: headBadge.color }]}>{autoFill && current.status === 'MATCH' ? 'READ SUCCESSFULLY' : headBadge.label}</Text>
           </View>
           <Text style={s.note}>{note}</Text>
 
           <View style={s.pills}>
-            <Pill k="Machine" label={ms.label} color={ms.color} bg={ms.bg} icon={ms.icon} />
             <Pill k="Weight" label={autoFill && current.status === 'MATCH' ? 'READ' : st.label} color={st.color} bg={st.bg} icon={bwPassed(current.status) ? 'check-circle' : 'alert-circle'} />
           </View>
 
           <View style={s.grid}>
-            <Tile k="Machine ID" v={mc.code || mc.id || 'Not read'} bad={machineBad} ok={machineSt === 'MATCH'} />
-            <Tile k="Machine name" v={mc.name || 'Not read'} bad={machineBad} ok={machineSt === 'MATCH'} />
             <Tile k="Weight" v={detectedKg == null ? 'Not read' : fmtW(detectedKg)} bad={current.status === 'MISMATCH'} />
             {!autoFill && <Tile k="Entered" v={fmtW(current.entered_weight)} />}
           </View>
-          {!!expectedMachine && (machineBad || machineSt === 'NOT_READ') && <Text style={s.expected}>{`Expected machine: ${expLabel(expectedMachine)}`}</Text>}
-          {machineSt === 'NOT_READ' && <InfoBox text="The machine ID / name could not be read from the photo, so the machine was not matched. Make sure the machine label is also in the picture." />}
+
 
           {current.status === 'UNREADABLE' && (canManual ? (
             <View style={s.manual}>
@@ -210,7 +195,7 @@ export default function WeightImageVerify({ batchId, materialId, enteredWeight, 
       {mode === 'idle' && (
         <View>
           {!hasImage && !busy && (
-            <Text style={s.help}>{autoFill ? 'Take a photo of the weighing machine display, or upload one. The machine ID, machine name and weight on it are read automatically, and the weight is filled in as the Weighed Qty.' : uploadOnly ? 'Upload an image of the weighing machine display. The weight on it is read and compared with the weighed quantity.' : cameraOnly ? 'Take a live photo of the weighing machine display. The weight on it is read and compared with the weighed quantity.' : 'Take a photo of the weighing machine display, or upload one. The weight on it is read and compared with the weighed quantity.'}</Text>
+            <Text style={s.help}>{autoFill ? 'Take a photo of the weighing machine display, or upload one. Only the displayed weight is read and filled in as the Weighed Qty. QR scanning is not required.' : uploadOnly ? 'Upload an image of the weighing machine display. The weight on it is read and compared with the weighed quantity.' : cameraOnly ? 'Take a live photo of the weighing machine display. The weight on it is read and compared with the weighed quantity.' : 'Take a photo of the weighing machine display, or upload one. The weight on it is read and compared with the weighed quantity.'}</Text>
           )}
           <View style={[s.row, { marginTop: hasImage ? 10 : 0 }]}>
             {!uploadOnly && <Button mode={hasImage ? 'outlined' : 'contained'} icon={hasImage ? 'camera-retake' : 'camera'} buttonColor={hasImage ? undefined : COLORS.primary} textColor={hasImage ? COLORS.text : undefined}

@@ -101,7 +101,7 @@ function cleanInput(body) {
     purchase_rate: sent(body.purchase_rate) ? v.num(body.purchase_rate, 'Purchase rate', { max: 999999999, decimals: 2 }) : undefined,
     default_filter_stages: v.intRange(body.default_filter_stages, 'Filtering stages', 0, 5),
   };
-  if (!d.unit) throw new AppError('Please select a unit');
+  // unit may be empty: it is chosen when the first stock is received (Material Receipt). '' = not chosen yet.
   d.specifications = cleanSpecs(body.specifications);
   if (body.is_active !== undefined) d.is_active = v.toBool(body.is_active, 'is_active');
   return d;
@@ -116,8 +116,10 @@ async function defaultCategoryId(conn) {
 }
 
 async function checkRefs(conn, d, selfId = null) {
-  const [un] = await conn.query('SELECT id FROM material_units WHERE unit_name = ?', [d.unit]);
-  if (!un.length) throw new AppError('Selected unit does not exist. Add it first using "Add unit"');
+  if (d.unit) {
+    const [un] = await conn.query('SELECT id FROM material_units WHERE unit_name = ?', [d.unit]);
+    if (!un.length) throw new AppError('Selected unit does not exist. Add it first using "Add unit"');
+  }
   if (d.category_id !== undefined) {
     const [cat] = await conn.query('SELECT id FROM material_categories WHERE id = ?', [d.category_id]);
     if (!cat.length) throw new AppError('Selected category does not exist');
@@ -149,6 +151,8 @@ async function list(q) {
   if (q.active === 'true') where.push('m.is_active = 1');
   else if (q.active === 'false') where.push('m.is_active = 0');
   if (q.low_stock === 'true') where.push('m.current_stock <= m.minimum_stock');
+  // Material Stock page: only materials that already have a Material Receipt (or opening stock)
+  if (q.received === 'true') where.push("EXISTS (SELECT 1 FROM material_stock_transactions t WHERE t.material_id = m.id AND t.txn_type IN ('INWARD','OPENING'))");
   const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
   const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM materials m ${w}`, args);
@@ -161,6 +165,7 @@ async function list(q) {
 async function create(body, userId, ip) {
   const d = cleanInput(body);
   const opening = v.num(body.opening_stock, 'Opening stock');
+  if (opening > 0 && !d.unit) throw new AppError('Select a unit when opening stock is entered');
   return withTransaction(async (conn) => {
     await checkRefs(conn, d);
     const categoryId = d.category_id !== undefined ? d.category_id : await defaultCategoryId(conn);
@@ -203,7 +208,7 @@ async function update(idRaw, body, userId, ip) {
       `UPDATE materials SET material_code=?, material_name=?, sku=?, place=?, category_id=?, unit=?, minimum_stock=?, default_filter_stages=?,
          purchase_rate=?, is_active=? WHERE id=?`,
       [newCode, d.material_name, d.sku !== undefined ? d.sku : before.sku, d.place !== undefined ? d.place : before.place,
-        d.category_id ?? before.category_id, d.unit, d.minimum_stock ?? before.minimum_stock,
+        d.category_id ?? before.category_id, d.unit || before.unit, d.minimum_stock ?? before.minimum_stock,
         d.default_filter_stages ?? before.default_filter_stages, d.purchase_rate ?? before.purchase_rate, d.is_active === undefined ? before.is_active : d.is_active, id]);
     await saveSpecs(conn, id, d.specifications);
     const after = await getById(id, conn);
@@ -225,21 +230,34 @@ async function setStatus(idRaw, body, userId, ip) {
   });
 }
 
+// Delete a material. Its stock entries are deleted together with it when they are only receipts / opening stock.
+// Blocked when it was ever issued or adjusted in stock (= used in production), or is used in a recipe / other records.
 async function remove(idRaw, userId, ip) {
   const id = v.toId(idRaw, 'material id');
-  const [rows] = await pool.query('SELECT id, material_code, material_name FROM materials WHERE id = ?', [id]);
-  if (!rows.length) throw new AppError('Material not found', 404);
-  try {
-    await pool.query('DELETE FROM materials WHERE id = ?', [id]);
-  } catch (e) {
-    // MySQL 1451 / 1217 = row is referenced by stock, batches, receipts etc.
-    if (e && (e.errno === 1451 || e.errno === 1217 || e.code === 'ER_ROW_IS_REFERENCED_2' || e.code === 'ER_ROW_IS_REFERENCED')) {
-      throw new AppError(`${rows[0].material_name} is already used in stock / batch records and cannot be deleted`, 409);
+  return withTransaction(async (conn) => {
+    const [rows] = await conn.query('SELECT id, material_code, material_name, unit, current_stock FROM materials WHERE id = ? FOR UPDATE', [id]);
+    if (!rows.length) throw new AppError('Material not found', 404);
+    const m = rows[0];
+
+    const [[rc]] = await conn.query('SELECT COUNT(*) AS n FROM recipe_details WHERE material_id = ?', [id]);
+    if (rc.n > 0) throw new AppError(`${m.material_name} is used in ${rc.n} recipe${rc.n > 1 ? 's' : ''}. Remove it from the recipe first`, 409);
+
+    const [[mv]] = await conn.query("SELECT COUNT(*) AS n FROM material_stock_transactions WHERE material_id = ? AND txn_type NOT IN ('INWARD','OPENING')", [id]);
+    if (mv.n > 0) throw new AppError(`${m.material_name} was issued / adjusted in stock (used in production) and cannot be deleted. Mark it inactive instead`, 409);
+
+    const [gone] = await conn.query('DELETE FROM material_stock_transactions WHERE material_id = ?', [id]); // only receipts / opening stock are left here
+    try {
+      await conn.query('DELETE FROM materials WHERE id = ?', [id]);
+    } catch (e) {
+      // MySQL 1451 / 1217 = still referenced (purchase, filtering ...). The transaction is rolled back, so the stock entries stay.
+      if (e && (e.errno === 1451 || e.errno === 1217 || e.code === 'ER_ROW_IS_REFERENCED_2' || e.code === 'ER_ROW_IS_REFERENCED')) {
+        throw new AppError(`${m.material_name} is used in other records (purchase / batch / filtering) and cannot be deleted`, 409);
+      }
+      throw e;
     }
-    throw e;
-  }
-  await audit({ userId, action: 'DELETE', table: 'materials', recordId: id, oldValues: rows[0], ip });
-  return { id };
+    await audit({ userId, action: 'DELETE', table: 'materials', recordId: id, oldValues: { ...m, deleted_stock_entries: gone.affectedRows }, ip }, conn);
+    return { id, deleted_stock_entries: gone.affectedRows };
+  });
 }
 
 module.exports = { listCategories, createCategory, listUnits, createUnit, list, getById, create, update, setStatus, remove };

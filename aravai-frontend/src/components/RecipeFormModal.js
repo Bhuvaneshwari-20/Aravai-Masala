@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { View } from 'react-native';
-import { Text, Chip } from 'react-native-paper';
+import { Text, Chip, Button } from 'react-native-paper';
 import api, { errMsg } from '../api';
 import ModalShell from './ModalShell';
+import Stepper from './Stepper';
 import SelectField from './SelectField';
 import MultiSelectField from './MultiSelectField';
 import useOptions from '../hooks/useOptions';
@@ -11,14 +12,15 @@ import { COLORS } from '../theme';
 
 // Recipe = product + the materials used. No quantities here (they are weighed in Batching).
 // One product = one recipe. If the product already has a recipe, its materials are shown and only NEW materials are added to it.
-export default function RecipeFormModal({ visible, onDismiss, onSaved }) {
+// wizard = opened right after a new product was saved (step 2 of 2): product is fixed and the recipe can be skipped.
+export default function RecipeFormModal({ visible, onDismiss, onSaved, productId: presetProduct, wizard, onSkip }) {
   const products = useOptions('/products', { active: 'true' }, (p) => ({ value: p.id, label: p.product_name }), visible);
   const materials = useOptions('/materials', { active: 'true' }, (m) => ({ value: m.id, label: m.material_name, unit: m.unit }), visible);
   const [productId, setProductId] = useState(null);
   const [existing, setExisting] = useState(null); // current recipe of the selected product (if any)
   const kgMaterials = useMemo(() => {
     const have = new Set((existing?.ingredients || []).map((i) => i.material_id));
-    return materials.filter((m) => m.unit === 'KG' && !have.has(m.value));
+    return materials.filter((m) => (m.unit === 'KG' || m.unit === 'GRAM') && !have.has(m.value));
   }, [materials, existing]);
   const [picked, setPicked] = useState([]); // selected material ids (multi-select)
   const [errors, setErrors] = useState({});
@@ -27,7 +29,7 @@ export default function RecipeFormModal({ visible, onDismiss, onSaved }) {
 
   useEffect(() => {
     if (!visible) return;
-    setProductId(null); setExisting(null); setPicked([]); setErrors({}); setErr(''); setSaving(false);
+    setProductId(presetProduct || null); setExisting(null); setPicked([]); setErrors({}); setErr(''); setSaving(false);
   }, [visible]);
 
   // when a product is picked, look up its existing recipe so we add to it instead of creating a duplicate
@@ -63,10 +65,17 @@ export default function RecipeFormModal({ visible, onDismiss, onSaved }) {
 
   return (
     <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon="book-plus"
-      title={existing ? 'Add Materials' : 'New Recipe'} subtitle={existing ? 'Recipe already exists for this product' : 'Product and its materials'}
-      footer={<ModalFooter onCancel={onDismiss} onSave={save} saving={saving} label={existing ? 'Add to Recipe' : 'Save Recipe'} />}>
+      title={existing ? 'Add Materials' : 'New Recipe'}
+      subtitle={wizard ? 'Step 2 of 2 · You can skip and add it later' : existing ? 'Recipe already exists for this product' : 'Product and its materials'}
+      footer={wizard ? (
+        <View style={{ flexDirection: 'row' }}>
+          <Button mode="outlined" onPress={onSkip || onDismiss} disabled={saving} textColor={COLORS.text} style={{ borderRadius: 10, borderColor: COLORS.border, marginRight: 10 }}>Skip for now</Button>
+          <Button mode="contained" onPress={save} loading={saving} disabled={saving} buttonColor={COLORS.green} style={{ borderRadius: 10 }} icon="check">Save Recipe</Button>
+        </View>
+      ) : <ModalFooter onCancel={onDismiss} onSave={save} saving={saving} label={existing ? 'Add to Recipe' : 'Save Recipe'} />}>
       <View>
-        <SelectField label="Product *" value={productId} options={products} onChange={setProductId} error={errors.product} />
+        {!!wizard && <Stepper step={2} />}
+        <SelectField label="Product *" value={productId} options={products} onChange={setProductId} error={errors.product} disabled={!!presetProduct} />
         {!!existing && (
           <View style={{ marginBottom: 10 }}>
             <Label>ALREADY IN RECIPE</Label>
@@ -75,7 +84,7 @@ export default function RecipeFormModal({ visible, onDismiss, onSaved }) {
             </Text>
           </View>
         )}
-        <Label style={{ marginTop: 6 }}>{existing ? 'ADD MATERIALS (KG)' : 'MATERIALS (KG)'}</Label>
+        <Label style={{ marginTop: 6 }}>{existing ? 'ADD MATERIALS' : 'MATERIALS'}</Label>
         <MultiSelectField label="Materials *" values={picked} options={kgMaterials} onChange={setPicked} error={errors.materials} />
         {picked.length > 0 && (
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 2 }}>

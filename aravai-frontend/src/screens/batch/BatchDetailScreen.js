@@ -6,7 +6,6 @@ import api, { errMsg } from '../../api';
 import { useAuth } from '../../AuthContext';
 import { useUi } from '../../ui';
 import BatchingEntryModal from '../../components/BatchingEntryModal';
-import BatchEditModal from '../../components/BatchEditModal';
 import BatchMaterialEditModal from '../../components/BatchMaterialEditModal';
 import { materialBadge, materialStage, canEditMaterial, canDeleteMaterial, stageSummary, ROAST_MODE_TEXT } from '../../batchMaterialStatus';
 import WeightImageViewer from '../../components/WeightImageViewer';
@@ -52,7 +51,6 @@ export default function BatchDetailScreen({ route }) {
   const [error, setError] = useState('');
   const [weigh, setWeigh] = useState(null);       // ingredient being weighed
   const [viewImg, setViewImg] = useState(null);   // ingredient whose weighing machine photo is open
-  const [editOpen, setEditOpen] = useState(false);   // Add Material = add an extra material
   const [editMat, setEditMat] = useState(null);       // ingredient being edited
   const [delMat, setDelMat] = useState(null);         // ingredient waiting for delete confirmation
   const [confirmDone, setConfirmDone] = useState(false);
@@ -106,11 +104,9 @@ export default function BatchDetailScreen({ route }) {
             {b.status !== 'COMPLETED' && b.status !== 'CANCELLED' && <MetaChip icon="progress-clock" text={`Now: ${stageLabel(b.current_stage)}`} />}
           </View>
           {b.status === 'ON_HOLD' && <Text style={s.hold}>On hold: {b.hold_reason}</Text>}
-          {((canEdit) || (can('batching', 'approve') && b.status === 'ON_HOLD')) && (
+          {(can('batching', 'approve') && b.status === 'ON_HOLD') && (
             <View style={s.btns}>
-              {/* Hold button removed. Batches that are already on hold can still be resumed. */}
-              {canEdit && (
-                <Button mode="outlined" icon="plus" textColor={COLORS.primary} style={[s.btn, { borderColor: COLORS.primary }]} onPress={() => setEditOpen(true)}>Add Material</Button>)}
+              {/* Hold and Add Material buttons removed. Batches that are already on hold can still be resumed. */}
               {can('batching', 'approve') && b.status === 'ON_HOLD' && (
                 <Button mode="contained" icon="play" buttonColor={COLORS.green} style={s.btn} loading={busy} disabled={busy}
                   onPress={() => run(() => api.patch(`/batches/${id}/resume`), 'Batch resumed')}>Resume</Button>)}
@@ -216,9 +212,6 @@ export default function BatchDetailScreen({ route }) {
 
       <BatchingEntryModal visible={!!weigh} batch={b} ingredient={weigh} onDismiss={() => setWeigh(null)}
         onSaved={(r) => { setWeigh(null); load(); toast(r.stock.low_stock_alert || 'Weighing saved'); }} />
-
-      <BatchEditModal visible={editOpen} batch={b} onDismiss={() => setEditOpen(false)}
-        onSaved={(r) => { setEditOpen(false); load(); toast((r.low_stock_alerts && r.low_stock_alerts[0]) || 'Material added to the batch'); }} />
 
       <BatchMaterialEditModal visible={!!editMat} batch={b} ingredient={editMat} onDismiss={() => setEditMat(null)}
         onSaved={(r) => { setEditMat(null); load(); toast((r && r.low_stock_alerts && r.low_stock_alerts[0]) || 'Material updated'); }} />

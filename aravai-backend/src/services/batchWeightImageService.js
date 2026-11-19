@@ -17,9 +17,8 @@ const r3 = (n) => Math.round(n * 1000) / 1000;
 const grams = (n) => Math.round(n * 1000);
 const PASSING = ['MATCH', 'MANUAL'];
 const USABLE_MACHINE_STATUS = ['ACTIVE', 'IDLE'];
-// The photo is only accepted after the machine's QR code was scanned and matched the machine of the batch.
-// .env WEIGHING_REQUIRE_QR=false switches that off (old behaviour: photo without a QR scan).
-const requireQr = () => process.env.WEIGHING_REQUIRE_QR !== 'false';
+// Batching weight verification is weight-only: QR scanning is not required.
+// The selected weighing machine (or the batch-locked machine) is still validated against machine_master.
 
 function config() {
   const num = (k, d) => { const n = Number(process.env[k] ?? d); return Number.isFinite(n) && n >= 0 ? n : d; };
@@ -58,26 +57,27 @@ function readOnly(res, cfg, tareKg = 0) {
 }
 
 // QR scan -> machine of this weighing.  expected machine = the one the batch is locked to, else the one chosen in the form.
-//   strict (the "verify machine" call): the QR value is always needed.  Otherwise it is needed only when a machine is expected (and WEIGHING_REQUIRE_QR is not false).
+//   strict is retained only for the separate legacy QR verification endpoint. Batching photo OCR uses strict=false and does not require QR.
 // Returns { id, machine_code, machine_name, tare_weight_kg } or null when the weighing has no machine at all (old behaviour).
 async function resolveMachine({ qrValue, selectedId = null, lockedId = null, strict = false }) {
   const hasQr = qrValue !== undefined && qrValue !== null && String(qrValue).trim() !== '';
-  if (lockedId && selectedId && Number(lockedId) !== Number(selectedId)) throw new AppError('This batch is locked to another weighing machine than the one selected. Scan the batch machine to continue', 403);
+  if (lockedId && selectedId && Number(lockedId) !== Number(selectedId)) throw new AppError('This batch is locked to another weighing machine. Select the assigned machine to continue', 403);
   const expectedId = lockedId || selectedId || null;
   let m;
   if (hasQr) {
     m = await machines.getByToken(qrValue); // 404 for an unknown code; accepts the QR link, the token or the machine code
   } else {
     if (!strict && !expectedId) return null;
-    if (strict || requireQr()) throw new AppError('Scan the QR code of the weighing machine first');
-    m = await machines.getById(expectedId); // QR check switched off
+    if (strict) throw new AppError('Machine QR verification is not used by weight-only batching verification');
+    if (!expectedId) return null;
+    m = await machines.getById(expectedId); // use selected / batch-locked machine; QR is not required
   }
   if (m.machine_type !== 'WEIGHING') throw new AppError(`${m.machine_code} - ${m.machine_name} is not a weighing machine`);
   if (!USABLE_MACHINE_STATUS.includes(m.status)) throw new AppError(`Weighing machine ${m.machine_code} - ${m.machine_name} is ${String(m.status).toLowerCase().replace(/_/g, ' ')}. Use another machine`);
   if (expectedId && Number(m.id) !== Number(expectedId)) {
     throw new AppError(lockedId
-      ? `Wrong machine (${m.machine_code}). This batch is locked to another weighing machine. Scan that machine to continue`
-      : `Wrong machine (${m.machine_code} - ${m.machine_name}). The machine selected for this batch is a different one. Scan the selected machine`, 403);
+      ? `Wrong machine (${m.machine_code}). This batch is locked to another weighing machine`
+      : `Wrong machine (${m.machine_code} - ${m.machine_name}). The selected machine is different from the machine assigned to this batch`, 403);
   }
   const tare = Number(m.tare_weight_kg);
   return { id: m.id, machine_code: m.machine_code, machine_name: m.machine_name, tare_weight_kg: Number.isFinite(tare) && tare > 0 ? r3(tare) : null };
@@ -159,7 +159,7 @@ async function upload(batchIdRaw, file, body, user, ip) {
     lockedId = await lockedMachineOf(pool, batchId);
   }
 
-  // Machine check first (cheap): the scanned QR must be the weighing machine of this batch. Its tare (if configured) is taken off the display weight.
+  // Validate the selected / batch-locked weighing machine (no QR scan required). Its tare (if configured) is taken off the display weight.
   const machine = await resolveMachine({ qrValue: body.qr_value, selectedId: body.machine_id ? v.toId(body.machine_id, 'weighing machine') : null, lockedId });
   const tareKg = machine && machine.tare_weight_kg ? machine.tare_weight_kg : 0;
 
@@ -232,7 +232,7 @@ async function claim(conn, { imageId, batchId, materialId, weighedQty = null, us
   // machine: the photo must have been taken on the machine this weighing is saved against
   if (machineId) {
     if (w.machine_id && Number(w.machine_id) !== Number(machineId)) throw new AppError('This photo was taken on a different weighing machine than the one used for this batch. Scan the batch machine and take a new photo', 409);
-    if (!w.machine_id && requireQr()) throw new AppError('The machine QR code was not scanned for this photo. Scan the machine and take a new photo', 409);
+    // QR is not required for batching photos. The selected machine ID is stored and checked when available.
   }
   if (!PASSING.includes(w.status)) {
     throw new AppError(w.status === 'MISMATCH'

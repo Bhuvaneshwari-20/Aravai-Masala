@@ -1,220 +1,175 @@
-// OCR for the digits shown on a weighing-machine display.
+// Weighing machine display reader.
 //
-// Provider is chosen with WEIGHING_OCR_PROVIDER:
-//   tesseract (default) - tesseract.js, runs inside this Node process, no external service
-//   anthropic           - Claude vision reads the display (needs ANTHROPIC_API_KEY). Best for LED/7-segment digits
-//   none                - OCR disabled: every image becomes UNREADABLE and goes to manual review
-// To plug in another engine (Google Vision, AWS Textract ...) add a provider below that returns
-// the same shape as readWeight(): { value, unit, confidence, text, engine, reason }.
+// The reading itself is done by the Python + OpenCV module in  <backend>/python/weight_reader  (reader.py):
+//   find the digit display automatically -> crop only that display -> enhance -> read the large 7-segment weight digits
+//   (RED / GREEN / white LED and LCD) -> decimal point -> repeat with several thresholds and require agreement.
+// This file only talks to it through ONE long-running child process (python/weight_reader/worker.py, JSON lines over stdin/stdout),
+// so OpenCV is imported once, not for every photo.  No network port is opened.
 //
-// Safety rules (OCR is never assumed to be right):
-//  * several different numbers on the display and no unit to tell them apart -> no value (UNREADABLE)
-//  * the 3 image variants disagree -> no value (UNREADABLE)
-//  * the entered weight is NEVER given to the OCR or used to pick between candidates.
-//  * decimals: LCD / LED decimal points are tiny and often lost, which turns 20.450 into 20450. Set WEIGHING_DISPLAY_DECIMALS
-//    (e.g. 3 for a display that always shows 3 decimals): a reading without exactly that many decimals is NOT trusted (UNREADABLE).
-//    WEIGHING_MAX_WEIGHT_KG (optional) rejects readings above the machine's capacity for the same reason.
+// Public contract is unchanged (used by batchWeightImageService and weighingService):
+//   readWeight(jpegBuffer) -> { value, unit, confidence, text, engine, reason }
+//     value = number (kg or g as shown) or null when the display cannot be identified / the reading is not certain
+//     unit  = 'kg' | 'g' only when it was read for certain, otherwise null (callers treat no unit as kg)
+//     reason = clear message when value is null
+// The weight typed by the operator is never an input here, so it cannot influence the reading.
+//
+// .env (all optional)
+//   WEIGHING_PYTHON              python executable            default: python3 (python on Windows)
+//   WEIGHING_PY_DIR              folder with worker.py        default: <backend>/python/weight_reader
+//   WEIGHING_OCR_TIMEOUT_MS      max time for one photo       default: 30000
+//   WEIGHING_OCR_REQUIRE_DECIMAL true|false                   default: true   (a reading without a visible decimal point is refused)
+//   WEIGHING_OCR_DECIMALS        e.g. 1                       default: unset  (decimal point must leave exactly that many decimals)
+//   WEIGHING_OCR_MIN_AGREE       threshold variants that must agree      default: 2
+//   WEIGHING_OCR_DEBUG_DIR       folder to save the enhanced display crop for troubleshooting
 const path = require('path');
-const sharp = require('sharp');
+const { spawn } = require('child_process');
 
-const ENGINE = 'tesseract.js';
-let workerPromise = null;
-let queue = Promise.resolve(); // one recognition at a time per worker
+const ENGINE = 'opencv-7seg';
 
-function langPath() {
-  if (process.env.WEIGHING_OCR_LANG_PATH) return process.env.WEIGHING_OCR_LANG_PATH;
-  // traineddata ships inside the npm package @tesseract.js-data/eng, so no download at runtime
-  return path.join(path.dirname(require.resolve('@tesseract.js-data/eng/package.json')), '4.0.0');
+const pyDir = () => process.env.WEIGHING_PY_DIR || path.resolve(__dirname, '..', '..', 'python', 'weight_reader');
+const pyExe = () => process.env.WEIGHING_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+const timeoutMs = () => {
+    const n = Number(process.env.WEIGHING_OCR_TIMEOUT_MS);
+    return Number.isFinite(n) && n > 0 ? n : 30000;
+};
+
+let child = null;
+let nextId = 1;
+let stdoutBuf = '';
+const pending = new Map(); // id -> { resolve, reject, timer }
+
+// reject the requests that were sent to `proc` (all of them when proc is omitted)
+function failAll(error, proc = null) {
+    for (const [id, p] of pending) {
+        if (proc && p.proc !== proc) continue;
+        clearTimeout(p.timer);
+        pending.delete(id);
+        p.reject(error);
+    }
 }
 
-async function getWorker() {
-  if (!workerPromise) {
-    workerPromise = (async () => {
-      const { createWorker } = require('tesseract.js');
-      const w = await createWorker('eng', 1, { langPath: langPath(), gzip: true, cacheMethod: 'none' });
-      await w.setParameters({
-        tessedit_char_whitelist: '0123456789.,kgKG ',
-        tessedit_pageseg_mode: '11', // sparse text: LCD digits are not a normal paragraph
-        user_defined_dpi: '300',
-      });
-      return w;
-    })().catch((e) => { workerPromise = null; throw e; });
-  }
-  return workerPromise;
+function onLine(line) {
+    if (!line.trim()) return;
+
+    let msg;
+    try {
+        msg = JSON.parse(line);
+    } catch (e) {
+        console.error('OCR worker: unreadable output ignored:', line.slice(0, 200));
+        return;
+    }
+
+    const p = pending.get(msg.id);
+    if (!p) return;
+
+    pending.delete(msg.id);
+    clearTimeout(p.timer);
+
+    if (msg.error) p.reject(new Error(msg.error));
+    else p.resolve(msg.result);
+}
+
+function start() {
+    if (child) return child;
+
+    const proc = spawn(pyExe(), ['worker.py'], {
+        cwd: pyDir(),
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
+    });
+
+    child = proc;
+    stdoutBuf = '';
+
+    proc.stdout.setEncoding('utf8');
+    proc.stdout.on('data', chunk => {
+        stdoutBuf += chunk;
+        let i;
+        while ((i = stdoutBuf.indexOf('\n')) >= 0) {
+            const line = stdoutBuf.slice(0, i);
+            stdoutBuf = stdoutBuf.slice(i + 1);
+            onLine(line);
+        }
+    });
+
+    proc.stderr.setEncoding('utf8');
+    proc.stderr.on('data', d => {
+        const t = String(d).trim();
+        if (t) console.error('OCR worker:', t.slice(0, 500));
+    });
+
+    // python / OpenCV not installed, or the process died: fail what is waiting, start fresh on the next photo
+    proc.on('error', err => {
+        if (child === proc) child = null;
+        failAll(new Error(`Python OCR could not be started (${pyExe()}): ${err.message}`), proc);
+    });
+    proc.on('exit', code => {
+        if (child === proc) child = null;
+        failAll(new Error(`Python OCR stopped unexpectedly (exit code ${code})`), proc);
+    });
+
+    return proc;
 }
 
 async function terminate() {
-  if (!workerPromise) return;
-  const w = await workerPromise.catch(() => null);
-  workerPromise = null;
-  if (w) await w.terminate();
-}
-
-/* ---------- text -> weight ---------- */
-const NUM = /^(\d+(?:[.,]\d{1,3})?)(kg|g)?$/i;
-
-// Display format rules from .env. Unset / 0 = not enforced (old behaviour).
-function displayRules() {
-  const n = (k) => { const x = Number(process.env[k]); return Number.isFinite(x) && x > 0 ? x : 0; };
-  return { decimals: Math.floor(n('WEIGHING_DISPLAY_DECIMALS')), maxKg: n('WEIGHING_MAX_WEIGHT_KG') };
-}
-// does a read value follow the display format?  raw = the digits as read, e.g. "20.450"
-function followsDisplay(raw, value, unit, rules) {
-  if (rules.decimals) {
-    const dec = (String(raw).split('.')[1] || '').length;
-    if (dec !== rules.decimals) return false;
-  }
-  if (rules.maxKg) {
-    const kg = String(unit || '').toLowerCase() === 'g' ? value / 1000 : value;
-    if (kg > rules.maxKg) return false;
-  }
-  return true;
-}
-
-// words = [{ text, confidence }] in reading order
-function candidatesFrom(words) {
-  const out = [];
-  for (let i = 0; i < words.length; i++) {
-    const t = String(words[i].text || '').trim().replace(/\s+/g, '');
-    const m = NUM.exec(t);
-    if (!m) continue;
-    const raw = m[1].replace(',', '.');
-    const value = Number(raw);
-    if (!Number.isFinite(value) || value <= 0 || value > 100000) continue;
-    let unit = m[2] ? m[2].toLowerCase() : null;
-    if (!unit && words[i + 1]) {
-      const nx = String(words[i + 1].text || '').trim().toLowerCase();
-      if (nx === 'kg' || nx === 'g') unit = nx;
+    const proc = child;
+    child = null;
+    failAll(new Error('OCR stopped'));
+    if (proc) {
+        try { proc.stdin.end(); } catch (e) { /* ignore */ }
+        proc.kill();
     }
-    out.push({ value, unit, hasDot: raw.includes('.'), raw, confidence: Number(words[i].confidence) || 0, token: t });
-  }
-  return out;
 }
 
-// -> { value, unit, confidence } or { reason }
-function pickWeight(words) {
-  let c = candidatesFrom(words);
-  if (!c.length) return { reason: 'No number found on the display' };
-  const rules = displayRules();
-  if (rules.decimals || rules.maxKg) {
-    const ok = c.filter((x) => followsDisplay(x.raw, x.value, x.unit, rules));
-    if (!ok.length) return { reason: rules.decimals ? `Decimal point not read correctly (the display shows ${rules.decimals} decimals). Retake the photo` : 'The reading is above the machine capacity' };
-    c = ok;
-  }
-  const withUnit = c.filter((x) => x.unit);
-  if (withUnit.length) c = withUnit;
-  else if (c.some((x) => x.hasDot)) c = c.filter((x) => x.hasDot); // scales show 20.000, stray digits do not
-  const key = (x) => `${x.value}|${x.unit || ''}`;
-  const distinct = new Set(c.map(key));
-  if (distinct.size > 1) return { reason: 'More than one number found on the display' };
-  const best = c.reduce((a, b) => (b.confidence > a.confidence ? b : a));
-  return { value: best.value, unit: best.unit, confidence: best.confidence };
+function ask(buffer) {
+    return new Promise((resolve, reject) => {
+        const proc = start();
+        const id = nextId++;
+
+        const timer = setTimeout(() => {
+            pending.delete(id);
+            reject(new Error('OCR timed out'));
+            // a stuck worker would block every later photo: replace it
+            if (child === proc) child = null;
+            proc.kill();
+        }, timeoutMs());
+
+        pending.set(id, { resolve, reject, timer, proc });
+
+        proc.stdin.write(JSON.stringify({ id, image: buffer.toString('base64') }) + '\n', err => {
+            if (err && pending.has(id)) {
+                pending.delete(id);
+                clearTimeout(timer);
+                reject(err);
+            }
+        });
+    });
 }
 
-/* ---------- image variants ---------- */
-async function variants(buffer) {
-  const base = sharp(buffer, { limitInputPixels: 60e6 }).rotate().resize({ width: 1600, withoutEnlargement: false }).grayscale().normalise();
-  const a = await base.clone().sharpen().png().toBuffer();
-  const b = await base.clone().negate().png().toBuffer();   // light digits on dark glass
-  const c = await base.clone().threshold(128).png().toBuffer();
-  return [a, b, c];
-}
-
-function flattenWords(data) {
-  if (Array.isArray(data.words) && data.words.length) return data.words;
-  const out = [];
-  for (const b of data.blocks || []) for (const p of b.paragraphs || []) for (const l of p.lines || []) for (const w of l.words || []) out.push(w);
-  return out;
-}
-
-async function recognise(buf) {
-  const run = async () => {
-    const w = await getWorker();
-    const { data } = await w.recognize(buf, {}, { blocks: true });
-    return { words: flattenWords(data), text: String(data.text || '').trim() };
-  };
-  const p = queue.then(run, run);
-  queue = p.catch(() => {});
-  return p;
-}
-
-async function readTesseract(buffer) {
-  const imgs = await variants(buffer);
-  const reads = [];
-  let lastText = '';
-  for (const img of imgs) {
-    const { words, text } = await recognise(img);
-    if (text) lastText = text;
-    const r = pickWeight(words);
-    if (r.value !== undefined) reads.push({ ...r, text });
-    // first variant already confident and clean: no need to spend time on the others
-    if (reads.length === 1 && reads[0].confidence >= 90 && img === imgs[0]) break;
-  }
-  if (!reads.length) return { value: null, unit: null, confidence: null, text: lastText.slice(0, 250), engine: ENGINE, reason: 'No reliable number found in the image' };
-
-  // majority of variants decides; a tie between different values is not trusted
-  const groups = new Map();
-  for (const r of reads) {
-    const k = `${r.value}|${r.unit || ''}`;
-    const g = groups.get(k) || { ...r, n: 0, conf: 0 };
-    g.n += 1; g.conf += r.confidence;
-    groups.set(k, g);
-  }
-  const ranked = [...groups.values()].sort((x, y) => y.n - x.n || y.conf - x.conf);
-  if (ranked.length > 1 && ranked[0].n === ranked[1].n) {
-    return { value: null, unit: null, confidence: null, text: lastText.slice(0, 250), engine: ENGINE, reason: 'Image reads disagree with each other' };
-  }
-  const top = ranked[0];
-  return { value: top.value, unit: top.unit, confidence: Math.round((top.conf / top.n) * 100) / 100, text: top.text.slice(0, 250), engine: ENGINE, reason: null };
-}
-
-
-/* ---------- Claude vision provider (reads LED / 7-segment displays reliably) ---------- */
-async function readAnthropic(buffer) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return { value: null, unit: null, confidence: null, text: null, engine: 'anthropic', reason: 'ANTHROPIC_API_KEY is not set' };
-  const model = process.env.WEIGHING_OCR_MODEL || 'claude-sonnet-5-5';
-  // normalise orientation + size; phone photos can be huge
-  const jpeg = await sharp(buffer, { limitInputPixels: 60e6 }).rotate().resize({ width: 1600, withoutEnlargement: true }).jpeg({ quality: 90 }).toBuffer();
-  const prompt =
-    'This is a photo of an industrial weighing machine indicator. Read ONLY the main weight number shown on the digital display ' +
-    '(the large LED / 7-segment digits). Ignore printed labels, stickers, "Max"/"Min" capacity text and QR codes. ' +
-    'Include the decimal point exactly as shown. If the display is not visible, blank, or you are not sure about every digit or the position of the decimal point, say so. ' +
-    'Reply with JSON only, no other text: {"readable": true|false, "display": "<the digits exactly as shown, with the decimal point, e.g. 20.450>", "value": <number or null>, "unit": "kg"|"g"|null}';
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({
-      model, max_tokens: 100,
-      messages: [{ role: 'user', content: [
-        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: jpeg.toString('base64') } },
-        { type: 'text', text: prompt },
-      ] }],
-    }),
-  });
-  if (!res.ok) return { value: null, unit: null, confidence: null, text: null, engine: 'anthropic', reason: `Vision API error ${res.status}` };
-  const data = await res.json();
-  const text = (data.content || []).map((c) => c.text || '').join('').trim();
-  let j;
-  try { j = JSON.parse(text.replace(/```json|```/g, '').trim()); } catch (e) { j = null; }
-  let value = j && j.readable && Number.isFinite(Number(j.value)) && Number(j.value) > 0 ? Number(j.value) : null;
-  if (value === null) return { value: null, unit: null, confidence: null, text: text.slice(0, 250), engine: 'anthropic', reason: 'No reliable number found in the image' };
-  const unit = j.unit === 'g' || j.unit === 'kg' ? j.unit : 'kg';
-  // the digits as shown and the number must agree (catches a dropped decimal point), and must follow the display format
-  const shown = String(j.display ?? '').replace(/[^0-9.]/g, '');
-  if (shown && Math.abs(Number(shown) - value) > 1e-9) value = null;
-  const rules = displayRules();
-  if (value !== null && (rules.decimals || rules.maxKg) && !followsDisplay(shown || String(value), value, unit, rules)) value = null;
-  if (value === null) return { value: null, unit: null, confidence: null, text: text.slice(0, 250), engine: 'anthropic', reason: 'Decimal point or digits could not be read reliably. Retake the photo' };
-  return { value, unit, confidence: null, text: text.slice(0, 250), engine: 'anthropic:' + model, reason: null };
-}
+/* EXPORTED FUNCTION */
 
 async function readWeight(buffer) {
-  const provider = (process.env.WEIGHING_OCR_PROVIDER || 'tesseract').toLowerCase();
-  if (provider === 'none') return { value: null, unit: null, confidence: null, text: null, engine: 'none', reason: 'OCR is disabled' };
-  if (provider === 'anthropic') return readAnthropic(buffer);
-  if (provider === 'tesseract') return readTesseract(buffer);
-  throw new Error(`Unknown WEIGHING_OCR_PROVIDER "${provider}"`);
+    if (!buffer || !Buffer.isBuffer(buffer)) {
+        throw new Error('Image buffer is missing');
+    }
+
+    const r = await ask(buffer); // throws when Python / OpenCV is not available: callers record "OCR engine error" and never approve
+
+    const value = typeof r.value === 'number' && Number.isFinite(r.value) && r.value > 0 ? r.value : null;
+    const unit = value !== null && (r.unit === 'kg' || r.unit === 'g') ? r.unit : null;
+
+    return {
+        value,
+        unit,
+        confidence: value !== null && Number.isFinite(Number(r.confidence)) ? Number(r.confidence) : null,
+        text: r.text ? String(r.text).slice(0, 300) : null,
+        engine: r.engine || ENGINE,
+        reason: value !== null ? null : (r.reason || 'The weight could not be read from the photo. Retake a clearer photo of the display.')
+    };
 }
 
-module.exports = { readWeight, pickWeight, candidatesFrom, terminate };
+module.exports = {
+    readWeight,
+    terminate
+};

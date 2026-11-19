@@ -57,6 +57,7 @@ async function receipt(body, userId, ip) {
   const qty = v.positive(body.quantity, 'Quantity');
   const date = v.date(body.txn_date, 'Receipt date');
   const remarks = v.optStr(body.remarks, 'Remarks', 255);
+  const unitIn = String(body.unit || '').trim().toUpperCase(); // only used for a material that has no unit yet
 
   return withTransaction(async (conn) => {
     const [ven] = await conn.query('SELECT id, vendor_name, status FROM vendors WHERE id = ?', [vendorId]);
@@ -69,6 +70,19 @@ async function receipt(body, userId, ip) {
        WHERE txn_type = 'INWARD' AND vendor_id = ? AND reference_no = ? AND material_id = ? LIMIT 1`, [vendorId, refNo, materialId]);
     if (dup.length) throw new AppError('This invoice/challan is already entered for this material and vendor', 409);
 
+    // A material is created WITHOUT a unit. The unit chosen with its first stock receipt becomes its unit (and then stays fixed).
+    const [mu] = await conn.query('SELECT unit FROM materials WHERE id = ? FOR UPDATE', [materialId]);
+    if (!mu.length) throw new AppError('Material not found', 404);
+    const curUnit = String(mu[0].unit || '').trim();
+    if (!curUnit) {
+      if (!unitIn) throw new AppError('Select the unit of this material');
+      const [un] = await conn.query('SELECT unit_name FROM material_units WHERE unit_name = ?', [unitIn]);
+      if (!un.length) throw new AppError('Selected unit does not exist. Add it first using "Add unit"');
+      await conn.query('UPDATE materials SET unit = ? WHERE id = ?', [un[0].unit_name, materialId]);
+    } else if (unitIn && unitIn !== curUnit.toUpperCase()) {
+      throw new AppError(`This material is already stocked in ${curUnit}. Its unit cannot be changed`);
+    }
+
     const res = await postTxn(conn, {
       material_id: materialId, direction: 'IN', txn_type: 'INWARD', qty, txn_date: date,
       vendor_id: vendorId, agency_supplier: ven[0].vendor_name, purpose: `Received from ${ven[0].vendor_name}`,
@@ -77,6 +91,87 @@ async function receipt(body, userId, ip) {
     await audit({ userId, action: 'CREATE', table: 'material_stock_transactions', recordId: res.txn_id,
       newValues: { type: 'INWARD', material_id: materialId, vendor_id: vendorId, reference_no: refNo, qty, date }, ip }, conn);
     return res;
+  });
+}
+
+/* ---------- A.1b  Latest receipt of a material (to edit it) ---------- */
+async function latestReceipt(materialIdRaw) {
+  const materialId = v.toId(materialIdRaw, 'material id');
+  const [rows] = await pool.query(
+    `SELECT t.id, t.material_id, t.vendor_id, t.reference_no, t.inward_qty AS quantity, t.txn_date, t.remarks, t.closing_stock
+     FROM material_stock_transactions t
+     WHERE t.material_id = ? AND t.txn_type = 'INWARD'
+     ORDER BY t.txn_date DESC, t.id DESC LIMIT 1`, [materialId]);
+  if (!rows.length) return null;
+  const r = rows[0];
+  return { ...r, quantity: Number(r.quantity), txn_date: String(r.txn_date).slice(0, 10) };
+}
+
+/* ---------- A.1c  Edit a material receipt ----------
+ * Vendor, invoice/challan no, date and remarks are simply updated. If the quantity changes, the difference is carried
+ * through every later line of the material card (opening / closing balance) and into materials.current_stock.
+ * A reduction is refused when later issues need that stock (balance would go below 0). */
+async function updateReceipt(idRaw, body, userId, ip) {
+  const id = v.toId(idRaw, 'receipt id');
+  const vendorId = v.toId(body.vendor_id, 'vendor');
+  const refNo = v.reqStr(body.reference_no, 'Invoice / challan number', 50);
+  if (body.quantity === undefined || body.quantity === null || String(body.quantity).trim() === '') throw new AppError('Quantity is required');
+  const qty = v.num(body.quantity, 'Quantity'); // editing a receipt may set it to 0 (nothing received); a NEW receipt still needs more than 0
+  const date = v.date(body.txn_date, 'Receipt date');
+  const remarks = v.optStr(body.remarks, 'Remarks', 255);
+
+  return withTransaction(async (conn) => {
+    const [trows] = await conn.query(
+      `SELECT * FROM material_stock_transactions WHERE id = ? AND txn_type = 'INWARD' FOR UPDATE`, [id]);
+    if (!trows.length) throw new AppError('Receipt not found', 404);
+    const old = trows[0];
+    if (body.material_id && Number(body.material_id) !== Number(old.material_id)) throw new AppError('The material of a receipt cannot be changed');
+
+    const [mrows] = await conn.query('SELECT id, material_name, unit, current_stock FROM materials WHERE id = ? FOR UPDATE', [old.material_id]);
+    if (!mrows.length) throw new AppError('Material not found', 404);
+    const m = mrows[0];
+
+    const [ven] = await conn.query('SELECT id, vendor_name, status FROM vendors WHERE id = ?', [vendorId]);
+    if (!ven.length) throw new AppError('Vendor not found', 404);
+    if (Number(old.vendor_id) !== vendorId && ven[0].status !== 'ACTIVE') throw new AppError(`Vendor ${ven[0].vendor_name} is ${ven[0].status.toLowerCase()}`);
+
+    const [dup] = await conn.query(
+      `SELECT id FROM material_stock_transactions
+       WHERE txn_type = 'INWARD' AND vendor_id = ? AND reference_no = ? AND material_id = ? AND id <> ? LIMIT 1`, [vendorId, refNo, old.material_id, id]);
+    if (dup.length) throw new AppError('This invoice/challan is already entered for this material and vendor', 409);
+
+    const round = (n) => Math.round(n * 1000) / 1000;
+    const delta = round(qty - Number(old.inward_qty));
+    if (delta !== 0) {
+      const [later] = await conn.query(
+        'SELECT id, opening_stock, closing_stock FROM material_stock_transactions WHERE material_id = ? AND id > ? ORDER BY id FOR UPDATE', [old.material_id, id]);
+      const newCurrent = round(Number(m.current_stock) + delta);
+      const bad = later.some((r) => round(Number(r.opening_stock) + delta) < 0 || round(Number(r.closing_stock) + delta) < 0);
+      if (newCurrent < 0 || bad) {
+        throw new AppError(`Cannot reduce this receipt: later issues of ${m.material_name} already used this stock. Use Stock Correction instead.`);
+      }
+      if (later.length) {
+        await conn.query(
+          `UPDATE material_stock_transactions
+           SET opening_stock = opening_stock + ?, closing_stock = closing_stock + ?, total_qty = total_qty + ?
+           WHERE material_id = ? AND id > ?`, [delta, delta, delta, old.material_id, id]);
+      }
+      await conn.query('UPDATE materials SET current_stock = ? WHERE id = ?', [newCurrent, old.material_id]);
+    }
+
+    await conn.query(
+      `UPDATE material_stock_transactions
+       SET txn_date = ?, vendor_id = ?, agency_supplier = ?, purpose = ?, reference_no = ?, remarks = ?,
+           inward_qty = ?, closing_stock = closing_stock + ?, total_qty = total_qty + ?
+       WHERE id = ?`,
+      [date, vendorId, ven[0].vendor_name, `Received from ${ven[0].vendor_name}`, refNo, remarks, qty, delta, delta, id]);
+
+    await audit({ userId, action: 'UPDATE', table: 'material_stock_transactions', recordId: id,
+      oldValues: { vendor_id: old.vendor_id, reference_no: old.reference_no, qty: Number(old.inward_qty), date: String(old.txn_date).slice(0, 10), remarks: old.remarks },
+      newValues: { vendor_id: vendorId, reference_no: refNo, qty, date, remarks }, ip }, conn);
+
+    const [[cur]] = await conn.query('SELECT current_stock FROM materials WHERE id = ?', [old.material_id]);
+    return { txn_id: id, material_id: old.material_id, material_name: m.material_name, unit: m.unit, closing_stock: Number(cur.current_stock), quantity_change: delta };
   });
 }
 
@@ -162,4 +257,4 @@ async function lowStock() {
   return { count: rows.length, items: rows };
 }
 
-module.exports = { postTxn, receipt, issue, adjustment, card, lowStock, ISSUE_TYPES };
+module.exports = { postTxn, receipt, latestReceipt, updateReceipt, issue, adjustment, card, lowStock, ISSUE_TYPES };

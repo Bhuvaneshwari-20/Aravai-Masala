@@ -21,7 +21,7 @@ import { COLORS, fmt } from '../../theme';
 
 // Material Stock Card page = 2 tabs:
 //   Materials - stock card of each material. "Material Receipt" button adds stock (vendor, invoice, material, quantity).
-//               Pencil = the same receipt form with that material already selected, trash = delete
+//               Pencil = edit that material's saved receipt (vendor, invoice no, quantity, date fetched into the form), trash = delete
 //   Overview  - stock overview of each material (used this month, days of stock, status). Tap -> material trace
 const TABS = [
   { value: 'materials', label: 'Materials' },
@@ -40,13 +40,13 @@ function MaterialsPane({ search, addTick }) {
   const { toast } = useUi();
   const grid = useCardCols({ min: 220, phoneMin: 150 });
   const [lowOnly, setLowOnly] = useState(false);
-  const [receipt, setReceipt] = useState({ open: false, materialId: null }); // materialId set = opened from a card's pencil
+  const [receipt, setReceipt] = useState({ open: false, materialId: null, edit: false }); // edit = opened from a card's pencil (loads that material's saved receipt)
   const [del, setDel] = useState(null);
   const [busy, setBusy] = useState(false);
-  const list = usePagedList('/materials', { search: search || undefined, active: 'true', low_stock: lowOnly ? 'true' : undefined });
+  const list = usePagedList('/materials', { search: search || undefined, active: 'true', received: 'true', low_stock: lowOnly ? 'true' : undefined }); // received = only materials that have a Material Receipt
 
   // "Material Receipt" button in the page header
-  useEffect(() => { if (addTick > 0) setReceipt({ open: true, materialId: null }); }, [addTick]);
+  useEffect(() => { if (addTick > 0) setReceipt({ open: true, materialId: null, edit: false }); }, [addTick]);
 
   const first = useRef(true);
   useFocusEffect(useCallback(() => {
@@ -54,7 +54,7 @@ function MaterialsPane({ search, addTick }) {
     list.silentReload();
   }, [list.silentReload]));
 
-  const canEdit = can('stock', 'create');
+  const canEdit = can('stock', 'edit');
   const canDelete = can('material', 'delete');
   const remove = async () => {
     setBusy(true);
@@ -80,7 +80,7 @@ function MaterialsPane({ search, addTick }) {
                 value={fmt(item.current_stock)} unit={item.unit} caption={item.material_name} captionBold
                 right={(
                   <>
-                    {canEdit && <RoundBtn icon="pencil" color={COLORS.primary} bg={COLORS.primarySoft} onPress={() => setReceipt({ open: true, materialId: item.id })} label={`Edit ${item.material_name}`} />}
+                    {canEdit && <RoundBtn icon="pencil" color={COLORS.primary} bg={COLORS.primarySoft} onPress={() => setReceipt({ open: true, materialId: item.id, edit: true })} label={`Edit receipt of ${item.material_name}`} />}
                     {canDelete && <RoundBtn icon="trash-can-outline" color={COLORS.danger} bg={COLORS.dangerBg} hoverBg="#F9D3CE" onPress={() => setDel(item)} label={`Delete ${item.material_name}`} />}
                   </>
                 )}
@@ -91,10 +91,10 @@ function MaterialsPane({ search, addTick }) {
         )}
       </Container>
       <ConfirmDialog visible={!!del} busy={busy} title="Delete material?"
-        message={`${del?.material_name || ''} (${del?.material_code || ''}) will be permanently deleted. This cannot be undone.`}
+        message={`${del?.material_name || ''} (${del?.material_code || ''}) and its stock entries${Number(del?.current_stock) > 0 ? ` (current stock ${fmt(del.current_stock)} ${del.unit || ''})` : ''} will be permanently deleted. This cannot be undone. A material already used in production or in a recipe cannot be deleted.`}
         confirmText="Delete" onConfirm={remove} onCancel={() => setDel(null)} />
-      <MaterialReceiptModal visible={receipt.open} materialId={receipt.materialId} onDismiss={() => setReceipt({ open: false, materialId: null })}
-        onSaved={(r) => { setReceipt({ open: false, materialId: null }); list.reload(); toast(r.low_stock_alert || `Received. Balance ${fmt(r.closing_stock)} ${r.unit}`); }} />
+      <MaterialReceiptModal visible={receipt.open} materialId={receipt.materialId} editReceipt={receipt.edit} onDismiss={() => setReceipt({ open: false, materialId: null, edit: false })}
+        onSaved={(r) => { setReceipt({ open: false, materialId: null, edit: false }); list.reload(); toast(r.edited ? `Receipt updated. Balance ${fmt(r.closing_stock)} ${r.unit}` : (r.low_stock_alert || `Received. Balance ${fmt(r.closing_stock)} ${r.unit}`)); }} />
     </View>
   );
 }
@@ -179,7 +179,7 @@ export default function MaterialStockScreen({ navigation }) {
   const placeholder = 'Search name / code';
   return (
     <View style={s.wrap}>
-      <PageToolbar icon="clipboard-list" title="Material Stock Card" subtitle={tab === 'overview' ? 'Stock overview of every material' : 'Stock of every material'}
+      <PageToolbar icon="clipboard-list" title="Material Stock and Tracking" subtitle={tab === 'overview' ? 'Stock overview of every material' : 'Stock of every material'}
         search={search} onSearch={setSearch} placeholder={placeholder}
         addLabel={tab === 'materials' ? 'Material Receipt' : undefined}
         onAdd={tab === 'materials' && can('stock', 'create') ? () => setAddTick((n) => n + 1) : null} />

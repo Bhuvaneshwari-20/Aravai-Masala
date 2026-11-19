@@ -29,14 +29,12 @@ export const batchWeightImageUri = (batchId, image) => (image && image.id
 
 // Photo -> server: stores it, reads the weight (OCR) and compares. Resolves { id, status, entered_weight, detected_weight, difference, tolerance }.
 // enteredWeight left out (null / undefined / '') = auto-fill: the weight read from the photo is used, nothing is compared.
-// machine (optional) = the machine this weighing must be done on { id, qrValue }. Sent as machine_id / qr_value so the server can
-// validate the machine shown in the photo (and the scanned QR) itself; the answer comes back as detected_machine_* + machine_status.
+// machine (optional) = selected weighing machine { id }. Only machine_id is sent; no QR scan or machine text recognition is required.
 export async function uploadWeightImage(batchId, { uri, materialId, enteredWeight, machine }) {
   const fd = await buildImageForm(uri);
   fd.append('material_id', String(materialId));
   if (enteredWeight !== null && enteredWeight !== undefined && enteredWeight !== '') fd.append('entered_weight', String(enteredWeight));
   if (machine && machine.id != null && machine.id !== '') fd.append('machine_id', String(machine.id));
-  if (machine && machine.qrValue) fd.append('qr_value', String(machine.qrValue));
   const url = batchId ? `/batches/${batchId}/batching/weight-image` : '/batches/weight-image'; // no batchId = New Batch form (batch not saved yet)
   const r = await api.post(url, fd, uploadCfg);
   return r.data.data;

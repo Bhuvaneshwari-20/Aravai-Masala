@@ -8,3 +8,5 @@ exports.update = wrap((req) => svc.update(req.params.id, req.body, req.user.id, 
 exports.setStatus = wrap((req) => svc.setStatus(req.params.id, req.body, req.user.id, req.ip));
 exports.addableMaterials = wrap((req) => svc.addableMaterials(req.query));
 exports.addMaterial = wrap((req) => svc.addMaterial(req.body, req.user.id, req.ip), 201);
+exports.history = wrap((req) => svc.history(req.params.productId));
+exports.removeForProduct = wrap((req) => svc.removeForProduct(req.params.productId, req.user.id, req.ip));

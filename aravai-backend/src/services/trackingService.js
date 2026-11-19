@@ -67,7 +67,8 @@ async function board(q) {
     const kg = r3(num(r.current_output_kg));
     col.items.push({
       id: r.id, batch_no: r.batch_no, product_name: r.product_name, recipe_no: r.recipe_no, status: r.status,
-      stage: r.current_stage, kg, planned_qty_kg: num(r.planned_qty_kg), wastage_kg: r3(num(r.total_wastage_kg)),
+      stage: r.current_stage, production_date: r.production_date ? String(r.production_date).slice(0, 10) : null, created_at: r.created_at,
+      kg, planned_qty_kg: num(r.planned_qty_kg), wastage_kg: r3(num(r.total_wastage_kg)),
       hours_in_stage: active ? Number(r.hours_in_stage) : null, on_hold: r.status === 'ON_HOLD', hold_reason: r.hold_reason, stuck: isStuck,
     });
     col.count += 1; col.total_kg = r3(col.total_kg + kg);

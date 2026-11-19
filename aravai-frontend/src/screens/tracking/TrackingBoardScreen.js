@@ -20,6 +20,13 @@ const STAGE_COLOR = {
   BATCHING: '#14B8A6', FILTERING: '#0891B2', ROASTING: '#F97316', GRINDING: '#64748B',
   BLENDING: '#D946EF', PACKING: '#06B6D4', COMPLETED: '#22C55E',
 };
+const VIEW_CHIPS = [{ value: 'board', label: 'Board' }, { value: 'timeline', label: 'Timeline' }];
+const STAGE_ORDER = ['BATCHING', 'FILTERING', 'ROASTING', 'GRINDING', 'BLENDING', 'PACKING', 'COMPLETED'];
+const dayLabel = (d) => {
+  if (!d) return 'No date';
+  const t = new Date(`${d}T00:00:00`);
+  return Number.isNaN(t.getTime()) ? d : t.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+};
 const STATUS_CHIPS = [
   { value: 'ALL', label: 'All' }, { value: 'RUNNING', label: 'Running' },
   { value: 'HOLD', label: 'On hold' }, { value: 'STUCK', label: 'Stuck' },
@@ -65,7 +72,68 @@ function BatchCard({ item, color, onPress }) {
   );
 }
 
-// "Which batch is where": one column per stage, batch cards inside. Tap a card for its timeline.
+// Timeline view: newest batch first, grouped by production date. A dot + line on the left, the batch card on the right,
+// and a small stage tracker (done / current / waiting) so the whole journey of a batch is visible at a glance.
+function TimelineView({ columns, onOpen }) {
+  const groups = useMemo(() => {
+    const all = columns.flatMap((c) => c.items).sort((a, b) => b.id - a.id);
+    const map = new Map();
+    all.forEach((it) => { const k = it.production_date || ''; if (!map.has(k)) map.set(k, []); map.get(k).push(it); });
+    return [...map.entries()];
+  }, [columns]);
+  if (!groups.length) return <Text style={s.empty}>No batches</Text>;
+  return (
+    <View style={s.tl}>
+      {groups.map(([date, items]) => (
+        <View key={date || 'none'}>
+          <Text style={s.tlDay}>{dayLabel(date)}</Text>
+          {items.map((it, i) => {
+            const color = it.stuck ? COLORS.danger : it.on_hold ? COLORS.warn : (STAGE_COLOR[it.stage] || COLORS.grey);
+            const at = STAGE_ORDER.indexOf(it.stage);
+            const done = it.stage === 'COMPLETED';
+            const last = i === items.length - 1;
+            return (
+              <View key={it.id} style={s.tlRow}>
+                <View style={s.tlRail}>
+                  <View style={[s.tlDot, { backgroundColor: done ? COLORS.ok : color }]}>{done && <MCI name="check" size={11} color="#fff" />}</View>
+                  {!last && <View style={s.tlLine} />}
+                </View>
+                <PressableScale to={0.99} onPress={() => onOpen(it)} style={[s.tlCard, last && { marginBottom: 6 }, it.stuck && s.cardStuck, it.on_hold && s.cardHold]}>
+                  <View style={s.cardTop}>
+                    <Text style={s.batchNo}>{it.batch_no}</Text>
+                    {it.on_hold && <View style={[s.tag, { backgroundColor: COLORS.warnBg }]}><Text style={[s.tagText, { color: COLORS.warn }]}>HOLD</Text></View>}
+                    {it.stuck && <View style={[s.tag, { backgroundColor: COLORS.dangerBg }]}><Text style={[s.tagText, { color: COLORS.danger }]}>STUCK</Text></View>}
+                    <View style={[s.tag, { backgroundColor: `${STAGE_COLOR[it.stage] || COLORS.grey}22` }]}>
+                      <Text style={[s.tagText, { color: STAGE_COLOR[it.stage] || COLORS.grey }]}>{done ? 'COMPLETED' : it.stage}</Text>
+                    </View>
+                  </View>
+                  <Text style={s.product} numberOfLines={1}>{it.product_name}</Text>
+                  <View style={s.steps}>
+                    {STAGE_ORDER.slice(0, 6).map((st, k) => (
+                      <View key={st} style={[s.step, { backgroundColor: k < at || done ? COLORS.ok : k === at ? color : COLORS.border }]} />
+                    ))}
+                  </View>
+                  <View style={s.cardBottom}>
+                    <Text style={[s.kg, { color }]}>{fmt(it.kg)} kg</Text>
+                    {!done && it.hours_in_stage !== null && (
+                      <View style={s.timeRow}>
+                        <MCI name="clock-outline" size={13} color={it.stuck ? COLORS.danger : COLORS.grey} />
+                        <Text style={[s.timeText, it.stuck && { color: COLORS.danger }]}>{since(it.hours_in_stage)} in {it.stage.toLowerCase()}</Text>
+                      </View>
+                    )}
+                  </View>
+                  {it.on_hold && !!it.hold_reason && <Text style={s.reason} numberOfLines={1}>{it.hold_reason}</Text>}
+                </PressableScale>
+              </View>
+            );
+          })}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+// "Which batch is where": Board = one column per stage, Timeline = batches down a time line. Tap a batch for its full timeline.
 export default function TrackingBoardScreen({ navigation }) {
   const { isPhone } = useLayout();
   const [data, setData] = useState(null);
@@ -74,6 +142,7 @@ export default function TrackingBoardScreen({ navigation }) {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('ALL');
   const [stage, setStage] = useState('ALL');
+  const [view, setView] = useState('board');
   const [productId, setProductId] = useState('ALL');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -136,6 +205,7 @@ export default function TrackingBoardScreen({ navigation }) {
                 <Stat icon="weight-kilogram" color="#7C3AED" value={`${fmt(sm.running_kg)} kg`} label="In process now" />
               </ScrollView>
 
+              <FilterChips options={VIEW_CHIPS} value={view} onChange={setView} />
               <FilterChips options={STATUS_CHIPS} value={status} onChange={setStatus} />
               <FilterChips options={stageChips} value={stage} onChange={setStage} />
 
@@ -152,6 +222,9 @@ export default function TrackingBoardScreen({ navigation }) {
               </View>
             </Container>
 
+            {view === 'timeline' ? (
+              <Container><TimelineView columns={columns} onOpen={(it) => navigation.navigate('TrackingDetail', { id: it.id })} /></Container>
+            ) : (
             <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={s.board}>
               {columns.map((c) => {
                 const color = STAGE_COLOR[c.stage] || COLORS.grey;
@@ -169,6 +242,7 @@ export default function TrackingBoardScreen({ navigation }) {
                 );
               })}
             </ScrollView>
+            )}
           </>
         )}
       </ScrollView>
@@ -207,5 +281,14 @@ const s = StyleSheet.create({
   kg: { fontSize: 16, fontWeight: '900' },
   timeRow: { flexDirection: 'row', alignItems: 'center' },
   timeText: { fontSize: 12, fontWeight: '700', color: COLORS.grey, marginLeft: 3 },
+  tl: { paddingHorizontal: 12, paddingTop: 14 },
+  tlDay: { fontSize: 11.5, fontWeight: '900', letterSpacing: 1.1, color: COLORS.grey, marginBottom: 10, marginTop: 4, marginLeft: 2 },
+  tlRow: { flexDirection: 'row' },
+  tlRail: { width: 28, alignItems: 'center' },
+  tlDot: { width: 18, height: 18, borderRadius: 9, marginTop: 14, alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: COLORS.bg },
+  tlLine: { flex: 1, width: 2, backgroundColor: COLORS.border, marginTop: 2 },
+  tlCard: { flex: 1, backgroundColor: '#fff', borderRadius: 14, borderWidth: 1, borderColor: COLORS.border, padding: 12, marginBottom: 12, marginLeft: 6 },
+  steps: { flexDirection: 'row', marginTop: 10 },
+  step: { flex: 1, height: 5, borderRadius: 3, marginRight: 4 },
   reason: { marginTop: 6, fontSize: 11.5, fontWeight: '700', color: COLORS.warn },
 });

@@ -5,6 +5,7 @@ import api, { errMsg } from '../api';
 import ModalShell from './ModalShell';
 import FormField from './FormField';
 import FormRow from './FormRow';
+import Stepper from './Stepper';
 import SelectField from './SelectField';
 import useOptions from '../hooks/useOptions';
 import { ErrorBox, ModalFooter, Label, todayStr } from './FormBits';
@@ -50,6 +51,7 @@ export default function ProductFormModal({ visible, product, onDismiss, onSaved 
     setErrors(e);
     if (Object.keys(e).length) return;
     setSaving(true); setErr('');
+    let created = null;
     try {
       if (isEdit) {
         await api.put(`/products/${product.id}`, { product_name: name.trim(), category: product.category || '' }); // category field removed from the form; keep the stored value
@@ -61,19 +63,21 @@ export default function ProductFormModal({ visible, product, onDismiss, onSaved 
           }
         }
       } else {
-        await api.post('/products', { product_name: name.trim(),
+        const res = await api.post('/products', { product_name: name.trim(),
           packs: packs.map((p) => ({ weight_grams: p.weight_grams, mrp: p.mrp, effective_from: p.from })) });
+        created = res.data.data; // the screen uses it to open step 2 (recipe) for this product
       }
       setSaving(false);
-      onSaved && onSaved(isEdit);
+      onSaved && onSaved(isEdit, created);
     } catch (x) { setErr(errMsg(x)); setSaving(false); }
   };
 
   return (
     <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon={isEdit ? 'pencil' : 'tag-plus'} title={isEdit ? 'Edit Product' : 'Add Product'}
-      subtitle={isEdit ? product?.product_code : 'Product with gram, MRP and from date'}
-      footer={<ModalFooter onCancel={onDismiss} onSave={save} saving={saving} label={isEdit ? 'Update Product' : 'Save Product'} />}>
+      subtitle={isEdit ? product?.product_code : 'Step 1 of 2 · Product, gram and MRP'}
+      footer={<ModalFooter onCancel={onDismiss} onSave={save} saving={saving} label={isEdit ? 'Update Product' : 'Save & Next'} icon={isEdit ? 'check' : 'arrow-right'} />}>
       <View>
+        {!isEdit && <Stepper step={1} />}
         <Label>PRODUCT</Label>
         <FormField label="Product name *" value={name} onChangeText={setName} error={errors.name} maxLength={120} />
         <Label style={{ marginTop: 6 }}>GRAM, MRP & FROM DATE</Label>

@@ -45,7 +45,7 @@ export function AuthProvider({ children }) {
     if (!roleCanSee(user.role_name, module)) return false;
     if (user.permissions === 'ALL') return true;
     // Read-only screens that follow an existing permission (no extra permission row needed)
-    const FOLLOWS = { tracking: 'batching', material_overview: 'material' };
+    const FOLLOWS = { tracking: 'batching', material_overview: 'material', ingredient: 'material' };
     const mod = FOLLOWS[module] || module;
     const p = user.permissions.find((x) => x.module === mod);
     return !!(p && p[`can_${action}`]);
