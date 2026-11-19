@@ -7,26 +7,23 @@ const r3 = (n) => Math.round(n * 1000) / 1000;
 const EPS = 0.0005;
 
 async function filteringInfo(db, batchId) {
+  const outputs = new Map(); // material_id -> filtered output kg (every material filtered on its own)
+  try {
+    const [fm] = await db.query(
+      'SELECT fm.material_id, fm.output_weight FROM filtering_materials fm JOIN filtering_details d ON d.id = fm.filtering_id WHERE d.batch_id = ?', [batchId]);
+    fm.forEach((x) => outputs.set(x.material_id, Number(x.output_weight)));
+  } catch (e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
   const [f] = await db.query('SELECT id FROM filtering_details WHERE batch_id = ? LIMIT 1', [batchId]);
-  const outputs = new Map(); // material_id -> filtered output kg
-  if (f.length) {
-    try {
-      const [fm] = await db.query(
-        'SELECT fm.material_id, fm.output_weight FROM filtering_materials fm JOIN filtering_details d ON d.id = fm.filtering_id WHERE d.batch_id = ?', [batchId]);
-      fm.forEach((x) => outputs.set(x.material_id, Number(x.output_weight)));
-    } catch (e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
-  }
   return { done: f.length > 0, outputs };
 }
 
-// Materials ticked "Filter" whose Filtering is not completed yet = they must NOT be roasted.
+// Materials ticked "Filter" whose own Filtering is not completed yet = they must NOT be roasted (sequential mode).
 async function pendingFilterMaterials(db, batchId) {
   const info = await filteringInfo(db, batchId);
-  if (info.done) return [];
   const [rows] = await db.query(
     `SELECT bd.material_id, m.material_name FROM batching_details bd JOIN materials m ON m.id = bd.material_id
       WHERE bd.batch_id = ? AND bd.needs_filtering = 1 ORDER BY bd.id`, [batchId]);
-  return rows;
+  return rows.filter((r) => !info.outputs.has(r.material_id));
 }
 
 function deriveStage(batchStage, s) {
@@ -49,17 +46,23 @@ async function materialStateMap(db, b) {
        FROM roasting_details WHERE batch_id = ? AND status <> 'REJECTED' GROUP BY material_id`, [b.id]);
   const roast = new Map(rs.map((x) => [x.material_id, x]));
   const fil = await filteringInfo(db, b.id);
+  let running = new Set();
+  try {
+    const [ps] = await db.query("SELECT DISTINCT material_id FROM process_sessions WHERE batch_id = ? AND status = 'RUNNING'", [b.id]);
+    running = new Set(ps.map((x) => x.material_id));
+  } catch (e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
   const out = new Map();
   bd.forEach((x) => {
     const r = roast.get(x.material_id);
     const needsFiltering = Number(x.needs) === 1;
     const s = {
-      weighed: Number(x.weighed), needsFiltering, filtered: needsFiltering && fil.done,
+      weighed: Number(x.weighed), needsFiltering, filtered: needsFiltering && fil.outputs.has(x.material_id),
       filteredQty: fil.outputs.has(x.material_id) ? fil.outputs.get(x.material_id) : null,
       roastRows: r ? Number(r.n) : 0, openRows: r ? Number(r.open_n) : 0, roastedQty: r ? Number(r.in_kg) : 0,
     };
+    // a material that is running on a machine is shown as ROASTING, so it cannot be edited / deleted meanwhile
     out.set(x.material_id, {
-      stage: deriveStage(b.current_stage, s), needs_filtering: needsFiltering, filtered: s.filtered, filtered_qty: s.filteredQty,
+      stage: running.has(x.material_id) ? 'ROASTING' : deriveStage(b.current_stage, s), needs_filtering: needsFiltering, filtered: s.filtered, filtered_qty: s.filteredQty,
       weighed_qty: r3(s.weighed), roasted_qty: r3(s.roastedQty),
     });
   });
