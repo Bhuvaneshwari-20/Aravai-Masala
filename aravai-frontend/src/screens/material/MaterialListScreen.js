@@ -54,7 +54,7 @@ function MaterialCard({ item, index, onEdit, onDelete }) {
           <View style={[s.tile, { backgroundColor: `${cs.color}14` }]}><Text style={{ fontSize: 24 }}>{cs.icon}</Text></View>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={s.name} numberOfLines={1}>{item.material_name}</Text>
-            <Text style={s.meta} numberOfLines={1}>{item.material_code}</Text>
+            <Text style={s.meta} numberOfLines={1}>{item.sku || item.material_code}</Text>
           </View>
           {!item.is_active && <Badge tone="grey" text="Inactive" />}
         </View>
@@ -104,7 +104,7 @@ function TableRow({ item, onEdit, onDelete }) {
           {!!item.specifications?.length && <Text style={t.spec} numberOfLines={1}>{item.specifications.join('  •  ')}</Text>}
         </View>
       </View>
-      <View style={COL.code}><Text style={t.code} numberOfLines={1}>{item.material_code || '–'}</Text></View>
+      <View style={COL.code}><Text style={t.code} numberOfLines={1}>{item.sku || item.material_code || '–'}</Text></View>
       <View style={[COL.stock, { paddingRight: 24 }]}>
         <Text style={[t.stock, low && { color: COLORS.danger }]} numberOfLines={1}>{fmt(cur)} <Text style={t.unit}>{item.unit}</Text></Text>
         <StockBar current={cur} minimum={item.minimum_stock} low={low} height={5} style={{ marginTop: 6, maxWidth: 160 }} />
@@ -133,6 +133,7 @@ export default function MaterialListScreen({ navigation, route }) {
   const dSearch = useDebounce(search, 400);
 
   const list = usePagedList('/materials', {
+    sort: 'latest', // newest material first
     search: dSearch || undefined,
     low_stock: filter === 'low' ? 'true' : undefined,
     active: filter === 'active' ? 'true' : filter === 'inactive' ? 'false' : undefined,
@@ -185,7 +186,9 @@ export default function MaterialListScreen({ navigation, route }) {
             <View style={{ width: 12 }} />
             <StatCard icon="alert-circle" color="#DC2626" value={counts.low === undefined ? undefined : fmt(counts.low)} label="Low stock" active={filter === 'low'} onPress={() => pick('low')} />
             <View style={{ width: 12 }} />
-          
+            <StatCard icon="check-circle" color="#16A34A" value={counts.active === undefined ? undefined : fmt(counts.active)} label="Active" active={filter === 'active'} onPress={() => pick('active')} />
+            <View style={{ width: 12 }} />
+            <StatCard icon="pause-circle" color="#85786F" value={counts.inactive === undefined ? undefined : fmt(counts.inactive)} label="Inactive" active={filter === 'inactive'} onPress={() => pick('inactive')} />
           </View>
         )}
         {isPhone && <FilterChips options={chips} value={filter} onChange={setFilter} style={{ marginTop: 6, marginHorizontal: -pad }} />}

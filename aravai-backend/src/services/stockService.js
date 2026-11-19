@@ -2,6 +2,7 @@ const { pool, withTransaction } = require('../config/db');
 const { audit } = require('../utils/audit');
 const AppError = require('../utils/AppError');
 const v = require('../utils/validate');
+const { lowLevelSql, lowLevelOf } = require('../utils/lowStock');
 
 const ISSUE_TYPES = ['PRODUCTION', 'SAMPLE', 'WASTAGE', 'RETURN_TO_VENDOR', 'OTHER'];
 
@@ -37,13 +38,14 @@ async function postTxn(conn, t) {
       t.agency_supplier || null, t.vendor_id || null, t.purpose || null, t.reference_type || 'MANUAL', t.reference_no || null,
       t.po_id || null, t.batch_id || null, t.entered_by, t.remarks || null]);
 
-  const low = closing <= Number(m.minimum_stock);
+  const level = await lowLevelOf(conn, m.id); // 10% of the biggest stock on the stock card (this row included)
+  const low = closing <= level;
   return {
     txn_id: r.insertId,
     material_id: m.id, material_code: m.material_code, material_name: m.material_name, unit: m.unit,
-    opening_stock: opening, closing_stock: closing, minimum_stock: Number(m.minimum_stock),
+    opening_stock: opening, closing_stock: closing, minimum_stock: level,
     is_low_stock: low,
-    low_stock_alert: low ? `Low stock: ${m.material_name} is ${closing} ${m.unit} (minimum ${m.minimum_stock} ${m.unit})` : null,
+    low_stock_alert: low ? `Low stock: ${m.material_name} is ${closing} ${m.unit} (low stock level ${level} ${m.unit})` : null,
   };
 }
 
@@ -123,8 +125,8 @@ async function adjustment(body, userId, ip) {
 async function card(materialIdRaw, q) {
   const id = v.toId(materialIdRaw, 'material id');
   const [mrows] = await pool.query(
-    `SELECT m.id, m.material_code, m.material_name, m.place, m.unit, m.current_stock, m.minimum_stock,
-            (m.current_stock <= m.minimum_stock) AS is_low_stock
+    `SELECT m.id, m.material_code, m.material_name, m.place, m.unit, m.current_stock, ${lowLevelSql('m')} AS minimum_stock,
+            (m.current_stock <= ${lowLevelSql('m')}) AS is_low_stock
      FROM materials m WHERE m.id = ?`, [id]);
   if (!mrows.length) throw new AppError('Material not found', 404);
   const m = { ...mrows[0], is_low_stock: !!mrows[0].is_low_stock };
@@ -153,10 +155,10 @@ async function card(materialIdRaw, q) {
 /* ---------- A.3  Low-stock alerts ---------- */
 async function lowStock() {
   const [rows] = await pool.query(
-    `SELECT m.id, m.material_code, m.material_name, m.unit, m.current_stock, m.minimum_stock,
-            (m.minimum_stock - m.current_stock) AS shortage
-     FROM materials m WHERE m.is_active = 1 AND m.current_stock <= m.minimum_stock
-     ORDER BY (m.current_stock / NULLIF(m.minimum_stock, 0)) ASC, m.material_name`);
+    `SELECT m.id, m.material_code, m.material_name, m.unit, m.current_stock, ${lowLevelSql('m')} AS minimum_stock,
+            (${lowLevelSql('m')} - m.current_stock) AS shortage
+     FROM materials m WHERE m.is_active = 1 AND m.current_stock <= ${lowLevelSql('m')}
+     ORDER BY (m.current_stock / NULLIF(${lowLevelSql('m')}, 0)) ASC, m.material_name`);
   return { count: rows.length, items: rows };
 }
 

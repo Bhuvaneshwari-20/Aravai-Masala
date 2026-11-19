@@ -1,6 +1,7 @@
 const { pool } = require('../config/db');
 const AppError = require('../utils/AppError');
 const v = require('../utils/validate');
+const { lowLevelSql } = require('../utils/lowStock');
 
 // Stock that will last this many days or less is flagged "running out" (set MATERIAL_SOON_DAYS in .env to change)
 const SOON_DAYS = Number(process.env.MATERIAL_SOON_DAYS) || 7;
@@ -27,7 +28,7 @@ async function summary(q) {
   if (v.clean(q.category_id)) { where += ' AND m.category_id = ?'; args.push(v.toId(q.category_id, 'category')); }
 
   const [rows] = await pool.query(
-    `SELECT m.id, m.material_code, m.material_name, m.unit, m.current_stock, m.minimum_stock, c.category_name,
+    `SELECT m.id, m.material_code, m.material_name, m.unit, m.current_stock, ${lowLevelSql('m')} AS minimum_stock, c.category_name,
             COALESCE(u.used_month, 0) AS used_month, COALESCE(u.used_30, 0) AS used_30,
             rl.roast_in, rl.roast_waste
        FROM materials m
@@ -81,7 +82,7 @@ async function summary(q) {
 async function materialTrace(idRaw) {
   const id = v.toId(idRaw, 'material');
   const [[m]] = await pool.query(
-    `SELECT m.id, m.material_code, m.material_name, m.unit, m.current_stock, m.minimum_stock, m.place, c.category_name
+    `SELECT m.id, m.material_code, m.material_name, m.unit, m.current_stock, ${lowLevelSql('m')} AS minimum_stock, m.place, c.category_name
        FROM materials m JOIN material_categories c ON c.id = m.category_id WHERE m.id = ?`, [id]);
   if (!m) throw new AppError('Material not found', 404);
 

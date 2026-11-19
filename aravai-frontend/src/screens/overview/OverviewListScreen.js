@@ -4,22 +4,22 @@ import { Text, ActivityIndicator } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import api, { errMsg } from '../../api';
+import { useAuth } from '../../AuthContext';
+import { useUi } from '../../ui';
+import MaterialFormModal from '../../components/MaterialFormModal';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import usePagedList from '../../hooks/usePagedList';
 import useDebounce from '../../hooks/useDebounce';
 import Container from '../../components/Container';
 import PageToolbar from '../../components/PageToolbar';
 import FilterChips from '../../components/FilterChips';
 import Badge from '../../components/Badge';
-import InfoCard, { CardList, InfoStats, ChevronDot, toneOf, useCardCols } from '../../components/InfoCard';
+import InfoCard, { CardList, InfoStats, ChevronDot, RoundBtn, toneOf, useCardCols } from '../../components/InfoCard';
 import LoadingView from '../../components/LoadingView';
 import EmptyView from '../../components/EmptyView';
 import { COLORS, fmt } from '../../theme';
 
 const TABS = [{ value: 'materials', label: 'Materials' }, { value: 'batches', label: 'Batch Trace' }];
-const FILTERS = [
-  { value: 'ALL', label: 'All' }, { value: 'LOW', label: 'Low stock' },
-  { value: 'OUT', label: 'Out of stock' }, { value: 'SOON', label: 'Running out soon' },
-];
 const STATE = {
   OK: { label: 'OK', color: COLORS.ok, bg: COLORS.okBg },
   LOW: { label: 'LOW', color: COLORS.warn, bg: COLORS.warnBg },
@@ -37,12 +37,17 @@ function Stat({ icon, color, value, label }) {
   );
 }
 
-function MaterialCard({ item, index, onPress }) {
+function MaterialCard({ item, index, onPress, onEdit, onDelete }) {
   const st = STATE[item.state] || STATE.OK;
   return (
     <InfoCard index={index} icon="package-variant" color={st.color} value={item.material_name} size="md"
       caption={`${item.material_code} · ${item.category_name}`}
-      right={<ChevronDot />} onPress={onPress}
+      right={(onEdit || onDelete) ? (
+        <>
+          {onEdit && <RoundBtn icon="pencil" color={COLORS.primary} bg={COLORS.primarySoft} onPress={onEdit} label={`Edit ${item.material_name}`} />}
+          {onDelete && <RoundBtn icon="trash-can-outline" color={COLORS.danger} bg={COLORS.dangerBg} hoverBg="#F9D3CE" onPress={onDelete} label={`Delete ${item.material_name}`} />}
+        </>
+      ) : <ChevronDot />} onPress={onPress}
       footer={<Badge tone={toneOf(st.color)} text={st.label} />}>
       <InfoStats items={[
         { label: 'STOCK', value: `${fmt(item.current_stock)} ${item.unit}`, color: item.state === 'OUT' || item.state === 'LOW' ? COLORS.danger : undefined },
@@ -68,12 +73,18 @@ function BatchCard({ item, index, onPress }) {
   );
 }
 
-// Material Overview: stock summary per material (tap -> material trace) and batch trace (tap -> materials used + recipe vs actual)
+// Material Stock Card + Material Overview in ONE screen: stock summary per material (tap -> material trace),
+// Add Material / Edit / Delete, and batch trace (tap -> materials used + recipe vs actual)
 export default function OverviewListScreen({ navigation }) {
+  const { can } = useAuth();
+  const { toast } = useUi();
+  const [formOpen, setFormOpen] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [del, setDel] = useState(null);
+  const [busy, setBusy] = useState(false);
   const grid = useCardCols({ min: 280, phoneMin: 280 });
   const [tab, setTab] = useState('materials');
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState('ALL');
   const dSearch = useDebounce(search, 400);
 
   // materials tab
@@ -85,24 +96,32 @@ export default function OverviewListScreen({ navigation }) {
     const id = ++reqId.current;
     if (refresh) setRefreshing(true);
     try {
-      const r = await api.get('/material-overview/summary', { params: { search: dSearch || undefined, filter: filter === 'ALL' ? undefined : filter } });
+      const r = await api.get('/material-overview/summary', { params: { search: dSearch || undefined } });
       if (id !== reqId.current) return;
       setData(r.data.data); setError('');
     } catch (e) { if (id === reqId.current) setError(errMsg(e)); }
     if (id === reqId.current) setRefreshing(false);
-  }, [dSearch, filter]);
+  }, [dSearch]);
   useFocusEffect(useCallback(() => { if (tab === 'materials') loadMaterials(); }, [tab, loadMaterials]));
 
   // batch trace tab
   const batches = usePagedList('/material-overview/batches', { search: dSearch || undefined });
+
+  const closeForm = () => { setFormOpen(false); setEditId(null); };
+  const remove = async () => {
+    setBusy(true);
+    try { await api.delete(`/materials/${del.id}`); setDel(null); toast('Material deleted'); loadMaterials(true); } catch (e) { setDel(null); toast(errMsg(e)); }
+    setBusy(false);
+  };
 
   const sm = data?.summary;
   const items = data?.items || [];
 
   return (
     <View style={s.wrap}>
-      <PageToolbar icon="magnify" title="Material Overview" subtitle={tab === 'materials' && sm ? `${sm.total} materials` : 'Trace materials through batches'}
-        search={search} onSearch={setSearch} placeholder={tab === 'materials' ? 'Search material' : 'Search batch no / product'} />
+      <PageToolbar icon="clipboard-list" title="Material Stock Card" subtitle={tab === 'materials' && sm ? `${sm.total} materials` : 'Trace materials through batches'}
+        search={search} onSearch={setSearch} placeholder={tab === 'materials' ? 'Search material' : 'Search batch no / product'}
+        addLabel={tab === 'materials' ? 'Add Material' : undefined} onAdd={tab === 'materials' && can('material', 'create') ? () => { setEditId(null); setFormOpen(true); } : null} />
       <Container><FilterChips options={TABS} value={tab} onChange={setTab} /></Container>
 
       {tab === 'materials' ? (
@@ -119,11 +138,14 @@ export default function OverviewListScreen({ navigation }) {
                     <Stat icon="clock-alert-outline" color="#7C3AED" value={sm.soon} label={`Out within ${sm.soon_days} days`} />
                     <Stat icon="weight-kilogram" color={COLORS.ok} value={`${fmt(sm.used_month_kg)} kg`} label="Used this month (KG)" />
                   </ScrollView>
-                  <FilterChips options={FILTERS} value={filter} onChange={setFilter} />
                 </View>
               )}
               ListEmptyComponent={<EmptyView icon="📦" message="No materials match" />}
-              renderItem={(item, i) => <MaterialCard item={item} index={i} onPress={() => navigation.navigate('OverviewMaterial', { id: item.id })} />} />
+              renderItem={(item, i) => (
+                <MaterialCard item={item} index={i} onPress={() => navigation.navigate('OverviewMaterial', { id: item.id })}
+                  onEdit={can('material', 'edit') ? () => { setEditId(item.id); setFormOpen(true); } : null}
+                  onDelete={can('material', 'delete') ? () => setDel(item) : null} />
+              )} />
           )}
         </Container>
       ) : (
@@ -138,6 +160,11 @@ export default function OverviewListScreen({ navigation }) {
           )}
         </Container>
       )}
+      <MaterialFormModal visible={formOpen} id={editId} showStock onDismiss={closeForm}
+        onSaved={(isEdit) => { closeForm(); loadMaterials(true); toast(isEdit ? 'Material updated' : 'Material added'); }} />
+      <ConfirmDialog visible={!!del} busy={busy} title="Delete material?"
+        message={`${del?.material_name || ''} (${del?.material_code || ''}) will be permanently deleted. This cannot be undone.`}
+        confirmText="Delete" onConfirm={remove} onCancel={() => setDel(null)} />
     </View>
   );
 }

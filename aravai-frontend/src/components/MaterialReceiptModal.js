@@ -5,23 +5,28 @@ import ModalShell from './ModalShell';
 import FormField from './FormField';
 import FormRow from './FormRow';
 import SelectField from './SelectField';
+import AddUnitBox from './AddUnitBox';
 import useOptions from '../hooks/useOptions';
-import { ErrorBox, ModalFooter, todayStr } from './FormBits';
+import { useAuth } from '../AuthContext';
+import { ErrorBox, InfoBox, Label, ModalFooter, todayStr } from './FormBits';
 
 // Step A1: Store Incharge enters a material receipt (vendor, invoice/challan no, material, quantity, date).
 export default function MaterialReceiptModal({ visible, materialId, onDismiss, onSaved }) {
-  const materials = useOptions('/materials', { active: 'true' }, (m) => ({ value: m.id, label: `${m.material_name} (${m.unit})` }), visible);
+  const { can } = useAuth();
+  const materials = useOptions('/materials', { active: 'true' }, (m) => ({ value: m.id, label: `${m.material_name} (${m.unit})`, unit: m.unit }), visible);
   const vendors = useOptions('/vendors', { status: 'ACTIVE' }, (x) => ({ value: x.id, label: x.vendor_name }), visible);
   const [f, setF] = useState({});
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+  const [unitMsg, setUnitMsg] = useState('');
+  const unit = materials.find((o) => o.value === f.material_id)?.unit;
   const set = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
 
   useEffect(() => {
     if (!visible) return;
     setF({ material_id: materialId || null, vendor_id: null, reference_no: '', quantity: '', txn_date: todayStr(), remarks: '' });
-    setErrors({}); setErr(''); setSaving(false);
+    setErrors({}); setErr(''); setSaving(false); setUnitMsg('');
   }, [visible, materialId]);
 
   const save = async () => {
@@ -49,10 +54,18 @@ export default function MaterialReceiptModal({ visible, materialId, onDismiss, o
         <FormField label="Invoice / challan no *" value={f.reference_no || ''} onChangeText={set('reference_no')} error={errors.reference_no} maxLength={50} />
         <SelectField label="Material *" value={f.material_id} options={materials} onChange={set('material_id')} error={errors.material_id} disabled={!!materialId} />
         <FormRow>
-          <FormField label="Quantity received *" numeric value={f.quantity || ''} onChangeText={set('quantity')} error={errors.quantity} />
+          <FormField label={`Quantity received${unit ? ` (${unit})` : ''} *`} numeric value={f.quantity || ''} onChangeText={set('quantity')} error={errors.quantity} />
           <FormField label="Date (YYYY-MM-DD) *" value={f.txn_date || ''} onChangeText={set('txn_date')} error={errors.txn_date} maxLength={10} />
         </FormRow>
         <FormField label="Remarks" value={f.remarks || ''} onChangeText={set('remarks')} maxLength={255} />
+
+        {can('material', 'create') && (
+          <View>
+            <Label style={{ marginTop: 6 }}>UNITS</Label>
+            <AddUnitBox onAdded={(u) => setUnitMsg(`Unit ${u} added. You can now choose it for a material in Material Master.`)} />
+            <InfoBox tone="ok" text={unitMsg} />
+          </View>
+        )}
         <ErrorBox text={err} />
       </View>
     </ModalShell>
