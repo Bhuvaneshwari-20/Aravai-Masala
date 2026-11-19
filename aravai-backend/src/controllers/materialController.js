@@ -3,6 +3,8 @@ const wrap = require('../utils/asyncWrap');
 
 exports.listCategories = wrap(() => svc.listCategories());
 exports.createCategory = wrap((req) => svc.createCategory(req.body, req.user.id, req.ip), 201);
+exports.listUnits = wrap(() => svc.listUnits());
+exports.createUnit = wrap((req) => svc.createUnit(req.body, req.user.id, req.ip), 201);
 exports.list = wrap((req) => svc.list(req.query));
 exports.get = wrap((req) => svc.getById(req.params.id));
 exports.create = wrap((req) => svc.create(req.body, req.user.id, req.ip), 201);

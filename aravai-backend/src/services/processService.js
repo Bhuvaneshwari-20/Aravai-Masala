@@ -84,12 +84,18 @@ async function loadContext(db, batchIds) {
 const done = (m, t) => !!(m.s[t] && m.s[t].status === 'COMPLETED');
 
 // What a material's card for `type` looks like right now.
+//   SEQUENTIAL   (Filtering first): Roasting of EVERY material (filtered or direct) starts only after Filtering is completed for the whole batch.
+//   SIMULTANEOUS : Filtering (materials ticked "Filter") and Roasting (direct materials) run at the same time. A filtered material joins
+//                  Roasting as soon as ITS OWN Filtering is completed, so one material is never filtered and roasted at the same moment.
+//   BOTH         : Grinding of a batch starts only when every required Filtering AND every Roasting of the batch is completed.
 function evalCard(b, m, type) {
   const seq = b.process_mode !== 'SIMULTANEOUS';
   const s = m.s[type];
   const fs = m.s.FILTERING; const rs = m.s.ROASTING;
+  const filterPending = b.materials.some((x) => x.needs && !done(x, 'FILTERING'));                          // a Filtering is still to be completed
+  const upstreamPending = b.materials.some((x) => !done(x, 'ROASTING') || (x.needs && !done(x, 'FILTERING'))); // any Filtering or Roasting still pending
   let input = m.weighed;
-  if (type === 'ROASTING' && m.needs && seq && done(m, 'FILTERING')) input = Number(fs.output_weight);   // sequential: roast what Filtering handed over
+  if (type === 'ROASTING' && m.needs && done(m, 'FILTERING')) input = Number(fs.output_weight);           // roast what Filtering handed over
   if (type === 'GRINDING') input = done(m, 'ROASTING') ? Number(rs.output_weight) : null;
   if (type === 'FILTERING' && !m.needs) return null;                                                      // only materials ticked "Filter" get a Filtering card
 
@@ -99,13 +105,16 @@ function evalCard(b, m, type) {
     return { status: 'COMPLETED', input: s.input_weight, session: s.legacy ? null : s, awaiting_proceed: awaiting };
   }
   let status = 'PENDING'; let reason = '';
-  if (type === 'ROASTING' && m.needs && seq) {
-    if (!done(m, 'FILTERING')) { status = 'WAITING'; reason = m.s.FILTERING ? 'Filtering is still running' : 'Waiting for Filtering to finish'; }
-    else if (!fs.proceeded) { status = 'WAITING'; reason = 'Filtering is done. Confirm "Proceed to Roasting" on the Filtering card'; }
+  if (type === 'ROASTING') {
+    if (seq) {
+      if (filterPending) { status = 'WAITING'; reason = 'Sequential batch: Roasting starts after Filtering of the whole batch is completed'; }
+      else if (m.needs && !fs.proceeded) { status = 'WAITING'; reason = 'Filtering is done. Confirm "Proceed to Roasting" on the Filtering card'; }
+    } else if (m.needs && !done(m, 'FILTERING')) {
+      status = 'WAITING'; reason = m.s.FILTERING ? 'This material is still being filtered. It can be roasted after its Filtering' : 'This material must be filtered first. It can be roasted after its Filtering';
+    }
   }
-  if (type === 'GRINDING') {
-    if (m.needs && !done(m, 'FILTERING')) { status = 'WAITING'; reason = 'Waiting for Filtering and Roasting'; }
-    else if (!done(m, 'ROASTING')) { status = 'WAITING'; reason = 'Waiting for Roasting to finish'; }
+  if (type === 'GRINDING' && upstreamPending) {
+    status = 'WAITING'; reason = 'Grinding starts only after all Filtering and Roasting of this batch are completed';
   }
   if (status === 'PENDING' && b.status === 'ON_HOLD') { status = 'WAITING'; reason = `Batch is on hold${b.hold_reason ? ` (${b.hold_reason})` : ''}`; }
   return { status, reason, input, session: null };
@@ -198,6 +207,8 @@ async function start(type, body, user, ip) {
     if (!bm) throw new AppError('Batch not found', 404);
     if (bm.status !== 'IN_PROGRESS') throw new AppError(`Batch ${bm.batch_no} is ${String(bm.status).toLowerCase().replace('_', ' ')}`, 409);
     if (!cfg.stages.includes(bm.current_stage)) throw new AppError(`Batch ${bm.batch_no} is at the ${bm.current_stage} stage`, 409);
+    // Grinding is a batch-level gate: not even one required Filtering / Roasting may be pending
+    if (type === 'GRINDING' && bm.current_stage !== 'GRINDING') throw new AppError(`Batch ${bm.batch_no}: Grinding starts only after all Filtering and Roasting are completed`, 409);
     const b = (await loadContext(conn, [batchId])).get(batchId);
     const m = b.materials.find((x) => x.material_id === materialId);
     if (!m) throw new AppError('This material is not part of the batch', 404);
