@@ -236,7 +236,7 @@ async function create(body, userId, ip) {
   return withTransaction(async (conn) => {
     const d = await parse(body, conn);
 
-    const code = await nextNumber(conn, 'MACHINE');
+    let code = await nextNumber(conn, 'MACHINE');
 
     let r;
     let token;
@@ -293,11 +293,13 @@ async function create(body, userId, ip) {
         break;
 
       } catch (e) {
+               // number sequence was behind a code that already exists (e.g. MCH-003): take the next number and retry
         if (
           e.code === 'ER_DUP_ENTRY' &&
-          /qr/i.test(e.sqlMessage || '') &&
-          attempt < 4
+          /machine_code/i.test(e.sqlMessage || '') &&
+          attempt < 50
         ) {
+          code = await nextNumber(conn, 'MACHINE');
           continue;
         }
 

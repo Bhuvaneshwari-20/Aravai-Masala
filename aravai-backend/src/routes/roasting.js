@@ -3,6 +3,13 @@ const c = require('../controllers/roastingController');
 const { authenticate, authorize } = require('../middleware/auth');
 
 router.use(authenticate);
+// material cards (Start / Stop) - used by the Roasting screen (ProcessBoard)
+router.get('/queue', authorize('roasting', 'view'), c.queue);
+router.get('/history', authorize('roasting', 'view'), c.history);
+router.post('/start', authorize('roasting', 'create'), c.start);
+router.post('/stop', authorize('roasting', 'create'), c.stop);
+router.post('/alert', authorize('roasting', 'view'), c.alert);
+// old form endpoints (kept)
 router.get('/options', authorize('roasting', 'view'), c.options);
 router.get('/recipe-materials', authorize('roasting', 'view'), c.recipeMaterials);
 router.get('/batches', authorize('roasting', 'view'), c.batches);

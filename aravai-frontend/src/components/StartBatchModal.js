@@ -11,7 +11,6 @@ import useOptions from '../hooks/useOptions';
 import useLayout from '../hooks/useLayout';
 import { useAuth } from '../AuthContext';
 import WeightImageVerify from './WeightImageVerify';
-import AddMaterialModal from './AddMaterialModal';
 import { ErrorBox, InfoBox, ModalFooter } from './FormBits';
 import { COLORS, fmt } from '../theme';
 import { REQUIRE_WEIGHT_PHOTO } from '../config';
@@ -197,25 +196,25 @@ const nameList = (items) => {
   return n.length <= 3 ? n.join(', ') : `${n.slice(0, 2).join(', ')} and ${n.length - 2} more`;
 };
 
-// Shown inside the New Batch form when some materials need filtering and some do not:
-// the operator taps one of two simple choices (no extra pop-up).
-function RoastChoice({ filterItems, directItems, value, onChange, error }) {
-  const all = filterItems.length + directItems.length;
+// Shown in the New Batch form as soon as a material is ticked for Filtering: the processing condition of the batch.
+//  SEQUENTIAL   : each filtered material goes Filtering -> "Proceed to Roasting?" -> Roasting -> Grinding
+//  SIMULTANEOUS : Filtering and Roasting of the material run independently (own card, own machine, own timer) -> Grinding after both
+function RoastChoice({ filterItems, directItems, value, onChange }) {
   const opts = [
-    { key: 'PARALLEL', icon: 'fire', title: 'Start Roasting Now',
-      text: `Roast ${nameList(directItems)} now. ${nameList(filterItems)} will be roasted after it is filtered.` },
-    { key: 'AFTER_FILTERING', icon: 'timer-sand', title: 'Roast Everything Together',
-      text: `First filter ${nameList(filterItems)}. Then roast all ${all} materials together.` },
+    { key: 'SEQUENTIAL', icon: 'arrow-right-bold-circle-outline', title: 'Sequential (Filtering first)',
+      text: `Batching → Filtering → confirm "Proceed to Roasting?" → Roasting → Grinding. ${nameList(filterItems)} can be roasted only after it is filtered and you confirm.${directItems.length ? ` ${nameList(directItems)} can start Roasting straight away.` : ''}` },
+    { key: 'SIMULTANEOUS', icon: 'call-split', title: 'Simultaneous (Filtering + Roasting)',
+      text: `Filtering and Roasting run independently for ${nameList(filterItems)}, each with its own card, machine and timer. The material goes to Grinding only after both are completed.` },
   ];
   return (
     <View style={{ marginTop: 14 }}>
-      <Text style={{ fontSize: 14, fontWeight: '900', color: COLORS.text }}>When should roasting start?</Text>
-      <Text style={{ fontSize: 12.5, color: COLORS.grey, marginTop: 2 }}>Some materials need filtering and some do not. Choose one.</Text>
+      <Text style={{ fontSize: 14, fontWeight: '900', color: COLORS.text }}>Processing condition</Text>
+      <Text style={{ fontSize: 12.5, color: COLORS.grey, marginTop: 2 }}>How should Filtering and Roasting work for this batch?</Text>
       {opts.map((o) => {
         const on = value === o.key;
         return (
           <TouchableOpacity key={o.key} activeOpacity={0.7} onPress={() => onChange(o.key)} accessibilityLabel={o.title}
-            style={[t.choice, on && t.choiceOn, !!error && !on && t.choiceErr]}>
+            style={[t.choice, on && t.choiceOn]}>
             <MCI name={on ? 'radiobox-marked' : 'radiobox-blank'} size={24} color={on ? COLORS.primary : COLORS.grey} />
             <View style={{ flex: 1, marginLeft: 10 }}>
               <Text style={t.choiceTitle}>{o.title}</Text>
@@ -224,7 +223,6 @@ function RoastChoice({ filterItems, directItems, value, onChange, error }) {
           </TouchableOpacity>
         );
       })}
-      {!!error && <Text style={{ color: COLORS.danger, fontSize: 12, fontWeight: '700', marginTop: 6 }}>{error}</Text>}
     </View>
   );
 }
@@ -249,7 +247,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   const [machineId, setMachineId] = useState(null);
   const [filterIds, setFilterIds] = useState({}); // material_id -> true when that material must be filtered
   const [removed, setRemoved] = useState({}); // material_id -> true when the material is left out of this batch
-  const [roastMode, setRoastMode] = useState(null); // 'PARALLEL' | 'AFTER_FILTERING' (asked only when some materials are filtered and some are not)
+  const [roastMode, setRoastMode] = useState('SEQUENTIAL'); // processing condition: 'SEQUENTIAL' | 'SIMULTANEOUS' (shown when a material is ticked for Filtering)
   const [recipe, setRecipe] = useState(null); // { id, ingredients: [...] }
   const [loadingRecipe, setLoadingRecipe] = useState(false);
   const [rows, setRows] = useState({}); // material_id -> { bags, wt, qty, touched }
@@ -258,18 +256,18 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
-  const [addOpen, setAddOpen] = useState(false); // + Add Material pop-up
+ 
 
   useEffect(() => {
     if (visible) {
-      setAddOpen(false);
+     
       setDate(today()); setProductId(null); setRecipe(null); setRows({}); setPhotos({}); setPanels({}); setErrors({}); setErr(''); setSaving(false);
-      setMachineId(null); setFilterIds({}); setRemoved({}); setRoastMode(null);
+      setMachineId(null); setFilterIds({}); setRemoved({}); setRoastMode('SEQUENTIAL');
     }
   }, [visible]); // eslint-disable-line
 
   useEffect(() => {
-    setRecipe(null); setRows({}); setPhotos({}); setPanels({}); setErrors({}); setFilterIds({}); setRemoved({}); setRoastMode(null);
+    setRecipe(null); setRows({}); setPhotos({}); setPanels({}); setErrors({}); setFilterIds({}); setRemoved({}); setRoastMode('SEQUENTIAL');
     setLoadingRecipe(false); // a cancelled request never clears the spinner itself
     if (!visible || !productId) return undefined;
     let live = true;
@@ -320,14 +318,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
     setRows((p) => ({ ...p, [id]: { ...(p[id] || {}), qty: String(r3(kg)), touched: true } }));
     setErrors((p) => ({ ...p, [`m${id}qty`]: undefined, [`m${id}photo`]: undefined }));
   };
-  // a material was added to the recipe (backend makes a new recipe version): reload the recipe, keep everything already typed
-  const onMaterialAdded = async () => {
-    setAddOpen(false); setErr('');
-    try {
-      const r = await fetchRecipe(productId);
-      if (r) { setRecipe(r); setRemoved((p) => { const n = { ...p }; r.ingredients.forEach((i) => { if (n[i.material_id]) n[i.material_id] = false; }); return n; }); }
-    } catch (x) { setErr(errMsg(x)); }
-  };
+
   const machineOpt = machines.find((o) => o.value === machineId);
   const machine = machineOpt ? { id: machineOpt.value, code: machineOpt.code, name: machineOpt.name } : null; // machine the photos must show
 
@@ -343,9 +334,9 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   };
   const restoreMaterial = (id) => () => setRemoved((p) => ({ ...p, [id]: false }));
 
-  const toggleFilter = (id) => () => { setFilterIds((p) => ({ ...p, [id]: !p[id] })); setRoastMode(null); };
+  const toggleFilter = (id) => () => { setFilterIds((p) => ({ ...p, [id]: !p[id] })); setRoastMode('SEQUENTIAL'); };
   const allFilter = active.length > 0 && active.every((i) => filterIds[i.material_id]);
-  const toggleAllFilter = () => { setRoastMode(null); setFilterIds(() => (allFilter || !recipe ? {} : Object.fromEntries(active.map((i) => [i.material_id, true])))); };
+  const toggleAllFilter = () => { setRoastMode('SEQUENTIAL'); setFilterIds(() => (allFilter || !recipe ? {} : Object.fromEntries(active.map((i) => [i.material_id, true])))); };
   // Every material of the batch is weighed, so every one of them counts here
   const filterItems = active.filter((i) => filterIds[i.material_id]);
   const directItems = active.filter((i) => !filterIds[i.material_id]);
@@ -388,15 +379,13 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
     }
     setErrors(e);
     if (Object.keys(e).length || !recipe) return;
-    // some materials filtered, some not -> the operator picks one of the two plans in the pop-up (saving continues from there)
-    const pickedMode = typeof modeArg === 'string' ? modeArg : roastMode;
-    if (mixed && !pickedMode) { setErrors({ roast: 'Please choose when roasting should start' }); return; }
-    const finalMode = !needsFiltering ? 'DIRECT' : mixed ? pickedMode : 'AFTER_FILTERING';
+    const pm = needsFiltering ? (typeof modeArg === 'string' ? modeArg : roastMode) || 'SEQUENTIAL' : 'SEQUENTIAL';
+    const finalMode = !needsFiltering ? 'DIRECT' : pm === 'SIMULTANEOUS' ? 'PARALLEL' : 'AFTER_FILTERING';
     setSaving(true); setErr('');
     try {
       const r = await api.post('/batches', { product_id: productId, recipe_id: recipe.id, production_date: date, weighing_machine_id: machineId, needs_filtering: needsFiltering,
         // DIRECT = nothing filtered | AFTER_FILTERING = roast only after filtering | PARALLEL = unfiltered materials roast now, filtered ones roast after their filtering
-        roasting_mode: finalMode,
+        roasting_mode: finalMode, process_mode: pm,
         ingredients: active.map((i) => {
           const x = rows[i.material_id] || {};
           const multi = (x.extra || []).length > 0;
@@ -411,8 +400,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
 
   return (
     <View>
-    <AddMaterialModal visible={visible && addOpen} productId={productId} productName={products.find((o) => o.value === productId)?.label}
-      onDismiss={() => setAddOpen(false)} onAdded={onMaterialAdded} />
+   
     <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon="scale-balance" maxWidth={1000} title="New Batch"
       subtitle="Aravai Batching Process Plan"
       footer={<ModalFooter onCancel={onDismiss} onSave={() => save()} saving={saving} disabled={!canSave} label="Save Batch" />}>
@@ -450,10 +438,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
                 ))}
               </View>
             )}
-            <Pressable onPress={() => setAddOpen(true)} accessibilityRole="button" accessibilityLabel="Add material" style={t.addMat}>
-              <MCI name="plus-circle-outline" size={20} color={COLORS.green} />
-              <Text style={t.addMatText}>Add Material</Text>
-            </Pressable>
+      
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: total > 0 ? COLORS.okBg : COLORS.warnBg, borderRadius: 10, padding: 12, marginTop: 10, marginBottom: 14 }}>
               <Text style={{ fontWeight: '800', color: total > 0 ? COLORS.ok : COLORS.warn }}>Total weighed</Text>
               <Text style={{ fontWeight: '900', fontSize: 16, color: total > 0 ? COLORS.ok : COLORS.warn }}>{fmt(total)} kg</Text>
@@ -468,14 +453,12 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
                 <Text style={{ fontWeight: '800', color: COLORS.text }}>{needsFiltering ? `${filterNames.length} of ${active.length} materials need filtering` : 'No filtering needed'}</Text>
                 <Text style={{ fontSize: 12, color: COLORS.grey, marginTop: 2 }}>
                   {!needsFiltering ? 'Tick the Filter box for a material that needs filtering. If you tick nothing, roasting starts directly.'
-                    : mixed ? `${filterNames.join(', ')} will be filtered first. Roasting for it starts only after filtering is done.`
-                      : `${filterNames.join(', ')} will be filtered first, then roasted.`}
+                    : `${filterNames.join(', ')} will go to the Filtering cards. Choose the processing condition below.`}
                 </Text>
               </View>
             </View>
 
-            {mixed && <RoastChoice filterItems={filterItems} directItems={directItems} value={roastMode} error={errors.roast}
-              onChange={(k) => { setRoastMode(k); setErrors((p) => ({ ...p, roast: undefined })); }} />}
+            {needsFiltering && <RoastChoice filterItems={filterItems} directItems={directItems} value={roastMode} onChange={setRoastMode} />}
           </View>
         )}
         <ErrorBox text={errors.total || errors.photo || err} />

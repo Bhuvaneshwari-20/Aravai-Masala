@@ -231,13 +231,20 @@ async function start(body, userId, ip) {
   //  PARALLEL        some ticked, some not, operator chose to start Roasting now -> unfiltered materials roast while the others are filtered
   const nFilter = items.filter((i) => i.filter).length;
   const mixed = nFilter > 0 && nFilter < items.length;
+  // New clients send process_mode:
+  //  SEQUENTIAL    each filtered material: Filtering -> "Proceed to Roasting?" -> Roasting (unfiltered materials roast straight away)
+  //  SIMULTANEOUS  Filtering and Roasting of a material run independently, Grinding after both are done
+  const pmIn = String(body.process_mode || '').toUpperCase();
+  const processMode = pmIn === 'SIMULTANEOUS' ? 'SIMULTANEOUS' : 'SEQUENTIAL';
   let roastingMode = 'DIRECT';
   if (needsFiltering) {
-    if (!mixed) roastingMode = 'AFTER_FILTERING';
+    if (['SEQUENTIAL', 'SIMULTANEOUS'].includes(pmIn)) roastingMode = pmIn === 'SIMULTANEOUS' ? 'PARALLEL' : 'AFTER_FILTERING';
+    else if (!mixed) roastingMode = 'AFTER_FILTERING';
     else if (modeIn === 'PARALLEL' || modeIn === 'AFTER_FILTERING') roastingMode = modeIn;
-    else if (strict) throw new AppError('Choose how Roasting should start: now for the unfiltered materials, or after Filtering is completed');
+    else if (strict) throw new AppError('Choose the processing condition: Sequential or Simultaneous');
     else roastingMode = 'AFTER_FILTERING';
   }
+  // the stage the batch waits at (the Filtering / Roasting cards decide what each material can do)
   const nextStage = roastingMode === 'AFTER_FILTERING' ? 'FILTERING' : 'ROASTING';
 
   return withTransaction(async (conn) => {
@@ -279,10 +286,10 @@ async function start(body, userId, ip) {
     const batchNo = await nextNumber(conn, 'BATCH');
     // Batching is finished -> the batch is IN_PROGRESS at the next process (ROASTING), not COMPLETED.
     const [r] = await conn.query(
-      `INSERT INTO batch_master (batch_no, production_date, product_id, recipe_id, planned_qty_kg, current_stage, needs_filtering, roasting_mode, status, current_output_kg,
+      `INSERT INTO batch_master (batch_no, production_date, product_id, recipe_id, planned_qty_kg, current_stage, needs_filtering, roasting_mode, process_mode, status, current_output_kg,
          created_by, batching_completed_at, active_lock, weighing_machine_id, machine_locked_at)
-       VALUES (?,?,?,?,?,?,?,?,'IN_PROGRESS',?,?,NOW(),NULL,?,IF(? IS NULL, NULL, NOW()))`,
-      [batchNo, date, productId, recipeId, total, nextStage, needsFiltering ? 1 : 0, roastingMode, total, userId, machineId, machineId]);
+       VALUES (?,?,?,?,?,?,?,?,?,'IN_PROGRESS',?,?,NOW(),NULL,?,IF(? IS NULL, NULL, NOW()))`,
+      [batchNo, date, productId, recipeId, total, nextStage, needsFiltering ? 1 : 0, roastingMode, processMode, total, userId, machineId, machineId]);
     const id = r.insertId;
 
     const alerts = [];
@@ -306,7 +313,7 @@ async function start(body, userId, ip) {
 
     const created = await getById(id, conn);
     await audit({ userId, action: 'CREATE', table: 'batch_master', recordId: id,
-      newValues: { batch_no: batchNo, product_id: productId, recipe_id: recipeId, total_kg: total, stage: nextStage, roasting_mode: roastingMode, needs_filtering: needsFiltering, materials: items, doneBy, checkedBy }, ip }, conn);
+      newValues: { batch_no: batchNo, product_id: productId, recipe_id: recipeId, total_kg: total, stage: nextStage, roasting_mode: roastingMode, process_mode: processMode, needs_filtering: needsFiltering, materials: items, doneBy, checkedBy }, ip }, conn);
     return { ...created, low_stock_alerts: alerts };
   });
 }
