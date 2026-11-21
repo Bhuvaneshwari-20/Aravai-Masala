@@ -25,13 +25,13 @@ import { COLORS, SHADOW, fmt, categoryStyle, padGrid } from '../../theme';
 const count = (params) => api.get('/materials', { params: { ...params, limit: 1 } }).then((r) => r.data.data.total);
 
 // Edit / Delete buttons (label on desktop, full-width row on phone cards)
-function Actions({ onEdit, onDelete, block }) {
+function Actions({ onEdit, onDelete, block, compact }) {
   if (!onEdit && !onDelete) return null;
   const Btn = ({ icon, label, color, bg, onPress }) => (
     <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label}
-      style={({ hovered, pressed }) => [a.btn, block && a.block, { backgroundColor: hovered ? `${color}26` : bg }, pressed && { opacity: 0.8 }]}>
+      style={({ hovered, pressed }) => [a.btn, block && a.block, compact && a.round, { backgroundColor: hovered ? `${color}26` : bg }, pressed && { opacity: 0.8 }]}>
       <MCI name={icon} size={17} color={color} />
-      <Text style={[a.text, { color }]}>{label}</Text>
+      {!compact && <Text style={[a.text, { color }]}>{label}</Text>}
     </Pressable>
   );
   return (
@@ -62,7 +62,7 @@ function MaterialCard({ item, index, onEdit, onDelete }) {
         <View style={s.divider} />
         <View style={s.stockRow}>
           <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={s.stockLabel}>STOCK</Text>
+            <Text style={s.stockLabel}>Stock</Text>
             <Text style={[s.stockVal, low && { color: COLORS.danger }]} numberOfLines={1}>{fmt(cur)} <Text style={s.unit}>{item.unit}</Text></Text>
           </View>
           {low && <Badge tone="danger" text="Low" />}
@@ -75,41 +75,39 @@ function MaterialCard({ item, index, onEdit, onDelete }) {
 }
 
 // ---------- desktop table ----------
-const COL = { name: { flex: 3.6 }, code: { flex: 1.3 }, stock: { flex: 2 }, actions: { width: 190, alignItems: 'flex-end' } };
+const COL = { idx: { width: 44 }, name: { flex: 3 }, code: { flex: 1.3 }, stock: { flex: 1.3 }, unit: { flex: 0.9 }, status: { flex: 1.3 }, actions: { width: 100, alignItems: 'flex-end' } };
 
 function TableHead() {
   return (
     <View style={[t.row, t.head]}>
-      <Text style={[t.th, COL.name]}>MATERIAL</Text>
-      <Text style={[t.th, COL.code]}>CODE</Text>
-      <Text style={[t.th, COL.stock]}>STOCK</Text>
-      <Text style={[t.th, { width: 190, textAlign: 'right', paddingRight: 0 }]}>ACTIONS</Text>
+      <Text style={[t.th, COL.idx]}>#</Text>
+      <Text style={[t.th, COL.name]}>Material Name</Text>
+      <Text style={[t.th, COL.code]}>Code</Text>
+      <Text style={[t.th, COL.stock]}>Stock</Text>
+      <Text style={[t.th, COL.unit]}>Unit</Text>
+      <Text style={[t.th, COL.status]}>Status</Text>
+      <Text style={[t.th, { width: 100, textAlign: 'right', paddingRight: 0 }]}>Actions</Text>
     </View>
   );
 }
 
-function TableRow({ item, onEdit, onDelete }) {
-  const cs = categoryStyle(item.category_name || '');
+function TableRow({ item, index, onEdit, onDelete }) {
   const cur = Number(item.current_stock) || 0;
   const low = !!item.is_low_stock;
   return (
     <Pressable style={({ hovered }) => [t.row, t.body, hovered && { backgroundColor: '#FDF8F3' }, !item.is_active && { opacity: 0.65 }]}>
-      <View style={[COL.name, { flexDirection: 'row', alignItems: 'center', minWidth: 0 }]}>
-        <View style={[t.tile, { backgroundColor: `${cs.color}14` }]}><Text style={{ fontSize: 20 }}>{cs.icon}</Text></View>
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <Text style={t.name} numberOfLines={1}>{item.material_name}</Text>
-            {!item.is_active && <Badge tone="grey" text="Inactive" style={{ marginLeft: 8 }} />}
-          </View>
-          {!!item.specifications?.length && <Text style={t.spec} numberOfLines={1}>{item.specifications.join('  •  ')}</Text>}
-        </View>
+      <Text style={[t.idx, COL.idx]}>{index + 1}</Text>
+      <View style={[COL.name, { minWidth: 0, paddingRight: 12 }]}>
+        <Text style={t.name} numberOfLines={1}>{item.material_name}</Text>
+        {!!item.specifications?.length && <Text style={t.spec} numberOfLines={1}>{item.specifications.join('  •  ')}</Text>}
       </View>
       <View style={COL.code}><Text style={t.code} numberOfLines={1}>{item.sku || item.material_code || '–'}</Text></View>
-      <View style={[COL.stock, { paddingRight: 24 }]}>
-        <Text style={[t.stock, low && { color: COLORS.danger }]} numberOfLines={1}>{fmt(cur)} <Text style={t.unit}>{item.unit}</Text></Text>
-        <StockBar current={cur} minimum={item.minimum_stock} low={low} height={5} style={{ marginTop: 6, maxWidth: 160 }} />
+      <View style={COL.stock}><Text style={[t.stock, low && { color: COLORS.danger }]} numberOfLines={1}>{fmt(cur)}</Text></View>
+      <View style={COL.unit}><Text style={t.unit} numberOfLines={1}>{String(item.unit || '').toLowerCase()}</Text></View>
+      <View style={COL.status}>
+        {!item.is_active ? <Badge tone="grey" text="Inactive" /> : <Badge tone={low ? 'warn' : 'ok'} text={low ? 'Low Stock' : 'In Stock'} />}
       </View>
-      <View style={COL.actions}><Actions onEdit={onEdit} onDelete={onDelete} /></View>
+      <View style={COL.actions}><Actions compact onEdit={onEdit} onDelete={onDelete} /></View>
     </Pressable>
   );
 }
@@ -175,13 +173,15 @@ export default function MaterialListScreen({ navigation, route }) {
 
   return (
     <View style={s.wrap}>
-      <PageToolbar icon="package-variant" title="All Materials" subtitle={subtitle} search={search} onSearch={setSearch}
-        placeholder="Search name, code or specification" addLabel="Add Material" onAdd={can('material', 'create') ? () => setShowForm(true) : null}>
+      <PageToolbar icon="package-variant" title="Material Master" desc="Manage raw materials used in production" subtitle={subtitle} search={search} onSearch={setSearch}
+        placeholder="Search material, code…" addLabel="Add Material" onAdd={can('material', 'create') ? () => setShowForm(true) : null}>
         {!isPhone && (
           <View style={s.stats}>
-            <StatCard icon="package-variant" color="#0E7490" value={counts.all === undefined ? undefined : fmt(counts.all)} label="Total materials" active={filter === 'all'} onPress={() => setFilter('all')} />
+            <StatCard icon="package-variant" color="#E8942A" value={counts.all === undefined ? undefined : fmt(counts.all)} label="Total Materials" active={filter === 'all'} onPress={() => setFilter('all')} />
             <View style={{ width: 12 }} />
-            <StatCard icon="alert-circle" color="#DC2626" value={counts.low === undefined ? undefined : fmt(counts.low)} label="Low stock" active={filter === 'low'} onPress={() => pick('low')} />
+            <StatCard icon="check-circle" color="#2E9E5B" value={counts.all === undefined || counts.low === undefined ? undefined : fmt(counts.all - counts.low)} label="In Stock" onPress={() => setFilter('all')} />
+            <View style={{ width: 12 }} />
+            <StatCard icon="alert-circle" color="#DC2626" value={counts.low === undefined ? undefined : fmt(counts.low)} label="Low Stock" active={filter === 'low'} onPress={() => pick('low')} />
           </View>
         )}
         {isPhone && <FilterChips options={chips} value={filter} onChange={setFilter} style={{ marginTop: 6, marginHorizontal: -pad }} />}
@@ -201,7 +201,7 @@ export default function MaterialListScreen({ navigation, route }) {
               onEndReachedThreshold={0.4}
               ListEmptyComponent={empty}
               ListFooterComponent={list.loadingMore ? <ActivityIndicator style={{ margin: 16 }} color={COLORS.primary} /> : null}
-              renderItem={({ item }) => <TableRow item={item} onEdit={onEdit && (() => onEdit(item))} onDelete={onDelete && (() => onDelete(item))} />}
+              renderItem={({ item, index }) => <TableRow item={item} index={index} onEdit={onEdit && (() => onEdit(item))} onDelete={onDelete && (() => onDelete(item))} />}
             />
           </View>
         ) : (
@@ -255,18 +255,20 @@ const a = StyleSheet.create({
   btn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', height: 38, borderRadius: 11, paddingHorizontal: 13, marginLeft: 8 },
   block: { flex: 1, height: 42, marginLeft: 0, marginRight: 8 },
   text: { fontSize: 13.5, fontWeight: '800', marginLeft: 6 },
+  round: { width: 34, height: 34, borderRadius: 17, paddingHorizontal: 0 },
 });
 
 const t = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18 },
   head: { height: 44, backgroundColor: '#FBF8F4', borderBottomWidth: 1, borderBottomColor: COLORS.border },
   body: { minHeight: 68, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: COLORS.line },
-  th: { fontSize: 11, fontWeight: '900', letterSpacing: 1.3, color: COLORS.grey, paddingRight: 12 },
+  th: { fontSize: 13, fontWeight: '800', color: COLORS.text, paddingRight: 12 },
   tile: { width: 42, height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
   name: { fontSize: 15, fontWeight: '800', color: COLORS.text },
   spec: { fontSize: 12, color: COLORS.grey, fontWeight: '500', marginTop: 2 },
   code: { fontSize: 13, fontWeight: '800', color: COLORS.textSoft },
   cell: { fontSize: 14, fontWeight: '600', color: COLORS.textSoft, paddingRight: 12 },
-  stock: { fontSize: 16, fontWeight: '900', color: COLORS.text },
-  unit: { fontSize: 12, fontWeight: '700', color: COLORS.grey },
+  stock: { fontSize: 15, fontWeight: '800', color: COLORS.text },
+  unit: { fontSize: 13, fontWeight: '600', color: COLORS.textSoft },
+  idx: { fontSize: 13, fontWeight: '700', color: COLORS.textSoft },
 });

@@ -34,7 +34,7 @@ export default function BatchMaterialEditModal({ visible, batch, ingredient, onD
   if (!ingredient) return null;
   const multi = (ingredient.bag_lines || []).length > 1; // several bag sizes: bags / weight are edited by deleting and re-weighing, only the filter tick is changed here
   const stage = materialStage(ingredient);
-  const stock = Number(ingredient.current_stock || 0) + Number(ingredient.weighed_qty || 0); // stock + what this weighing already took
+  const stock = (ingredient.stock_kg != null ? Number(ingredient.stock_kg) : Number(ingredient.current_stock || 0)) + Number(ingredient.weighed_qty || 0); // stock + what this weighing already took
 
   const setField = (k) => (t) => setF((p) => {
     const cur = { ...p, [k]: t };

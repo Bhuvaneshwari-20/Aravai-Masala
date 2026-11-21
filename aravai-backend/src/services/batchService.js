@@ -11,6 +11,20 @@ const ms = require('../utils/materialStages');       // material-level status (F
 
 const r3 = (n) => Math.round(n * 1000) / 1000;
 
+// Batch weights are always in kg. Stock of a KG material is kept in kg, of a GRAM material in grams (1 kg = 1000 g).
+const UNIT_FACTOR = { KG: 1, GRAM: 1000 };
+const unitFactor = (unit, name) => {
+  const f = UNIT_FACTOR[String(unit || '').toUpperCase()];
+  if (!f) throw new AppError(`${name} is in ${unit}; only KG or GRAM materials can be batched`);
+  return f;
+};
+// kg -> quantity in the stock unit of that material
+const stockQtyOf = async (conn, materialId, kg) => {
+  const [m] = await conn.query('SELECT material_name, unit FROM materials WHERE id = ?', [materialId]);
+  if (!m.length) throw new AppError('Material not found', 404);
+  return r3(kg * unitFactor(m[0].unit, m[0].material_name));
+};
+
 const BATCH_SELECT = `
   SELECT b.*, p.product_code, p.product_name, r.recipe_no, r.version_no, r.base_quantity_kg,
          r.default_filter_stages AS recipe_filter_stages, u.full_name AS created_by_name,
@@ -106,7 +120,8 @@ async function buildPlan(db, b) {
       required_kg: required,
       is_done: done,
       variance_kg: done && required !== null ? r3(Number(r.weighed_qty) - required) : null,
-      stock_short: !done && required !== null && Number(r.current_stock) < required,
+      stock_kg: r3(Number(r.current_stock) / (UNIT_FACTOR[String(r.unit).toUpperCase()] || 1)), // stock expressed in kg (GRAM materials are stocked in grams)
+      stock_short: !done && required !== null && Number(r.current_stock) / (UNIT_FACTOR[String(r.unit).toUpperCase()] || 1) < required,
     };
   });
   const done = ingredients.filter((i) => i.is_done);
@@ -265,7 +280,7 @@ async function start(body, userId, ip) {
     for (const i of items) {
       const m = byId.get(i.material_id);
       if (!m) throw new AppError('One of the materials is not part of the recipe');
-      if (m.unit !== 'KG') throw new AppError(`${m.material_name} is in ${m.unit}; only KG materials can be batched`);
+      unitFactor(m.unit, m.material_name);
     }
     if (machineId) {
       const [mc] = await conn.query("SELECT id FROM machine_master WHERE id = ? AND machine_type = 'WEIGHING' AND status IN ('ACTIVE','IDLE')", [machineId]);
@@ -296,7 +311,7 @@ async function start(body, userId, ip) {
     for (const i of items) {
       // raw stock goes down here, in the same transaction as the batch
       const st = await stock.postTxn(conn, {
-        material_id: i.material_id, direction: 'OUT', txn_type: 'ISSUE', qty: i.quantity_kg, txn_date: v.date(),
+        material_id: i.material_id, direction: 'OUT', txn_type: 'ISSUE', qty: r3(i.quantity_kg * unitFactor(byId.get(i.material_id).unit)), txn_date: v.date(),
         issue_type: 'PRODUCTION', purpose: `Batch ${batchNo} - batching`, reference_type: 'BATCH', reference_no: batchNo,
         batch_id: id, entered_by: userId,
       });
@@ -353,7 +368,7 @@ async function addBatching(batchIdRaw, body, user, ip) {
       `SELECT d.quantity_kg, m.material_name, m.unit FROM recipe_details d JOIN materials m ON m.id = d.material_id
        WHERE d.recipe_id = ? AND d.material_id = ?`, [b.recipe_id, materialId]);
     if (!ing.length) throw new AppError('This material is not part of the batch recipe');
-    if (ing[0].unit !== 'KG') throw new AppError(`${ing[0].material_name} is in ${ing[0].unit}; only KG materials can be batched`);
+    const factor = unitFactor(ing[0].unit, ing[0].material_name);
 
     const [dup] = await conn.query('SELECT id FROM batching_details WHERE batch_id = ? AND material_id = ?', [batchId, materialId]);
     if (dup.length) throw new AppError(`${ing[0].material_name} is already weighed for this batch`, 409);
@@ -387,7 +402,7 @@ async function addBatching(batchIdRaw, body, user, ip) {
 
     // raw stock goes down here, in the same transaction as the batching row
     const st = await stock.postTxn(conn, {
-      material_id: materialId, direction: 'OUT', txn_type: 'ISSUE', qty: weighed, txn_date: v.date(),
+      material_id: materialId, direction: 'OUT', txn_type: 'ISSUE', qty: r3(weighed * factor), txn_date: v.date(),
       issue_type: 'PRODUCTION', purpose: `Batch ${b.batch_no} - batching`, reference_type: 'BATCH', reference_no: b.batch_no,
       batch_id: batchId, entered_by: user.id,
     });
@@ -464,13 +479,13 @@ async function addExtraMaterial(batchIdRaw, body, user, ip) {
     const [m] = await conn.query('SELECT id, material_name, unit, is_active FROM materials WHERE id = ?', [materialId]);
     if (!m.length) throw new AppError('Material not found', 404);
     if (!m[0].is_active) throw new AppError(`${m[0].material_name} is inactive`);
-    if (m[0].unit !== 'KG') throw new AppError(`${m[0].material_name} is in ${m[0].unit}; only KG materials can be batched`);
+    const factor = unitFactor(m[0].unit, m[0].material_name);
     const [dup] = await conn.query('SELECT id FROM batching_details WHERE batch_id = ? AND material_id = ?', [batchId, materialId]);
     if (dup.length) throw new AppError(`${m[0].material_name} is already in this batch`, 409);
 
     // raw stock goes down here, in the same transaction (short stock is rejected by stock.postTxn)
     const st = await stock.postTxn(conn, {
-      material_id: materialId, direction: 'OUT', txn_type: 'ISSUE', qty: weighed, txn_date: v.date(),
+      material_id: materialId, direction: 'OUT', txn_type: 'ISSUE', qty: r3(weighed * factor), txn_date: v.date(),
       issue_type: 'PRODUCTION', purpose: `Batch ${b.batch_no} - extra material`, reference_type: 'BATCH', reference_no: b.batch_no,
       batch_id: batchId, entered_by: user.id,
     });
@@ -543,7 +558,7 @@ async function updateMaterial(batchIdRaw, materialIdRaw, body, user, ip) {
         // the photo of the machine display showed the OLD quantity: it is released, and a new verified photo is needed when photos are compulsory
         if (!imageId && REQUIRE_WEIGHT_PHOTO) throw new AppError('The quantity changed: take or upload a photo of the weighing machine display and verify the new weight');
         const st = await stock.postTxn(conn, {
-          material_id: materialId, direction: delta > 0 ? 'OUT' : 'IN', txn_type: delta > 0 ? 'ISSUE' : 'ADJUSTMENT_IN', qty: Math.abs(delta), txn_date: v.date(),
+          material_id: materialId, direction: delta > 0 ? 'OUT' : 'IN', txn_type: delta > 0 ? 'ISSUE' : 'ADJUSTMENT_IN', qty: await stockQtyOf(conn, materialId, Math.abs(delta)), txn_date: v.date(),
           issue_type: delta > 0 ? 'PRODUCTION' : null, purpose: `Batch ${b.batch_no} - ${bd.material_name} quantity corrected (${old} kg to ${weighed} kg)`,
           reference_type: 'BATCH', reference_no: b.batch_no, batch_id: batchId, entered_by: user.id,
         });
@@ -585,7 +600,7 @@ async function removeMaterial(batchIdRaw, materialIdRaw, user, ip) {
 
     // the weighed quantity goes back to stock (one ledger line, so the Material Stock Card still balances)
     await stock.postTxn(conn, {
-      material_id: materialId, direction: 'IN', txn_type: 'ADJUSTMENT_IN', qty, txn_date: v.date(),
+      material_id: materialId, direction: 'IN', txn_type: 'ADJUSTMENT_IN', qty: await stockQtyOf(conn, materialId, qty), txn_date: v.date(),
       purpose: `Batch ${b.batch_no} - ${bd.material_name} removed from the batch`, reference_type: 'BATCH', reference_no: b.batch_no,
       batch_id: batchId, entered_by: user.id,
     });

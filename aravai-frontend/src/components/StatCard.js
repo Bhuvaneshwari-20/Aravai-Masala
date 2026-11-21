@@ -5,11 +5,12 @@ import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import PressableScale from './PressableScale';
 import { COLORS, SHADOW } from '../theme';
 
-// White KPI card with a tinted icon. `active` = selected filter (coloured ring).
+// KPI chip with a pastel tint of its own colour. `active` = selected filter (stronger ring).
 export default function StatCard({ icon, color = COLORS.primary, value, label, hint, onPress, active, compact }) {
   return (
-    <PressableScale onPress={onPress} disabled={!onPress} to={0.97} style={[s.card, SHADOW.sm, compact && s.cardC, active && { borderColor: color, backgroundColor: `${color}0D` }]}>
-      <View style={[s.icon, { backgroundColor: `${color}18` }, compact && s.iconC]}>
+    <PressableScale onPress={onPress} disabled={!onPress} to={0.97}
+      style={[s.card, SHADOW.sm, compact && s.cardC, { backgroundColor: '#fff', borderColor: COLORS.border }, active && { borderColor: color, backgroundColor: `${color}0F` }]}>
+      <View style={[s.icon, { backgroundColor: `${color}1F` }, compact && s.iconC]}>
         <MCI name={icon} size={compact ? 18 : 22} color={color} />
       </View>
       <View style={{ flex: 1, minWidth: 0, marginTop: compact ? 8 : 0, marginLeft: compact ? 0 : 12 }}>
@@ -22,11 +23,11 @@ export default function StatCard({ icon, color = COLORS.primary, value, label, h
 }
 
 const s = StyleSheet.create({
-  card: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.surface, borderRadius: 18, padding: 14, borderWidth: 1.5, borderColor: COLORS.border },
+  card: { flex: 1, flexDirection: 'row', alignItems: 'center', borderRadius: 16, padding: 14, borderWidth: 1 },
   cardC: { flexDirection: 'column', alignItems: 'flex-start', padding: 12, borderRadius: 16 },
-  icon: { width: 44, height: 44, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
-  iconC: { width: 34, height: 34, borderRadius: 10 },
-  value: { fontSize: 24, fontWeight: '900', color: COLORS.text, lineHeight: 28 },
-  label: { fontSize: 12, fontWeight: '700', color: COLORS.grey, marginTop: 1 },
+  icon: { width: 46, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center' },
+  iconC: { width: 36, height: 36, borderRadius: 18 },
+  value: { fontSize: 26, fontWeight: '900', color: COLORS.text, lineHeight: 28 },
+  label: { fontSize: 12, fontWeight: '700', color: COLORS.textSoft, marginTop: 1 },
   hint: { fontSize: 11, fontWeight: '800', marginTop: 2 },
 });

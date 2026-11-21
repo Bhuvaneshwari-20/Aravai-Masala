@@ -10,6 +10,7 @@ export default function usePagedList(path, params) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+   const [summary, setSummary] = useState(null);
   const [error, setError] = useState('');
   const reqId = useRef(0);
   const key = JSON.stringify(params);
@@ -27,6 +28,8 @@ export default function usePagedList(path, params) {
       setPage(d.page);
       setTotalPages(d.total_pages);
       setTotal(d.total);
+        if (d.summary) setSummary(d.summary);
+
       setError('');
     } catch (e) {
       if (id !== reqId.current) return;
@@ -44,7 +47,7 @@ export default function usePagedList(path, params) {
   const silentReload = useCallback(() => ref.current(1, 'silent'), []); // stable: used on screen focus
 
   return {
-    items, total, loading, refreshing, loadingMore, error,
+    items, total, summary, hasMore: page < totalPages, loading,refreshing, loadingMore, error,
     reload: () => fetchPage(1, 'initial'),
     refresh: () => fetchPage(1, 'refresh'),
     silentReload,

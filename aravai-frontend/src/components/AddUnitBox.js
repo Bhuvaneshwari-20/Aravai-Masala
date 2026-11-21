@@ -28,7 +28,7 @@ export default function AddUnitBox({ onAdded }) {
   return adding ? (
     <View style={{ marginBottom: 14 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-        <RNInput value={name} onChangeText={(t) => setName(t.toUpperCase())} placeholder="New unit (e.g. PACKET, BOX)" placeholderTextColor={COLORS.grey}
+        <RNInput value={name} onChangeText={(t) => setName(t.toUpperCase())} placeholder="New unit (e.g. KG, GRAM)" placeholderTextColor={COLORS.grey}
           maxLength={20} autoFocus autoCapitalize="characters" onSubmitEditing={add}
           style={{ flex: 1, height: 44, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, backgroundColor: '#fff', paddingHorizontal: 12, marginRight: 10, color: COLORS.text, outlineStyle: 'none' }} />
         <Button mode="contained" buttonColor={COLORS.green} onPress={add} loading={busy} disabled={busy} style={{ borderRadius: 10, marginRight: 6 }}>Add</Button>

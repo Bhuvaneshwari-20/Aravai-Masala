@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { View, ScrollView, RefreshControl, Pressable, StyleSheet } from 'react-native';
+import { View, ScrollView, RefreshControl, StyleSheet } from 'react-native';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import { Text } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
@@ -19,7 +19,6 @@ const num = (x) => Number(x || 0);
 const r3 = (n) => Math.round(n * 1000) / 1000;
 const EPS = 0.0005;
 const LEDGER_LIMIT = 100; // the API returns at most this many movements
-const LIST_LIMIT = 50; // ...and at most this many batches / roasting entries
 
 const niceDate = (d) => {
   const t = new Date(`${String(d).slice(0, 10)}T00:00:00`);
@@ -54,7 +53,7 @@ export function describeMove(x) {
 
 // Reference / supplier / purpose shown once each, without repeating the batch number that already has its own link
 export function moveNote(x) {
-  const parts = [x.purpose, x.grn_no ? `GRN ${x.grn_no}` : '', x.agency_supplier, x.reference_no === x.batch_no ? '' : x.reference_no]
+  const parts = [x.purpose, x.batch_no ? `Batch ${x.batch_no}` : '', x.grn_no ? `GRN ${x.grn_no}` : '', x.agency_supplier, x.reference_no === x.batch_no ? '' : x.reference_no]
     .map((p) => (p === null || p === undefined ? '' : String(p).trim())).filter(Boolean);
   return [...new Set(parts)].join(' · ');
 }
@@ -70,9 +69,6 @@ export function stockFlow(m, t) {
   return { received, issued, current, other };
 }
 
-// Share of the total used by one batch, 0-100
-export const sharePct = (qty, total) => (total > 0 ? Math.round((num(qty) / total) * 1000) / 10 : 0);
-
 /* --------------------------------------------------------------- small parts */
 function Kpi({ icon, label, value, unit, sub, tone = COLORS.text, accent, subTone }) {
   return (
@@ -83,15 +79,6 @@ function Kpi({ icon, label, value, unit, sub, tone = COLORS.text, accent, subTon
       </View>
       <Text style={[s.kpiValue, { color: tone }]}>{value}{!!unit && <Text style={s.kpiUnit}> {unit}</Text>}</Text>
       {!!sub && <Text style={[s.kpiSub, subTone && { color: subTone, fontWeight: '800' }]} numberOfLines={2}>{sub}</Text>}
-    </View>
-  );
-}
-
-function Mini({ label, value, tone }) {
-  return (
-    <View style={s.mini}>
-      <Text style={s.miniLabel}>{label}</Text>
-      <Text style={[s.miniValue, tone && { color: tone }]}>{value}</Text>
     </View>
   );
 }
@@ -117,34 +104,9 @@ function Head({ cols }) {
   );
 }
 
-function BatchChip({ no, onPress }) {
-  return (
-    <PressableScale to={0.97} onPress={onPress} style={s.chip}>
-      <MCI name="link-variant" size={13} color={COLORS.primary} />
-      <Text style={s.chipText}>{no}</Text>
-    </PressableScale>
-  );
-}
-
-function tabButton(t, on, onPress) {
-  return (
-    <Pressable key={t.key} onPress={onPress} accessibilityRole="tab" accessibilityState={{ selected: on }}
-      style={({ hovered }) => [s.tab, on && s.tabOn, !on && hovered && s.tabHover]}>
-      <MCI name={t.icon} size={17} color={on ? COLORS.primary : COLORS.grey} />
-      <Text style={[s.tabText, on && { color: COLORS.primary }]}>{t.label}</Text>
-      <View style={[s.tabCount, on && { backgroundColor: COLORS.primarySoft }]}>
-        <Text style={[s.tabCountText, on && { color: COLORS.primary }]}>{t.count}</Text>
-      </View>
-    </Pressable>
-  );
-}
-
-const STATUS_TONE = (v) => (/complet|done|closed|packed/i.test(v || '') ? 'ok' : /cancel|reject/i.test(v || '') ? 'danger' : 'grey');
-const pretty = (v) => String(v || '').replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
-
 /* ------------------------------------------------------------------- screen */
 // One material: current stock, how it moved, which batches used it and what roasting cost
-export default function OverviewMaterialScreen({ route, navigation }) {
+export default function OverviewMaterialScreen({ route }) {
   const { id } = route.params;
   const { contentWidth, isPhone } = useLayout();
   const wide = contentWidth >= 760;
@@ -152,7 +114,6 @@ export default function OverviewMaterialScreen({ route, navigation }) {
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [updated, setUpdated] = useState(null);
-  const [tab, setTab] = useState('stock');
   const [dirFilter, setDirFilter] = useState('all');
 
   const load = useCallback(async (refresh) => {
@@ -181,21 +142,7 @@ export default function OverviewMaterialScreen({ route, navigation }) {
     { key: 'issued', label: 'Issued', value: flow.issued, color: COLORS.accent },
     { key: 'other', label: 'Returns and corrections', value: Math.max(-flow.other, 0), color: COLORS.grey },
   ];
-  const openBatch = (batchId) => batchId && navigation.navigate('OverviewBatch', { id: batchId });
   const refresh = () => load(true);
-
-  const batchesCapped = d.batches.length >= LIST_LIMIT;
-  const roastCapped = d.roasting.length >= LIST_LIMIT;
-  const batchTotal = d.batches.reduce((a, b) => a + num(b.qty), 0);
-  const maxBatch = d.batches.reduce((a, b) => Math.max(a, num(b.qty)), 0);
-  const roastOut = r3(Math.max(num(t.roast_input_kg) - num(t.roast_loss_kg), 0));
-  const limit = num(t.roast_loss_limit) || 12;
-
-  const tabs = [
-    { key: 'stock', label: 'Stock history', icon: 'swap-vertical', count: ledger.length },
-    { key: 'batch', label: 'Batch tracking', icon: 'package-variant-closed', count: `${t.batch_count}${batchesCapped ? '+' : ''}` },
-    { key: 'roast', label: 'Roasting loss', icon: 'fire', count: t.roast_entries },
-  ];
 
   /* ---- Stock history ---- */
   const stockCols = [
@@ -228,8 +175,7 @@ export default function OverviewMaterialScreen({ route, navigation }) {
             const detail = (
               <View style={{ alignItems: 'flex-start' }}>
                 {!!note && <Text style={s.td} numberOfLines={2}>{note}</Text>}
-                {!!x.batch_no && <BatchChip no={x.batch_no} onPress={() => openBatch(x.batch_id)} />}
-                {!note && !x.batch_no && <Text style={s.tdMuted}>-</Text>}
+                {!note && <Text style={s.tdMuted}>-</Text>}
               </View>
             );
             if (wide) {
@@ -250,120 +196,13 @@ export default function OverviewMaterialScreen({ route, navigation }) {
                   <Text style={s.tdMuted}>{niceDate(x.txn_date)}</Text>
                   <Text style={s.tdMuted}>Balance <Text style={s.strong}>{fmt(x.closing_stock)} {unit}</Text></Text>
                 </View>
-                {(!!note || !!x.batch_no) && <View style={{ marginTop: 6 }}>{detail}</View>}
+                {!!note && <View style={{ marginTop: 6 }}>{detail}</View>}
               </View>
             );
           })}
         </View>
       )}
       {ledger.length >= LEDGER_LIMIT && <Note>Showing the latest {LEDGER_LIMIT} movements. Totals above include everything.</Note>}
-    </View>
-  );
-
-  /* ---- Batch tracking ---- */
-  const batchCols = [
-    { key: 'batch', label: 'Batch', flex: 1.5 }, { key: 'prod', label: 'Product', flex: 2 }, { key: 'date', label: 'Production date', flex: 1.3 },
-    { key: 'status', label: 'Status', flex: 1.4 }, { key: 'qty', label: 'Material used', flex: 1.2, right: true }, { key: 'share', label: 'Share of total', flex: 1.8 },
-  ];
-  const batchTab = (
-    <View>
-      {d.batches.length === 0 ? <Empty icon="package-variant" text="This material has not been used in any batch yet." /> : (
-        <View>
-          <View style={s.miniRow}>
-            <Mini label="Batches" value={`${t.batch_count}${batchesCapped ? '+' : ''}`} />
-            <Mini label="Total used" value={`${fmt(t.used_in_batches_kg)} kg`} />
-            <Mini label="Average per batch" value={`${fmt(r3(batchTotal / d.batches.length))} kg`} />
-            <Mini label="Largest batch" value={`${fmt(maxBatch)} kg`} />
-          </View>
-          {wide && <Head cols={batchCols} />}
-          {d.batches.map((b) => {
-            const pct = sharePct(b.qty, batchTotal);
-            const bar = (
-              <View style={s.shareRow}>
-                <View style={s.track}><View style={[s.fill, { width: `${Math.max(pct, 2)}%`, backgroundColor: COLORS.primary }]} /></View>
-                <Text style={s.sharePct}>{pct}%</Text>
-              </View>
-            );
-            const status = <Badge tone={STATUS_TONE(b.status)} text={pretty(b.status) || '-'} />;
-            if (wide) {
-              return (
-                <PressableScale key={b.batch_id} to={0.995} hover={1} onPress={() => openBatch(b.batch_id)} style={s.tr}>
-                  <Text style={[s.td, s.link, { flex: 1.5 }]}>{b.batch_no}</Text>
-                  <Text style={[s.td, { flex: 2 }]} numberOfLines={1}>{b.product_name}</Text>
-                  <Text style={[s.td, { flex: 1.3 }]}>{niceDate(b.production_date)}</Text>
-                  <View style={{ flex: 1.4, paddingRight: 8 }}>{status}{!!b.current_stage && <Text style={s.tdSub}>{pretty(b.current_stage)}</Text>}</View>
-                  <Text style={[s.td, s.num, { flex: 1.2, fontWeight: '900' }]}>{fmt(b.qty)} kg</Text>
-                  <View style={{ flex: 1.8 }}>{bar}</View>
-                </PressableScale>
-              );
-            }
-            return (
-              <PressableScale key={b.batch_id} to={0.99} hover={1} onPress={() => openBatch(b.batch_id)} style={s.card2}>
-                <View style={s.rowBetween}><Text style={[s.typeText, { color: COLORS.primary }]}>{b.batch_no}</Text><Text style={s.qtyBig}>{fmt(b.qty)} kg</Text></View>
-                <Text style={[s.tdMuted, { marginTop: 3 }]} numberOfLines={1}>{b.product_name} · {niceDate(b.production_date)}</Text>
-                <View style={[s.rowBetween, { marginTop: 8 }]}><View style={{ flex: 1, marginRight: 10 }}>{bar}</View>{status}</View>
-              </PressableScale>
-            );
-          })}
-        </View>
-      )}
-      {batchesCapped && <Note>Showing the latest {LIST_LIMIT} batches that used this material.</Note>}
-    </View>
-  );
-
-  /* ---- Roasting loss ---- */
-  const roastCols = [
-    { key: 'batch', label: 'Batch', flex: 1.5 }, { key: 'date', label: 'Roast date', flex: 1.3 }, { key: 'in', label: 'Input', flex: 1, right: true },
-    { key: 'out', label: 'Output', flex: 1, right: true }, { key: 'waste', label: 'Wastage', flex: 1, right: true }, { key: 'loss', label: 'Loss', flex: 1.9 },
-  ];
-  const roastTab = (
-    <View>
-      {d.roasting.length === 0 ? <Empty icon="fire-off" text="No completed roasting entries for this material." /> : (
-        <View>
-          <View style={s.miniRow}>
-            <Mini label="Roasting input" value={`${fmt(t.roast_input_kg)} kg`} />
-            <Mini label="Roasting output" value={`${fmt(roastOut)} kg`} />
-            <Mini label="Wastage" value={`${fmt(t.roast_loss_kg)} kg`} tone={t.roast_loss_alert ? COLORS.danger : undefined} />
-            <Mini label={`Average loss (limit ${limit}%)`} value={t.roast_loss_pct === null ? '-' : `${t.roast_loss_pct}%`} tone={t.roast_loss_alert ? COLORS.danger : COLORS.ok} />
-          </View>
-          {wide && <Head cols={roastCols} />}
-          {d.roasting.map((r) => {
-            const waste = r.wastage_weight === null || r.wastage_weight === undefined ? Math.max(num(r.input_weight) - num(r.output_weight), 0) : num(r.wastage_weight);
-            const pct = r.loss_percent === null || r.loss_percent === undefined ? null : num(r.loss_percent);
-            const col = r.loss_alert ? COLORS.danger : COLORS.ok;
-            const bar = pct === null ? <Text style={s.tdMuted}>-</Text> : (
-              <View style={s.shareRow}>
-                <View style={s.track}>
-                  <View style={[s.fill, { width: `${Math.max(Math.min(pct / (limit * 2), 1) * 100, 3)}%`, backgroundColor: col }]} />
-                  <View style={s.limitMark} />
-                </View>
-                <Text style={[s.sharePct, { color: col }]}>{pct}%</Text>
-                {r.loss_alert && <Badge tone="danger" text="High" dot={false} style={{ marginLeft: 6 }} />}
-              </View>
-            );
-            if (wide) {
-              return (
-                <View key={r.id} style={s.tr}>
-                  <Text style={[s.td, { flex: 1.5, fontWeight: '900' }]}>{r.batch_no}</Text>
-                  <Text style={[s.td, { flex: 1.3 }]}>{niceDate(r.roast_date)}</Text>
-                  <Text style={[s.td, s.num, { flex: 1 }]}>{fmt(r.input_weight)} kg</Text>
-                  <Text style={[s.td, s.num, { flex: 1 }]}>{fmt(r.output_weight)} kg</Text>
-                  <Text style={[s.td, s.num, { flex: 1, fontWeight: '900' }]}>{fmt(waste)} kg</Text>
-                  <View style={{ flex: 1.9, paddingLeft: 12 }}>{bar}</View>
-                </View>
-              );
-            }
-            return (
-              <View key={r.id} style={s.card2}>
-                <View style={s.rowBetween}><Text style={s.typeText}>{r.batch_no}</Text><Text style={s.tdMuted}>{niceDate(r.roast_date)}</Text></View>
-                <Text style={[s.td, { marginTop: 6 }]}>{fmt(r.input_weight)} kg in → {fmt(r.output_weight)} kg out · <Text style={s.strong}>{fmt(waste)} kg lost</Text></Text>
-                <View style={{ marginTop: 8 }}>{bar}</View>
-              </View>
-            );
-          })}
-          <Note>The marker on each bar is the {limit}% alert limit.{roastCapped ? ` Showing the latest ${LIST_LIMIT} entries; the summary above covers all ${t.roast_entries}.` : ''}</Note>
-        </View>
-      )}
     </View>
   );
 
@@ -397,9 +236,6 @@ export default function OverviewMaterialScreen({ route, navigation }) {
             sub={`Minimum ${fmt(m.minimum_stock)} ${unit}${out ? ' · out of stock' : low ? ' · reorder now' : ''}`} subTone={low ? COLORS.danger : undefined} />
           <Kpi icon="arrow-down-bold-circle-outline" label="Total received" value={fmt(t.received)} unit={unit} sub="All time, including opening stock" />
           <Kpi icon="arrow-up-bold-circle-outline" label="Total issued" value={fmt(t.issued)} unit={unit} sub="Production, samples, wastage" />
-          <Kpi icon="package-variant-closed" label="Used in batches" value={fmt(t.used_in_batches_kg)} unit="kg" sub={`${t.batch_count}${batchesCapped ? '+' : ''} batch${t.batch_count === 1 ? '' : 'es'}`} />
-          <Kpi icon="fire" label="Roasting loss" value={t.roast_loss_pct === null ? '-' : `${t.roast_loss_pct}%`} tone={t.roast_loss_alert ? COLORS.danger : COLORS.text}
-            sub={t.roast_entries ? `${fmt(t.roast_loss_kg)} of ${fmt(t.roast_input_kg)} kg${t.roast_loss_alert ? ' · high' : ''}` : 'No roasting entries'} subTone={t.roast_loss_alert ? COLORS.danger : undefined} />
         </View>
 
         {/* stock picture */}
@@ -437,14 +273,13 @@ export default function OverviewMaterialScreen({ route, navigation }) {
           </View>
         </View>
 
-        {/* tabs */}
+        {/* stock movement */}
         <View style={[s.card, { padding: 0, overflow: 'hidden' }]}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabs} contentContainerStyle={{ paddingHorizontal: isPhone ? 6 : 10 }}>
-            {tabs.map((tb) => tabButton(tb, tab === tb.key, () => setTab(tb.key)))}
-          </ScrollView>
-          <View style={{ padding: isPhone ? 12 : 16 }}>
-            {tab === 'stock' ? stockTab : tab === 'batch' ? batchTab : roastTab}
+          <View style={s.secRow}>
+            <Text style={s.sec}>Stock movement</Text>
+            <Text style={s.secSide}>{ledger.length} entr{ledger.length === 1 ? 'y' : 'ies'}</Text>
           </View>
+          <View style={{ padding: isPhone ? 12 : 16 }}>{stockTab}</View>
         </View>
       </Container>
     </ScrollView>
@@ -487,28 +322,16 @@ const s = StyleSheet.create({
   gaugeLabel: { fontSize: 12.5, fontWeight: '700', color: COLORS.grey },
   gaugeHint: { fontSize: 11.5, fontWeight: '600', color: COLORS.grey, marginTop: 6 },
 
-  tabs: { borderBottomWidth: 1, borderBottomColor: COLORS.border, flexGrow: 0 },
-  tab: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 14, marginHorizontal: 2, borderBottomWidth: 3, borderBottomColor: 'transparent' },
-  tabOn: { borderBottomColor: COLORS.primary },
-  tabHover: { backgroundColor: COLORS.greyBg },
-  tabText: { fontSize: 14, fontWeight: '800', color: COLORS.textSoft, marginLeft: 7 },
-  tabCount: { marginLeft: 8, minWidth: 22, height: 20, borderRadius: 10, paddingHorizontal: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.greyBg },
-  tabCountText: { fontSize: 11, fontWeight: '900', color: COLORS.grey },
+  secRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   tabHead: { marginBottom: 6 },
 
-  miniRow: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -5, marginBottom: 10 },
-  mini: { flexGrow: 1, flexBasis: 140, backgroundColor: COLORS.bg, borderRadius: RADIUS.sm, paddingVertical: 10, paddingHorizontal: 12, margin: 5 },
-  miniLabel: { fontSize: 12, fontWeight: '700', color: COLORS.grey },
-  miniValue: { fontSize: 18, fontWeight: '900', color: COLORS.text, marginTop: 2, fontVariant: ['tabular-nums'] },
 
   thead: { flexDirection: 'row', backgroundColor: COLORS.greyBg, borderRadius: RADIUS.sm, paddingVertical: 9, paddingHorizontal: 10 },
   th: { fontSize: 12, fontWeight: '800', color: COLORS.grey },
   tr: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: COLORS.line },
   td: { fontSize: 13.5, fontWeight: '600', color: COLORS.text, paddingRight: 8 },
-  tdSub: { fontSize: 11.5, fontWeight: '600', color: COLORS.grey, marginTop: 3 },
   tdMuted: { fontSize: 12.5, fontWeight: '600', color: COLORS.grey },
   num: { textAlign: 'right', fontVariant: ['tabular-nums'] },
-  link: { color: COLORS.primary, fontWeight: '900' },
   strong: { fontWeight: '900', color: COLORS.text },
   typeRow: { flexDirection: 'row', alignItems: 'center', flexShrink: 1 },
   typeText: { fontSize: 14, fontWeight: '900', color: COLORS.text, flexShrink: 1 },
@@ -517,14 +340,7 @@ const s = StyleSheet.create({
   qtyBig: { fontSize: 15, fontWeight: '900', color: COLORS.text, marginLeft: 10, fontVariant: ['tabular-nums'] },
   card2: { paddingVertical: 12, paddingHorizontal: 4, borderBottomWidth: 1, borderBottomColor: COLORS.line },
 
-  chip: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', backgroundColor: COLORS.primarySoft, borderRadius: 9, paddingHorizontal: 9, paddingVertical: 4, marginTop: 4 },
-  chipText: { fontSize: 12, fontWeight: '900', color: COLORS.primary, marginLeft: 5 },
 
-  shareRow: { flexDirection: 'row', alignItems: 'center' },
-  track: { flex: 1, height: 8, borderRadius: 4, backgroundColor: COLORS.greyBg, overflow: 'hidden' },
-  fill: { height: '100%', borderRadius: 4 },
-  limitMark: { position: 'absolute', left: '50%', top: 0, bottom: 0, width: 1.5, backgroundColor: 'rgba(43,27,20,0.3)' },
-  sharePct: { fontSize: 12.5, fontWeight: '900', color: COLORS.text, marginLeft: 8, minWidth: 40, fontVariant: ['tabular-nums'] },
 
   empty: { alignItems: 'center', paddingVertical: 36 },
   emptyText: { fontSize: 13.5, fontWeight: '600', color: COLORS.grey, marginTop: 8, textAlign: 'center' },

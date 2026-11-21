@@ -145,7 +145,7 @@ async function upload(batchIdRaw, file, body, user, ip) {
     const [m] = await pool.query('SELECT is_active, unit FROM materials WHERE id = ?', [materialId]);
     if (!m.length) throw new AppError('Material not found', 404);
     if (!m[0].is_active) throw new AppError('Material is inactive');
-    if (m[0].unit !== 'KG') throw new AppError(`Only KG materials can be batched`);
+    if (!['KG', 'GRAM'].includes(String(m[0].unit).toUpperCase())) throw new AppError('Only KG or GRAM materials can be batched');
   } else {
     const [b] = await pool.query('SELECT batch_no, status, current_stage FROM batch_master WHERE id = ?', [batchId]);
     if (!b.length) throw new AppError('Batch not found', 404);

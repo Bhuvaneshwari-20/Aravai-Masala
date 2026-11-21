@@ -93,7 +93,7 @@ export default function BatchingEntryModal({ visible, batch, ingredient, onDismi
 
   return (
     <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon="scale-balance" title={ingredient.material_name}
-      subtitle={`${required > 0 ? `Required ${fmt(required)} kg  •  ` : ''}Stock ${fmt(ingredient.current_stock)} kg`}
+      subtitle={`${required > 0 ? `Required ${fmt(required)} kg  •  ` : ''}Stock ${fmt(ingredient.stock_kg != null ? ingredient.stock_kg : ingredient.current_stock)} kg`}
       footer={<ModalFooter onCancel={onDismiss} onSave={save} saving={saving} disabled={needsScan || photoPending} label="Save Weighing" />}>
       <View>
         {isBatchMachineLocked(batch) && (

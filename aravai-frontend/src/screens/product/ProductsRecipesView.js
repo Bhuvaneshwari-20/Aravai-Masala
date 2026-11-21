@@ -259,7 +259,7 @@ export default function ProductsRecipesView({ mode = 'product' }) {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: COLORS.bg }} contentContainerStyle={{ paddingHorizontal: pad, paddingTop: 18, paddingBottom: 60 }} keyboardShouldPersistTaps="handled">
-      <Container maxWidth={1280}>
+      <Container>
         {/* ---------- hero ---------- */}
         <LinearGradient colors={GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[s.hero, SHADOW.md]}>
           <View style={s.heroBlob1} /><View style={s.heroBlob2} />

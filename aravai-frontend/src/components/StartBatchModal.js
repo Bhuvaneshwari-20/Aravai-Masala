@@ -4,6 +4,7 @@ import { Text, ActivityIndicator } from 'react-native-paper';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import api, { errMsg } from '../api';
 import ModalShell from './ModalShell';
+import AddMaterialModal from './AddMaterialModal';
 import FormField from './FormField';
 import SelectField from './SelectField';
 import FormRow from './FormRow';
@@ -23,6 +24,8 @@ const recalc = (cur) => {
   if (!cur.touched || (cur.extra || []).length) { const q = sumQty(cur); cur.qty = q > 0 ? String(r3(q)) : ''; }
   return cur;
 };
+// weighing is in kg; a GRAM material keeps its stock in grams
+const stockKg = (i) => Number(i.current_stock || 0) / (String(i.unit || '').toUpperCase() === 'GRAM' ? 1000 : 1);
 const today = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -108,7 +111,7 @@ function SheetRow({ item, row, errors, wide, onChange, onLine, onAddLine, onRemo
           <View style={t.code}><Text style={t.codeText}>{item.material_code}</Text></View>
           <View style={{ flex: 1 }}>
             <Text style={t.name} numberOfLines={1}>{item.material_name}</Text>
-            <Text style={t.stock}>Stock {fmt(item.current_stock)} kg</Text>
+            <Text style={t.stock}>Stock {fmt(stockKg(item))} kg</Text>
           </View>
           {!wide && <View style={{ alignItems: 'center', marginLeft: 8 }}><Text style={t.thSmall}>FILTER</Text>{box}</View>}
           {!wide && <View style={{ alignItems: 'center', marginLeft: 8 }}><Text style={t.thSmall}>PHOTO</Text>{camBtn}</View>}
@@ -256,11 +259,11 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
- 
+  const [addOpen, setAddOpen] = useState(false); // "Add Material" popup
 
   useEffect(() => {
     if (visible) {
-     
+      setAddOpen(false);
       setDate(today()); setProductId(null); setRecipe(null); setRows({}); setPhotos({}); setPanels({}); setErrors({}); setErr(''); setSaving(false);
       setMachineId(null); setFilterIds({}); setRemoved({}); setRoastMode('SEQUENTIAL');
     }
@@ -334,6 +337,16 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   };
   const restoreMaterial = (id) => () => setRemoved((p) => ({ ...p, [id]: false }));
 
+  // A material was added to the product recipe (the server saves a NEW recipe version; earlier batches keep the recipe version
+  // they were made with, so the new material never shows up in them). Reload the recipe but keep everything typed so far.
+  const onMaterialAdded = async () => {
+    setAddOpen(false);
+    try {
+      const r = await fetchRecipe(productId);
+      if (r) setRecipe(r);
+    } catch (e) { setErr(errMsg(e)); }
+  };
+
   const toggleFilter = (id) => () => { setFilterIds((p) => ({ ...p, [id]: !p[id] })); setRoastMode('SEQUENTIAL'); };
   const allFilter = active.length > 0 && active.every((i) => filterIds[i.material_id]);
   const toggleAllFilter = () => { setRoastMode('SEQUENTIAL'); setFilterIds(() => (allFilter || !recipe ? {} : Object.fromEntries(active.map((i) => [i.material_id, true])))); };
@@ -363,7 +376,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
         if (!(Number(x.bags) >= 1)) e[`${k}bags`] = 'Enter number of bags';
         if (!(Number(x.wt) > 0)) e[`${k}wt`] = 'Enter weight per bag';
         if (!x.qty || !(Number(x.qty) > 0)) e[`${k}qty`] = 'Enter weighed qty';
-        else if (Number(x.qty) > Number(i.current_stock)) e[`${k}qty`] = `Only ${fmt(i.current_stock)} kg in stock`;
+        else if (Number(x.qty) > stockKg(i) + 0.0005) e[`${k}qty`] = `Only ${fmt(stockKg(i))} kg in stock`;
         if (multi && (x.extra || []).some((l) => !(Number(l.bags) >= 1) || !(Number(l.wt) > 0))) { e[`${k}qty`] = 'Fill bags and kg/bag in every bag size line'; e[`${k}lines`] = true; }
       });
       if (!e.total && !(total > 0)) e.total = 'Enter the quantity for every material';
@@ -427,6 +440,11 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
                 errors={{ bags: errors[`${k}bags`], wt: errors[`${k}wt`], qty: errors[`${k}qty`], lines: errors[`${k}lines`], photo: errors[`${k}photo`] }}
                 photo={photos[i.material_id]} panel={panels[i.material_id]} onTogglePhoto={togglePhoto(i.material_id)} onPhoto={onPhoto(i.material_id)} onDetected={onDetected(i.material_id)} canManual={can('batching', 'approve')} machine={machine} />;
             })}
+            {/* a material that is not in the recipe yet (e.g. Salt): added to the recipe as a new version, used from this batch onwards */}
+            <Pressable onPress={() => setAddOpen(true)} style={t.addMat} accessibilityRole="button" accessibilityLabel="Add material">
+              <MCI name="plus-circle-outline" size={20} color={COLORS.green} />
+              <Text style={t.addMatText}>Add Material</Text>
+            </Pressable>
             {removedItems.length > 0 && (
               <View style={t.removed}>
                 <Text style={{ fontSize: 12, fontWeight: '700', color: COLORS.grey, marginRight: 6, marginTop: 4 }}>Left out of this batch:</Text>
@@ -464,6 +482,8 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
         <ErrorBox text={errors.total || errors.photo || err} />
       </View>
     </ModalShell>
+    <AddMaterialModal visible={visible && addOpen} productId={productId} productName={(products.find((o) => o.value === productId) || {}).label}
+      onDismiss={() => setAddOpen(false)} onAdded={onMaterialAdded} />
     </View>
   );
 }

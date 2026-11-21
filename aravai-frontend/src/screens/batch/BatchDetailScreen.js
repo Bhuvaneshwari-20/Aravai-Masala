@@ -181,7 +181,7 @@ export default function BatchDetailScreen({ route }) {
                     <View style={{ flex: 1 }}>
                       <Text style={s.ingName}>{i.material_name}</Text>
                       <Text style={s.small}>{i.material_code}{i.required_kg != null ? `  •  Required ${fmt(i.required_kg)} kg` : ''}</Text>
-                      {i.stock_short && <Text style={[s.small, { color: COLORS.danger }]}>Stock {fmt(i.current_stock)} kg is not enough</Text>}
+                      {i.stock_short && <Text style={[s.small, { color: COLORS.danger }]}>Stock {fmt(i.stock_kg != null ? i.stock_kg : i.current_stock)} kg is not enough</Text>}
                     </View>
                     {can('batching', 'create') && (
                       <Button mode="contained" compact buttonColor={COLORS.primary} style={{ borderRadius: 10 }} onPress={() => setWeigh(i)}>Weigh</Button>)}

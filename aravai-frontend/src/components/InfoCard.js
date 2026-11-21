@@ -120,7 +120,7 @@ export default function InfoCard({
 export function useCardCols({ min = 200, phoneMin = 150, max = 6 } = {}) {
   const { contentWidth, pad, isPhone } = useLayout();
   const gap = 12;
-  const w = Math.min(contentWidth, 1600) - pad * 2;
+  const w = contentWidth - pad * 2;
   const cols = Math.max(1, Math.min(max, Math.floor((w + gap) / ((isPhone ? phoneMin : min) + gap))));
   return { cols, gap, pad };
 }

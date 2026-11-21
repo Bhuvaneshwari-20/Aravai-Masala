@@ -183,7 +183,7 @@ export default function IngredientListScreen() {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: COLORS.bg }} contentContainerStyle={{ paddingHorizontal: pad, paddingTop: 18, paddingBottom: 60 }} keyboardShouldPersistTaps="handled">
-      <Container maxWidth={1280}>
+      <Container>
         <View style={s.toolbar}>
           <View style={s.searchBox}>
             <MCI name="magnify" size={19} color={COLORS.grey} />

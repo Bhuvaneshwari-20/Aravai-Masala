@@ -441,7 +441,7 @@ const s = StyleSheet.create({
   softBtnText: { marginLeft: 5, fontSize: 13, fontWeight: '800' },
   table: { borderWidth: 1, borderColor: COLORS.border, borderRadius: 12, overflow: 'hidden' },
   trHead: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.greyBg, paddingVertical: 9, paddingHorizontal: 12 },
-  th: { fontSize: 11, fontWeight: '900', letterSpacing: 0.6, color: COLORS.grey },
+  th: { fontSize: 13, fontWeight: '800', color: COLORS.text },
   tr: { flexDirection: 'row', alignItems: 'center', paddingVertical: 13, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: COLORS.line },
   td: { fontSize: 14, fontWeight: '700', color: COLORS.text },
   tapHint: { fontSize: 10, fontWeight: '600', color: COLORS.grey, marginTop: 3 },
