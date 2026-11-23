@@ -4,6 +4,7 @@ import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Container from './Container';
+import { NotificationBell } from './NotificationCenter';
 import useLayout from '../hooks/useLayout';
 import { COLORS, SHADOW } from '../theme';
 
@@ -41,10 +42,12 @@ export default function PageToolbar({ icon, title, count, noun, subtitle, desc, 
           <LinearGradient colors={['#5E0A15', '#8A1020F2', '#8A102099', '#8A102000']} locations={[0, 0.45, 0.72, 1]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
             style={[StyleSheet.absoluteFill, { borderRadius: 20 }]} />
           <View style={[s.heroIcon, isPhone && { width: 44, height: 44, borderRadius: 13 }]}><MCI name={icon} size={isPhone ? 24 : 30} color="#fff" /></View>
-          <View style={{ flexShrink: 1, minWidth: 0 }}>
+          <View style={{ flex: 1, minWidth: 0, paddingRight: 52 }}>
             <Text style={[s.heroTitle, isPhone && { fontSize: 19 }]} numberOfLines={1}>{title}</Text>
             <Text style={s.heroSub} numberOfLines={2}>{sub}</Text>
           </View>
+          {/* notification bell lives in the banner, so it scrolls / sits with the header and never floats over the content */}
+          <View style={[s.heroBell, isPhone && { top: 10, right: 10 }]}><NotificationBell tone="dark" /></View>
         </ImageBackground>
 
         {/* KPI chips passed by the screen */}
@@ -63,6 +66,7 @@ export default function PageToolbar({ icon, title, count, noun, subtitle, desc, 
 const s = StyleSheet.create({
   bar: { paddingTop: 14, paddingBottom: 6 },
   hero: { flexDirection: 'row', alignItems: 'center', minHeight: 104, borderRadius: 20, padding: 20, overflow: 'hidden', backgroundColor: MAROON },
+  heroBell: { position: 'absolute', top: 14, right: 14, zIndex: 5 },
   heroIcon: { width: 56, height: 56, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.16)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.28)', alignItems: 'center', justifyContent: 'center', marginRight: 16 },
   heroTitle: { color: '#fff', fontSize: 26, fontWeight: '900', letterSpacing: -0.2 },
   heroSub: { color: 'rgba(255,255,255,0.88)', fontSize: 13, fontWeight: '600', marginTop: 3 },

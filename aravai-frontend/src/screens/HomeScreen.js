@@ -16,6 +16,7 @@ import { ICON } from '../icons';
 import useLayout from '../hooks/useLayout';
 import FadeIn from '../components/FadeIn';
 import FeatureCard from '../components/FeatureCard';
+import { NotificationBell } from '../components/NotificationCenter';
 
 // ---- assets (copy the "assets" folder into your project) ----
 const BANNER = require('../../assets/banner-spices.jpg');
@@ -88,7 +89,7 @@ function Donut({ data, size = 150, stroke = 24, title, sub }) {
             <Circle
               key={n} cx={size / 2} cy={size / 2} r={r} stroke={col} strokeWidth={stroke} fill="none"
               strokeDasharray={`${Math.max(len - 2, 0)} ${circ}`} strokeDashoffset={-acc}
-              rotation={-90} origin={`${size / 2}, ${size / 2}`}
+              transform={`rotate(-90 ${size / 2} ${size / 2})`}
             />
           ) : null;
           acc += len;
@@ -193,7 +194,8 @@ export default function HomeScreen({ navigation }) {
               </View>
             )}
             <View style={{ flex: 1 }} />
-            <View style={s.bell}><MCI name="bell-outline" size={20} color={C.ink} /><View style={s.dot} /></View>
+            {/* notification bell sits in the top bar (scrolls with it), logout stays next to it */}
+            <View style={{ marginRight: 10 }}><NotificationBell /></View>
             <Pressable style={s.user} onPress={logout} accessibilityLabel="Logout">
               <View style={s.avatar}><MCI name="account" size={18} color="#fff" /></View>
               {!isPhone && <Text style={s.userName}>{first}</Text>}

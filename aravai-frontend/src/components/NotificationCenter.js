@@ -3,6 +3,7 @@ import { View, Pressable, ScrollView, StyleSheet, AppState, Platform } from 'rea
 import { Text, Portal, Button, Switch } from 'react-native-paper';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useIsFocused } from '@react-navigation/native';
 import api, { errMsg, getToken } from '../api';
 import { API_URL } from '../config';
 import { onPush } from '../pushNotifications';
@@ -33,6 +34,41 @@ const ago = (sec) => {
   return `${Math.floor(s / 86400)} d ago`;
 };
 
+// ---- shared bell state -------------------------------------------------------------------------------------------
+// The bell button can sit INSIDE a screen's own header (<NotificationBell />: Home top bar, page banner), so it scrolls away with that
+// header. Only a screen that has no bell of its own gets the small floating bell in the corner (fallback).
+const store = { state: { open: false, unread: 0, enabled: true, inline: 0 }, subs: new Set(), reload: null };
+const setStore = (patch) => { store.state = { ...store.state, ...patch }; store.subs.forEach((f) => f()); };
+function useStore() {
+  const [, force] = useState(0);
+  useEffect(() => { const f = () => force((n) => n + 1); store.subs.add(f); return () => { store.subs.delete(f); }; }, []);
+  return store.state;
+}
+
+function BellButton({ unread, enabled, tone, onPress }) {
+  const dark = tone === 'dark'; // on the maroon page banner: translucent white button
+  return (
+    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={`Notifications${unread ? `, ${unread} unread` : ''}`}
+      style={({ hovered }) => [s.bell, dark && s.bellDark, hovered && { backgroundColor: dark ? 'rgba(255,255,255,0.3)' : COLORS.primarySoft }]}>
+      <MCI name={unread ? 'bell-ring' : 'bell-outline'} size={22} color={dark ? '#fff' : unread ? COLORS.primary : COLORS.textSoft} />
+      {unread > 0 && enabled && <View style={s.badge}><Text style={s.badgeText}>{unread > 99 ? '99+' : unread}</Text></View>}
+    </Pressable>
+  );
+}
+
+// Put this inside any header. tone="dark" for a dark / maroon background.
+export function NotificationBell({ tone = 'light' }) {
+  const focused = useIsFocused();
+  const st = useStore();
+  useEffect(() => {
+    if (!focused) return undefined;
+    setStore({ inline: store.state.inline + 1 });
+    return () => setStore({ inline: Math.max(store.state.inline - 1, 0) });
+  }, [focused]);
+  return <BellButton unread={st.unread} enabled={st.enabled} tone={tone}
+    onPress={() => { setStore({ open: !store.state.open }); if (store.reload) store.reload(); }} />;
+}
+
 function Banner({ n, onOpen, onClose }) {
   const sev = SEV[n.severity] || SEV.info;
   useEffect(() => { const t = setTimeout(onClose, BANNER_MS); return () => clearTimeout(t); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -53,7 +89,8 @@ export default function NotificationCenter({ navRef, route }) {
   const { isWide, height } = useLayout();
   const [items, setItems] = useState([]);
   const [unread, setUnread] = useState(0);
-  const [open, setOpen] = useState(false);
+  const { open, inline } = useStore();
+  const setOpen = useCallback((v) => setStore({ open: typeof v === 'function' ? v(store.state.open) : v }), []);
   const [popups, setPopups] = useState([]);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushMsg, setPushMsg] = useState('');       // only errors of the test push
@@ -79,6 +116,8 @@ export default function NotificationCenter({ navRef, route }) {
     } catch (e) { /* offline: the next check tries again */ }
   }, []);
 
+  useEffect(() => { store.reload = load; return () => { store.reload = null; }; }, [load]);
+  useEffect(() => { setStore({ unread, enabled: settings.web_enabled !== false }); }, [unread, settings.web_enabled]);
   useEffect(() => { load(); const t = setInterval(load, POLL_MS); return () => clearInterval(t); }, [load]);
   useEffect(() => {
     const sub = AppState.addEventListener('change', (st) => { if (st === 'active') load(); });
@@ -178,13 +217,11 @@ export default function NotificationCenter({ navRef, route }) {
 
   return (
     <>
-      <View style={[s.bellWrap, { top: insets.top + 8, right: bellRight }]} pointerEvents="box-none">
-        <Pressable onPress={() => { setOpen((o) => !o); load(); }} accessibilityRole="button" accessibilityLabel={`Notifications${unread ? `, ${unread} unread` : ''}`}
-          style={({ hovered }) => [s.bell, hovered && { backgroundColor: COLORS.primarySoft }]}>
-          <MCI name={unread ? 'bell-ring' : 'bell-outline'} size={22} color={unread ? COLORS.primary : COLORS.textSoft} />
-          {unread > 0 && settings.web_enabled !== false && <View style={s.badge}><Text style={s.badgeText}>{unread > 99 ? '99+' : unread}</Text></View>}
-        </Pressable>
-      </View>
+      {inline === 0 && (
+        <View style={[s.bellWrap, { top: insets.top + 8, right: bellRight }]} pointerEvents="box-none">
+          <BellButton unread={unread} enabled={settings.web_enabled !== false} onPress={() => { setOpen((o) => !o); load(); }} />
+        </View>
+      )}
 
       {!open && popups.length > 0 && (
         <View style={[s.stack, { top: panelTop }, isWide ? { right: 16, width: 400 } : { left: 8, right: 8 }]} pointerEvents="box-none">
@@ -260,6 +297,7 @@ const s = StyleSheet.create({
   bellWrap: { position: 'absolute', zIndex: 60 },
   bell: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#fff', borderWidth: 1.5, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 3 },
+  bellDark: { backgroundColor: 'rgba(255,255,255,0.18)', borderColor: 'rgba(255,255,255,0.35)', shadowOpacity: 0, elevation: 0 },
   badge: { position: 'absolute', top: -5, right: -5, minWidth: 20, height: 20, borderRadius: 10, backgroundColor: COLORS.danger, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5, borderWidth: 2, borderColor: '#fff' },
   badgeText: { color: '#fff', fontSize: 10.5, fontWeight: '900' },
   stack: { position: 'absolute', zIndex: 59 },
