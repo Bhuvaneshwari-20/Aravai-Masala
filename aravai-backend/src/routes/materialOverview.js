@@ -6,6 +6,7 @@ const { authenticate, authorize } = require('../middleware/auth');
 router.use(authenticate);
 router.get('/summary', authorize('material', 'view'), c.summary);
 router.get('/materials/:id', authorize('material', 'view'), c.materialTrace);
+router.get('/transactions', authorize('material', 'view'), c.transactions);
 router.get('/batches', authorize('material', 'view'), c.batches);
 router.get('/batches/:id', authorize('material', 'view'), c.batchTrace);
 module.exports = router;

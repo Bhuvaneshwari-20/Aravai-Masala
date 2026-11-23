@@ -28,6 +28,38 @@ async function summary(q) {
   if (search) { where += ' AND (m.material_name LIKE ? OR m.material_code LIKE ?)'; args.push(`%${search}%`, `%${search}%`); }
   if (v.clean(q.category_id)) { where += ' AND m.category_id = ?'; args.push(v.toId(q.category_id, 'category')); }
 
+
+    // ---- Stock tracking figures per material (Stock In / Stock Out / Transactions in the chosen period) ----
+  // optional ?from=YYYY-MM-DD ; no 'from' = all time. Opening = current - in + out, so Opening + In - Out = Current always.
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(q.from || '')) ? String(q.from) : null;
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(String(q.to || '')) ? String(q.to) : null;
+  const mvWhere = [from && 'txn_date >= ?', to && 'txn_date < DATE_ADD(?, INTERVAL 1 DAY)'].filter(Boolean);
+  const mvArgs = [from, to].filter(Boolean);
+  const [mvRows] = await pool.query(
+    `SELECT material_id,
+            COALESCE(SUM(CASE WHEN txn_type <> 'OPENING' THEN inward_qty ELSE 0 END), 0) AS total_in,
+            COALESCE(SUM(despatch_qty), 0) AS total_out,
+            COUNT(*) AS txn_count,
+            MAX(CASE WHEN txn_type <> 'OPENING' AND inward_qty > 0 THEN txn_date END) AS last_in,
+            MAX(CASE WHEN despatch_qty > 0 THEN txn_date END) AS last_out
+       FROM material_stock_transactions
+      ${mvWhere.length ? `WHERE ${mvWhere.join(' AND ')}` : ''}
+      GROUP BY material_id`, mvArgs);
+  const mvMap = new Map(mvRows.map((x) => [x.material_id, x]));
+
+
+  
+  // this month vs last month, for the "% vs last month" on the KPI cards (ignores the From / To filter)
+  const mStart = "DATE_FORMAT(CURDATE(), '%Y-%m-01')";
+  const [trRows] = await pool.query(
+    `SELECT material_id,
+            SUM(CASE WHEN txn_type <> 'OPENING' AND txn_date >= ${mStart} THEN inward_qty ELSE 0 END) AS in_cur,
+            SUM(CASE WHEN txn_date >= ${mStart} THEN despatch_qty ELSE 0 END) AS out_cur,
+            SUM(CASE WHEN txn_type <> 'OPENING' AND txn_date >= DATE_SUB(${mStart}, INTERVAL 1 MONTH) AND txn_date < ${mStart} THEN inward_qty ELSE 0 END) AS in_prev,
+            SUM(CASE WHEN txn_date >= DATE_SUB(${mStart}, INTERVAL 1 MONTH) AND txn_date < ${mStart} THEN despatch_qty ELSE 0 END) AS out_prev
+       FROM material_stock_transactions GROUP BY material_id`);
+  const trMap = new Map(trRows.map((x) => [x.material_id, x]));
+
   const [rows] = await pool.query(
     `SELECT m.id, m.material_code, m.material_name, m.unit, m.current_stock, ${lowLevelSql('m')} AS minimum_stock, c.category_name,
             COALESCE(u.used_month, 0) AS used_month, COALESCE(u.used_30, 0) AS used_30,
@@ -55,11 +87,22 @@ async function summary(q) {
     if (stock <= 0) state = 'OUT';
     else if (stock <= min) state = 'LOW';
     else if (days !== null && days <= SOON_DAYS) state = 'SOON';
-    return {
+        const mv = mvMap.get(r.id) || {};
+            const tr = trMap.get(r.id) || {};
+
+    const tin = num(mv.total_in);
+    const tout = num(mv.total_out);
+
+     return {
       id: r.id, material_code: r.material_code, material_name: r.material_name, category_name: r.category_name, unit: r.unit,
       current_stock: stock, minimum_stock: min, is_low: stock <= min, state,
       used_month: r3(num(r.used_month)), days_of_stock: days,
       roast_loss_pct: num(r.roast_in) > 0 ? r2((num(r.roast_waste) / num(r.roast_in)) * 100) : null,
+      total_in: r3(tin), total_out: r3(tout), txn_count: num(mv.txn_count), opening_stock: r3(stock - tin + tout),
+            last_in_date: mv.last_in || null, last_out_date: mv.last_out || null,
+
+                  in_cur: r3(num(tr.in_cur)), out_cur: r3(num(tr.out_cur)), in_prev: r3(num(tr.in_prev)), out_prev: r3(num(tr.out_prev)),
+
     };
   });
 
@@ -71,6 +114,15 @@ async function summary(q) {
     used_month_kg: r3(items.filter((i) => String(i.unit).toUpperCase() === 'KG').reduce((a, i) => a + i.used_month, 0)),
     soon_days: SOON_DAYS,
   };
+
+    const toKg = (i, q) => (String(i.unit).toUpperCase() === 'GRAM' ? q / 1000 : String(i.unit).toUpperCase() === 'KG' ? q : 0);
+  summaryCards.stock_kg = r3(items.reduce((a, i) => a + toKg(i, i.current_stock), 0));
+  summaryCards.in_kg = r3(items.reduce((a, i) => a + toKg(i, i.total_in), 0));
+  summaryCards.out_kg = r3(items.reduce((a, i) => a + toKg(i, i.total_out), 0));
+  summaryCards.txn_total = items.reduce((a, i) => a + i.txn_count, 0);
+
+    ['in_cur', 'out_cur', 'in_prev', 'out_prev'].forEach((k) => { summaryCards[`${k}_kg`] = r3(items.reduce((a, i) => a + toKg(i, i[k]), 0)); });
+
   const f = String(q.filter || '').toUpperCase();
   const shown = f === 'LOW' ? items.filter((i) => i.state === 'LOW' || i.state === 'OUT')
     : f === 'OUT' ? items.filter((i) => i.state === 'OUT')
@@ -105,13 +157,24 @@ async function materialTrace(idRaw) {
 
   const [ledger] = await pool.query(
     `SELECT t.id, t.txn_date, t.txn_type, t.issue_type, t.inward_qty, t.despatch_qty, t.closing_stock, t.purpose, t.grn_no,
-            t.agency_supplier, t.reference_no, tb.id AS batch_id, tb.batch_no
+            t.agency_supplier, t.reference_no, tb.id AS batch_id, tb.batch_no, tp.product_name
        FROM material_stock_transactions t ${TXN_BATCH_JOIN}
+       LEFT JOIN product_master tp ON tp.id = tb.product_id
       WHERE t.material_id = ? ORDER BY t.txn_date DESC, t.id DESC LIMIT 100`, [id]);
-
   const [[tot]] = await pool.query(
     `SELECT COALESCE(SUM(inward_qty),0) AS received,
             COALESCE(SUM(CASE WHEN txn_type = 'ISSUE' AND COALESCE(issue_type,'') <> 'RETURN_TO_VENDOR' THEN despatch_qty ELSE 0 END),0) AS issued
+       FROM material_stock_transactions WHERE material_id = ?`, [id]);
+
+
+         // balance before the first ledger entry (opening stock) + a breakdown so the page always adds up
+  const [[first]] = await pool.query(
+    'SELECT opening_stock FROM material_stock_transactions WHERE material_id = ? ORDER BY id ASC LIMIT 1', [id]);
+  const [[mv]] = await pool.query(
+    `SELECT COALESCE(SUM(CASE WHEN txn_type = 'INWARD' THEN inward_qty END),0) AS received_qty,
+            COALESCE(SUM(CASE WHEN txn_type = 'ADJUSTMENT_IN' THEN inward_qty END),0) AS correction_in,
+            COALESCE(SUM(CASE WHEN txn_type = 'ADJUSTMENT_OUT' THEN despatch_qty END),0) AS correction_out,
+            COALESCE(SUM(CASE WHEN txn_type = 'ISSUE' AND issue_type = 'RETURN_TO_VENDOR' THEN despatch_qty END),0) AS returned_qty
        FROM material_stock_transactions WHERE material_id = ?`, [id]);
 
   const lossPct = num(rt.input) > 0 ? r2((num(rt.waste) / num(rt.input)) * 100) : null;
@@ -120,7 +183,8 @@ async function materialTrace(idRaw) {
     totals: {
       batch_count: batches.length, used_in_batches_kg: r3(batches.reduce((a, b) => a + num(b.qty), 0)),
       received: r3(num(tot.received)), issued: r3(num(tot.issued)),
-      roast_entries: rt.n, roast_input_kg: r3(num(rt.input)), roast_loss_kg: r3(num(rt.waste)), roast_loss_pct: lossPct,
+      opening_balance: r3(num(first && first.opening_stock)), received_qty: r3(num(mv.received_qty)),
+      correction_in: r3(num(mv.correction_in)), correction_out: r3(num(mv.correction_out)), returned_qty: r3(num(mv.returned_qty)),      roast_entries: rt.n, roast_input_kg: r3(num(rt.input)), roast_loss_kg: r3(num(rt.waste)), roast_loss_pct: lossPct,
       roast_loss_limit: ROAST_LOSS_ALERT, roast_loss_alert: lossPct !== null && lossPct > ROAST_LOSS_ALERT,
     },
     batches: batches.map((b) => ({ ...b, qty: r3(num(b.qty)) })),
@@ -216,4 +280,29 @@ async function batchTrace(idRaw) {
   };
 }
 
-module.exports = { summary, materialTrace, batches, batchTrace };
+
+/* ------------------------------------------------------------ transactions */
+// Stock In / Stock Out history across ALL materials (latest 1000). type = IN | OUT, optional from=YYYY-MM-DD, search = name / code
+async function transactions(q) {
+  const dir = String(q.type || '').toUpperCase() === 'OUT' ? 'OUT' : 'IN';
+  const search = v.clean(q.search);
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(q.from || '')) ? String(q.from) : null;
+  const args = [];
+  let where = dir === 'IN' ? "WHERE t.inward_qty > 0 AND t.txn_type <> 'OPENING'" : 'WHERE t.despatch_qty > 0';
+  if (from) { where += ' AND t.txn_date >= ?'; args.push(from); }
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(String(q.to || '')) ? String(q.to) : null;
+  if (to) { where += ' AND t.txn_date < DATE_ADD(?, INTERVAL 1 DAY)'; args.push(to); }
+  if (search) { where += ' AND (m.material_name LIKE ? OR m.material_code LIKE ?)'; args.push(`%${search}%`, `%${search}%`); }
+  const [rows] = await pool.query(
+    `SELECT t.id, t.txn_date, t.txn_type, t.issue_type, t.inward_qty, t.despatch_qty, t.closing_stock, t.purpose, t.grn_no,
+            t.agency_supplier, t.reference_no, m.material_name, m.material_code, m.unit, tb.batch_no, tp.product_name
+       FROM material_stock_transactions t
+       JOIN materials m ON m.id = t.material_id
+       ${TXN_BATCH_JOIN}
+       LEFT JOIN product_master tp ON tp.id = tb.product_id
+       ${where} ORDER BY t.txn_date DESC, t.id DESC LIMIT 1000`, args);
+  return { items: rows.map((r) => ({ ...r, inward_qty: num(r.inward_qty), despatch_qty: num(r.despatch_qty), closing_stock: num(r.closing_stock) })) };
+}
+
+module.exports = { summary, materialTrace, batches, batchTrace, transactions };
+

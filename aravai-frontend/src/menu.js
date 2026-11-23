@@ -22,8 +22,9 @@ export const MENU = [
 // Home screen sections (order matters)
 export const GROUPS = [
   { title: 'Masters', icon: 'database', color: '#C62828', modules: ['material', 'recipe'] },
-  { title: 'Factory Administration', icon: 'domain', color: '#0F766E', modules: ['vendor', 'product', 'machine'] },
   { title: 'Production', icon: 'factory', color: '#D97706', modules: ['batching', 'filtering', 'roasting', 'grinding', 'blending', 'packing'] },
+    { title: 'Factory Administration', icon: 'domain', color: '#0F766E', modules: ['vendor', 'product', 'machine'] },
+
   { title: 'Stock & Tracking', icon: 'chart-box', color: '#6D28D9', modules: ['stock', 'tracking', 'finished_goods', 'reports'] },
   { title: 'Admin', icon: 'shield-account', color: '#BE185D', modules: ['users'] },
 ];

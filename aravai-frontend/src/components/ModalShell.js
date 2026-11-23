@@ -3,21 +3,20 @@ import { View, ScrollView, Pressable, StyleSheet, KeyboardAvoidingView, Platform
 import { Text, Portal } from 'react-native-paper';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import useLayout from '../hooks/useLayout';
+import useLayout, { SIDEBAR_W } from '../hooks/useLayout';
 import { COLORS, SHADOW } from '../theme';
 
 // Shared popup. Desktop = centred dialog, phone = bottom sheet with grab handle.
 // `color` tints the header icon tile (same prop as before, so existing forms keep working).
 export default function ModalShell({ visible, onDismiss, title, subtitle, icon = 'package-variant', color = COLORS.primary,
-  maxWidth = 600, busy, footer, noPad, children }) {
-  const { isPhone } = useLayout();
+  maxWidth = 600, centerInContent, busy, footer, noPad, children }) {
+  const { isPhone, isWide } = useLayout();
   const insets = useSafeAreaInsets();
   if (!visible) return null;
   const tint = color === COLORS.primaryDark ? COLORS.primary : color;
   return (
     <Portal>
-      <KeyboardAvoidingView style={[s.overlay, isPhone && s.overlayPhone]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <Pressable style={s.backdrop} onPress={busy ? undefined : onDismiss} />
+      <KeyboardAvoidingView style={[s.overlay, isPhone && s.overlayPhone, centerInContent && isWide && {  paddingLeft: 16 + SIDEBAR_W * 0.5 }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>        <Pressable style={s.backdrop} onPress={busy ? undefined : onDismiss} />
         <View style={[s.card, SHADOW.lg, { maxWidth }, isPhone && s.cardPhone]}>
           {isPhone && <View style={s.grab}><View style={s.grabBar} /></View>}
           <View style={s.head}>

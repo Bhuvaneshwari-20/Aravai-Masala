@@ -19,7 +19,7 @@ import FeatureCard from '../components/FeatureCard';
 import { NotificationBell } from '../components/NotificationCenter';
 
 // ---- assets (copy the "assets" folder into your project) ----
-const BANNER = require('../../assets/banner-spices.jpg');
+const BANNER = require('../../assets/banner-wide.jpg');
 const LOGO = require('../../assets/chilli-logo.png');
 
 const C = {
@@ -104,6 +104,29 @@ function Donut({ data, size = 150, stroke = 24, title, sub }) {
   );
 }
 
+const cap = (t) => String(t || '').toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
+
+const BATCH_PILL = {
+  IN_PROGRESS: { bg: '#FFF1C2', fg: '#B7791F' },
+  COMPLETED:   { bg: '#DDF5E6', fg: '#2E9E5B' },
+  ON_HOLD:     { bg: '#FDE2E2', fg: '#D93B3B' },
+  OPEN:        { bg: '#EEE8E2', fg: '#8B7B76' },
+};
+const STOCK_PILL = {
+  OK:   { t: 'In Stock',     bg: '#DDF5E6', fg: '#2E9E5B' },
+  SOON: { t: 'Low Stock',    bg: '#FFF1C2', fg: '#B7791F' },
+  LOW:  { t: 'Low Stock',    bg: '#FFF1C2', fg: '#B7791F' },
+  OUT:  { t: 'Out of Stock', bg: '#FDE2E2', fg: '#D93B3B' },
+};
+
+function Pill({ text, bg, fg }) {
+  return (
+    <View style={[s.statusPill, { backgroundColor: bg }]}>
+      <Text style={[s.statusText, { color: fg }]} numberOfLines={1}>{text}</Text>
+    </View>
+  );
+}
+
 export default function HomeScreen({ navigation }) {
   const { user, logout, can } = useAuth();
   const { toast } = useUi();
@@ -119,12 +142,18 @@ export default function HomeScreen({ navigation }) {
     const job = (key, p) => p.then((val) => { if (on) setD((prev) => ({ ...prev, [key]: val })); }).catch(() => {});
     if (can('material', 'view')) {
       job('materials', total('/materials'));
-      job('stockKg', api.get('/material-overview/summary').then((r) => sumKg(r.data.data.items || [])));
+      api.get('/material-overview/summary')
+        .then((r) => {
+          const items = r.data.data.items || [];
+          if (on) setD((p) => ({ ...p, stockKg: sumKg(items), mats: items }));
+        })
+        .catch(() => {});
     }
     if (can('vendor', 'view')) job('vendors', total('/vendors'));
     if (can('recipe', 'view')) job('recipes', total('/recipes', { active: 'true' }));
     if (can('product', 'view')) job('products', total('/products'));
     if (can('batching', 'view')) {
+      job('recent', api.get('/batches', { params: { limit: 3 } }).then((r) => r.data.data.items || []));
       job('inProgress', total('/batches', { status: 'IN_PROGRESS' }));
       job('completed', total('/batches', { status: 'COMPLETED' }));
       job('hold', total('/batches', { status: 'ON_HOLD' }));
@@ -205,37 +234,24 @@ export default function HomeScreen({ navigation }) {
 
           {/* welcome banner */}
           <FadeIn from={10}>
-            <ImageBackground source={BANNER} resizeMode="cover" style={[s.banner, { height: isPhone ? 130 : 150 }]} imageStyle={{ borderRadius: 20 }}>
+            <View style={[s.banner, { height: isPhone ? 130 : 150 }]}>
+              <Image source={BANNER} resizeMode="cover" style={[s.bannerImg, { width: isPhone ? '65%' : '62%' }]} />
               <LinearGradient
-                colors={['#FBF1E4', '#FBF1E4F0', '#FBF1E400']}
-                locations={[0, 0.4, 0.72]}
+                colors={['#FBF1E4', '#FBF1E400']}
+                locations={[0, 0.3]}
                 start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                style={[StyleSheet.absoluteFill, { borderRadius: 20 }]}
+                style={[s.bannerImg, { width: isPhone ? '65%' : '62%' }]}
               />
-              <View style={{ flexDirection: 'row', alignItems: 'center', maxWidth: isPhone ? '88%' : '62%' }}>
-                <View style={[s.bannerIcon, isPhone && { width: 52, height: 52 }]}><MCI name="cog-outline" size={isPhone ? 28 : 38} color="#fff" /></View>
-                <View style={{ flexShrink: 1 }}>
-                  <Text style={[s.welcome, isPhone && { fontSize: 17 }]}>Welcome to</Text>
-                  <Text style={[s.welcomeBrand, isPhone && { fontSize: 22 }]}>ARAVAI MASALA</Text>
-                  <Text style={s.welcomeSub}>Manufacturing & Production Management</Text>
-                </View>
+              <View style={{ maxWidth: isPhone ? '60%' : '45%' }}>
+                <Text style={[s.welcome, isPhone && { fontSize: 17 }]}>Welcome to</Text>
+                <Text style={[s.welcomeBrand, isPhone && { fontSize: 22 }]}>ARAVAI MASALA</Text>
+                <Text style={[s.welcomeSub, isPhone && { fontSize: 11 }]}>Manufacturing & Production Management</Text>
+                <View style={s.swoosh} />
               </View>
-            </ImageBackground>
+            </View>
           </FadeIn>
 
           {/* KPI row */}
-          <View style={s.kpiRow}>
-            {[
-              ['cube-outline', '#2E9E5B', 'Material Stock', dash(d.stockKg, (x) => `${num(x)} kg`), null],
-              ['book-open-variant', '#7B4BD6', 'Active Recipes', recipesValue, null],
-              ['layers-triple-outline', '#E8942A', 'Batches in Process', dash(d.inProgress), null],
-              ['warehouse', '#2F80ED', 'Finished Stock', DEMO.finishedKg, DEMO.finishedDelta],
-            ].map(([icon, tint, label, value, delta]) => (
-              <View key={label} style={{ width: isPhone ? '50%' : '25%', padding: 5 }}>
-                <Kpi icon={icon} tint={tint} label={label} value={value} delta={delta} />
-              </View>
-            ))}
-          </View>
 
           {/* production flow */}
           <Card>
@@ -253,50 +269,55 @@ export default function HomeScreen({ navigation }) {
             </ScrollView>
           </Card>
 
-          {/* trend + batch status */}
+          {/* recent batches + material stock */}
           <View style={{ flexDirection: row, marginHorizontal: -6 }}>
-            <Card style={[s.col, { flex: isWide ? 1.5 : undefined }]}>
-              <CardTitle icon="chart-bar" title="Production Trend (Last 7 Days)" />
-              <View style={{ flexDirection: 'row', marginTop: 6 }}>
-                <View style={{ height: CH + 12, marginTop: -6, justifyContent: 'space-between', marginRight: 8 }}>
-                  {ticks.map((t) => <Text key={t} style={s.yLabel}>{num(t)} kg</Text>)}
-                </View>
-                <View style={{ flex: 1 }}>
-                  <View style={{ height: CH }}>
-                    {ticks.map((t, i) => <View key={t} style={[s.gridLine, { top: (i / (ticks.length - 1)) * CH }]} />)}
-                    <View style={s.bars}>
-                      {DEMO.trend.map(([dt, val], i) => (
-                        <View key={dt} style={s.barCol}>
-                          {i === last && <View style={s.tip}><Text style={s.tipText}>{num(val)} kg</Text></View>}
-                          <LinearGradient colors={['#C42B3B', '#F6A9B0']} style={[s.bar, { height: Math.max(8, (val / niceMax) * CH) }]} />
-                        </View>
-                      ))}
-                    </View>
-                  </View>
-                  <View style={{ flexDirection: 'row', marginTop: 4 }}>
-                    {DEMO.trend.map(([dt]) => (
-                      <Text key={dt} style={s.barLabel} numberOfLines={1}>{isPhone ? dt.slice(0, 2) : dt}</Text>
-                    ))}
-                  </View>
-                </View>
+            <Card style={[s.col, { flex: isWide ? 1.2 : undefined }]}>
+              <CardTitle icon="package-variant-closed" title="Recent Batches" />
+              <View style={s.thead}>
+                <Text style={[s.th, { flex: 1.3 }]}>Batch No.</Text>
+                <Text style={[s.th, { flex: 1.3 }]}>Product</Text>
+                <Text style={[s.th, { flex: 0.8, textAlign: 'right' }]}>Qty</Text>
+                <Text style={[s.th, { flex: 1, textAlign: 'center' }]}>Stage</Text>
+                <Text style={[s.th, { flex: 1.1, textAlign: 'center' }]}>Status</Text>
               </View>
+              {(d.recent || []).map((b) => {
+                const p = BATCH_PILL[b.status] || BATCH_PILL.OPEN;
+                return (
+                  <View key={b.id} style={s.trow}>
+                    <Text style={[s.td, { flex: 1.3 }]} numberOfLines={1}>{b.batch_no}</Text>
+                    <Text style={[s.td, { flex: 1.3 }]} numberOfLines={1}>{b.product_name}</Text>
+                    <Text style={[s.td, { flex: 0.8, textAlign: 'right' }]}>{num(Number(b.planned_qty_kg))} kg</Text>
+                    <Text style={[s.td, { flex: 1, textAlign: 'center' }]} numberOfLines={1}>{cap(b.current_stage)}</Text>
+                    <View style={{ flex: 1.1, alignItems: 'center' }}><Pill text={cap(b.status)} bg={p.bg} fg={p.fg} /></View>
+                  </View>
+                );
+              })}
+              {d.recent && !d.recent.length ? <Text style={s.empty}>No batches yet</Text> : null}
             </Card>
 
             <Card style={[s.col, { flex: isWide ? 1 : undefined }]}>
-              <CardTitle icon="chart-donut" title="Batch Status" />
-              <View style={s.donutRow}>
-                <Donut data={status} title={d.inProgress === undefined && d.completed === undefined ? '—' : String(batchTotal)} sub="Batches" />
-                <View style={{ flex: 1, minWidth: 130, marginLeft: 16 }}>
-                  {status.map(([n, val, col]) => (
-                    <View key={n} style={s.legend}>
-                      <View style={[s.legendDot, { backgroundColor: col }]} />
-                      <Text style={s.legendText}>{n}</Text>
-                      <View style={{ flex: 1 }} />
-                      <Text style={s.legendPct}>{val}</Text>
-                    </View>
-                  ))}
-                </View>
+              <CardTitle icon="cube-outline" title="Material Stock (Key Items)" />
+              <View style={s.thead}>
+                <Text style={[s.th, { flex: 1.3 }]}>Material</Text>
+                <Text style={[s.th, { flex: 1.2, textAlign: 'right' }]}>Available Qty</Text>
+                <Text style={[s.th, { flex: 0.6, textAlign: 'center' }]}>Unit</Text>
+                <Text style={[s.th, { flex: 1.2, textAlign: 'center' }]}>Status</Text>
               </View>
+              {[...(d.mats || [])]
+                .sort((a, b) => ['OUT', 'LOW', 'SOON', 'OK'].indexOf(a.state) - ['OUT', 'LOW', 'SOON', 'OK'].indexOf(b.state))
+                .slice(0, 4)
+                .map((m) => {
+                  const p = STOCK_PILL[m.state] || STOCK_PILL.OK;
+                  return (
+                    <View key={m.id} style={s.trow}>
+                      <Text style={[s.td, { flex: 1.3 }]} numberOfLines={1}>{m.material_name}</Text>
+                      <Text style={[s.td, { flex: 1.2, textAlign: 'right', fontWeight: '800' }]}>{Number(m.current_stock).toFixed(2)}</Text>
+                      <Text style={[s.td, { flex: 0.6, textAlign: 'center' }]}>{String(m.unit).toLowerCase()}</Text>
+                      <View style={{ flex: 1.2, alignItems: 'center' }}><Pill text={p.t} bg={p.bg} fg={p.fg} /></View>
+                    </View>
+                  );
+                })}
+              {d.mats && !d.mats.length ? <Text style={s.empty}>No materials yet</Text> : null}
             </Card>
           </View>
 
@@ -337,11 +358,12 @@ const s = StyleSheet.create({
   avatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: C.maroon, alignItems: 'center', justifyContent: 'center', marginRight: 6 },
   userName: { fontWeight: '800', color: C.ink, fontSize: 13 },
 
-  banner: { alignSelf: 'stretch', width: '100%', borderRadius: 20, paddingHorizontal: 22, justifyContent: 'center', overflow: 'hidden', backgroundColor: '#FBF1E4' },
-  bannerIcon: { width: 68, height: 68, borderRadius: 18, backgroundColor: C.maroon, alignItems: 'center', justifyContent: 'center', marginRight: 16 },
-  welcome: { fontSize: 22, fontWeight: '700', color: C.ink },
-  welcomeBrand: { fontSize: 32, fontWeight: '900', color: C.maroonDark, letterSpacing: 0.5 },
-  welcomeSub: { fontSize: 13.5, color: C.ink, marginTop: 4 },
+  banner: { alignSelf: 'stretch', width: '100%', borderRadius: 20, paddingHorizontal: 24, justifyContent: 'center', overflow: 'hidden', backgroundColor: '#FBF1E4', borderWidth: 1, borderColor: C.line },
+  bannerImg: { position: 'absolute', right: 0, top: 0, bottom: 0 },
+  welcome: { fontSize: 26, fontWeight: '800', color: C.maroonDark },
+  welcomeBrand: { fontSize: 36, fontWeight: '900', color: C.maroonDark, letterSpacing: 0.5 },
+  welcomeSub: { fontSize: 14, color: C.ink, marginTop: 4, fontWeight: '600' },
+  swoosh: { width: 200, height: 12, borderRadius: 100, borderBottomWidth: 4, borderBottomColor: C.gold, marginTop: 6 },
 
   kpiRow: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -5, marginTop: 8 },
   kpi: { flexDirection: 'row', alignItems: 'center', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: C.line, ...SHADOW.md },
@@ -385,4 +407,12 @@ const s = StyleSheet.create({
   secIcon: { width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
   secTitle: { fontSize: 18, fontWeight: '900', color: C.ink, flexShrink: 1 },
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
+
+  thead: { flexDirection: 'row', backgroundColor: '#F6F1EB', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 8 },
+  th: { fontSize: 11.5, fontWeight: '800', color: C.ink },
+  trow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 8, borderBottomWidth: 1, borderBottomColor: C.line },
+  td: { fontSize: 12.5, color: C.ink, fontWeight: '600' },
+  statusPill: { borderRadius: 12, paddingHorizontal: 10, paddingVertical: 3 },
+  statusText: { fontSize: 11, fontWeight: '800' },
+  empty: { textAlign: 'center', color: C.mute, paddingVertical: 14, fontSize: 12.5 },
 });

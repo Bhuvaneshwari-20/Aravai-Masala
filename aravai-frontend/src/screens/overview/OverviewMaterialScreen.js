@@ -1,5 +1,5 @@
-import React, { useCallback, useMemo, useState } from 'react';
-import { View, ScrollView, RefreshControl, StyleSheet } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { View, ScrollView, RefreshControl, StyleSheet, TextInput, Pressable, Platform } from 'react-native';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import { Text } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
@@ -12,9 +12,17 @@ import Badge from '../../components/Badge';
 import StockBar from '../../components/StockBar';
 import FilterChips from '../../components/FilterChips';
 import useLayout from '../../hooks/useLayout';
-import { COLORS, RADIUS, SHADOW, fmt, categoryStyle } from '../../theme';
-
+import { COLORS, RADIUS, SHADOW, fmt, categoryStyle, GRADIENT } from '../../theme';
+import { LinearGradient } from 'expo-linear-gradient';
 /* ------------------------------------------------------------------ helpers */
+const FONT = 'Plus Jakarta Sans, Inter, system-ui, sans-serif';
+if (Platform.OS === 'web' && typeof document !== 'undefined' && !document.getElementById('pjs-font')) {
+  const l = document.createElement('link');
+  l.id = 'pjs-font'; l.rel = 'stylesheet';
+  l.href = 'https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap';
+  document.head.appendChild(l);
+}
+
 const num = (x) => Number(x || 0);
 const r3 = (n) => Math.round(n * 1000) / 1000;
 const EPS = 0.0005;
@@ -53,26 +61,39 @@ export function describeMove(x) {
 
 // Reference / supplier / purpose shown once each, without repeating the batch number that already has its own link
 export function moveNote(x) {
-  const parts = [x.purpose, x.batch_no ? `Batch ${x.batch_no}` : '', x.grn_no ? `GRN ${x.grn_no}` : '', x.agency_supplier, x.reference_no === x.batch_no ? '' : x.reference_no]
-    .map((p) => (p === null || p === undefined ? '' : String(p).trim())).filter(Boolean);
+  const clean = (p) => (p === null || p === undefined ? '' : String(p).trim());
+  // issued to a batch: show the product, the batch and what was done, without repeating the batch number
+  if (x.batch_no) {
+    const p = clean(x.purpose);
+    const prefix = `Batch ${x.batch_no} - `;
+    const stage = p.startsWith(prefix) ? p.slice(prefix.length) : (p === `Batch ${x.batch_no}` ? '' : p);
+    return [x.product_name ? `Product ${x.product_name}` : '', `Batch ${x.batch_no}`, stage].filter(Boolean).join(' · ');
+  }
+  const parts = [x.purpose, x.grn_no ? `GRN ${x.grn_no}` : '', x.agency_supplier, x.reference_no]
+    .map(clean).filter(Boolean);
   return [...new Set(parts)].join(' · ');
 }
 
 // Received - issued does not always equal the stock: vendor returns and stock corrections are not part of "issued".
 // The difference is worked out here so the picture always adds up to the real current stock.
 export function stockFlow(m, t) {
-  const received = num(t.received);
+  const opening = num(t.opening_balance);
+  const received = num(t.received_qty);
+  const fixIn = num(t.correction_in);
   const issued = num(t.issued);
+  const returned = num(t.returned_qty);
+  const fixOut = num(t.correction_out);
   const current = num(m.current_stock);
-  let other = r3(current - (received - issued));
-  if (Math.abs(other) < EPS) other = 0;
-  return { received, issued, current, other };
+  const totalIn = r3(opening + received + fixIn);
+  let gap = r3(current - (totalIn - issued - returned - fixOut)); // should be 0; not 0 means the stock register and history disagree
+  if (Math.abs(gap) < EPS) gap = 0;
+  return { opening, received, fixIn, issued, returned, fixOut, current, totalIn, gap };
 }
 
 /* --------------------------------------------------------------- small parts */
-function Kpi({ icon, label, value, unit, sub, tone = COLORS.text, accent, subTone }) {
+function Kpi({ icon, label, value, unit, sub, tone = COLORS.text, accent, bg, subTone }) {
   return (
-    <View style={[s.kpi, accent && { borderTopColor: accent, borderTopWidth: 3 }]}>
+    <View style={[s.kpi, accent && { borderTopColor: accent, borderTopWidth: 3 }, bg && { backgroundColor: bg, borderColor: `${accent}33` }]}>
       <View style={s.kpiTop}>
         <Text style={s.kpiLabel}>{label}</Text>
         <MCI name={icon} size={18} color={accent || COLORS.grey} />
@@ -98,33 +119,57 @@ function Note({ children }) {
 
 function Head({ cols }) {
   return (
-    <View style={s.thead}>
+    <LinearGradient colors={GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.thead}>
       {cols.map((c) => <Text key={c.key} style={[s.th, { flex: c.flex, textAlign: c.right ? 'right' : 'left' }]}>{c.label}</Text>)}
-    </View>
+    </LinearGradient>
   );
 }
 
 /* ------------------------------------------------------------------- screen */
 // One material: current stock, how it moved, which batches used it and what roasting cost
+// the old full page still works; it just uses the shared component
 export default function OverviewMaterialScreen({ route }) {
-  const { id } = route.params;
-  const { contentWidth, isPhone } = useLayout();
+  return <MaterialTrace id={route.params.id} />;
+}
+
+// embedded = shown inside a popup (the popup does the scrolling)
+export function MaterialTrace({ id, embedded }) {
+    const { contentWidth, isPhone } = useLayout();
   const wide = contentWidth >= 760;
   const [d, setD] = useState(null);
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [updated, setUpdated] = useState(null);
   const [dirFilter, setDirFilter] = useState('all');
-
+  const [search, setSearch] = useState('');
+    const [pageSize, setPageSize] = useState(10);
+  const [page, setPage] = useState(1);
+  useEffect(() => { setPage(1); }, [search, dirFilter]);   // back to page 1 when searching or switching All / In / Out
   const load = useCallback(async (refresh) => {
     if (refresh) setRefreshing(true);
     try { setD((await api.get(`/material-overview/materials/${id}`)).data.data); setError(''); setUpdated(new Date()); } catch (e) { setError(errMsg(e)); }
     setRefreshing(false);
   }, [id]);
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+    useEffect(() => { load(); }, [load]);
 
   const ledger = useMemo(() => (d ? d.ledger.map((x) => ({ x, mv: describeMove(x) })) : []), [d]);
-  const shownLedger = useMemo(() => ledger.filter((r) => dirFilter === 'all' || r.mv.dir === dirFilter), [ledger, dirFilter]);
+  const shownLedger = useMemo(() => {
+    const unit = d ? d.material.unit : '';
+    const term = search.trim().toLowerCase();
+    return ledger.filter(({ x, mv }) => {
+      if (dirFilter !== 'all' && mv.dir !== dirFilter) return false;
+      if (!term) return true;
+      const sign = mv.dir === 'in' ? '+' : mv.dir === 'out' ? '-' : '';
+      const text = [
+        niceDate(x.txn_date), String(x.txn_date).slice(0, 10),            // Date
+        mv.label,                                                         // Transaction
+        moveNote(x),                                                      // Details
+        mv.dir === 'none' ? '' : `${sign}${fmt(mv.qty)} ${unit}`, String(mv.qty),   // Quantity
+        `${fmt(x.closing_stock)} ${unit}`, String(x.closing_stock),       // Closing balance
+      ].join(' ').toLowerCase();
+      return text.includes(term);
+    });
+  }, [ledger, dirFilter, search, d]);
 
   if (error && !d) return <EmptyView error={error} onRetry={() => load()} />;
   if (!d) return <LoadingView />;
@@ -136,33 +181,69 @@ export default function OverviewMaterialScreen({ route }) {
   const low = m.current_stock <= m.minimum_stock;
   const stockColor = low ? COLORS.danger : COLORS.green;
   const flow = stockFlow(m, t);
-  const flowTotal = flow.current + flow.issued + Math.max(-flow.other, 0);
+  const outOther = r3(flow.returned + flow.fixOut);
+  const flowTotal = r3(flow.current + flow.issued + outOther);
   const segs = [
     { key: 'stock', label: 'In stock', value: flow.current, color: stockColor },
     { key: 'issued', label: 'Issued', value: flow.issued, color: COLORS.accent },
-    { key: 'other', label: 'Returns and corrections', value: Math.max(-flow.other, 0), color: COLORS.grey },
+    { key: 'other', label: 'Returned / corrected out', value: outOther, color: COLORS.grey },
   ];
   const refresh = () => load(true);
 
   /* ---- Stock history ---- */
+  const dateLabel = dirFilter === 'in' ? 'Stock in date' : dirFilter === 'out' ? 'Stock out date' : 'Date';
   const stockCols = [
-    { key: 'date', label: 'Date', flex: 1.1 }, { key: 'type', label: 'Transaction', flex: 1.7 }, { key: 'ref', label: 'Details', flex: 2.2 },
+    { key: 'date', label: dateLabel, flex: 1.3 }, { key: 'type', label: 'Transaction', flex: 1.7 }, { key: 'ref', label: 'Details', flex: 2.2 },
     { key: 'qty', label: 'Quantity', flex: 1.2, right: true }, { key: 'bal', label: 'Closing balance', flex: 1.3, right: true },
   ];
+
+    const totalPages = Math.max(Math.ceil(shownLedger.length / pageSize), 1);
+  const curPage = Math.min(page, totalPages);
+  const from = (curPage - 1) * pageSize;
+  const pageRows = shownLedger.slice(from, from + pageSize);
+  const pager = (
+    <View style={s.pager}>
+      <View style={s.pagerRow}>
+        <Text style={s.pagerText}>Show</Text>
+        <FilterChips value={pageSize} onChange={(n) => { setPageSize(n); setPage(1); }} style={{ marginHorizontal: 8 }}
+          options={[10, 25, 50, 100].map((n) => ({ value: n, label: String(n) }))} />
+        <Text style={s.pagerText}>entries</Text>
+      </View>
+      <View style={s.pagerRow}>
+        <Text style={s.pagerText}>{from + 1}-{Math.min(from + pageSize, shownLedger.length)} of {shownLedger.length}</Text>
+        <Pressable onPress={() => curPage > 1 && setPage(curPage - 1)} accessibilityLabel="Previous page" style={[s.pageBtn, curPage <= 1 && { opacity: 0.4 }]}>
+          <MCI name="chevron-left" size={20} color={COLORS.text} />
+        </Pressable>
+        <Text style={s.pagerText}>{curPage} / {totalPages}</Text>
+        <Pressable onPress={() => curPage < totalPages && setPage(curPage + 1)} accessibilityLabel="Next page" style={[s.pageBtn, curPage >= totalPages && { opacity: 0.4 }]}>
+          <MCI name="chevron-right" size={20} color={COLORS.text} />
+        </Pressable>
+      </View>
+    </View>
+  );
   const stockTab = (
     <View>
-      <View style={s.tabHead}>
-        <FilterChips value={dirFilter} onChange={setDirFilter} style={{ marginBottom: -4 }}
+       <View style={[s.tabHead, s.headRow]}>
+        <FilterChips value={dirFilter} onChange={setDirFilter} style={{ flexGrow: 1, flexBasis: 240, marginBottom: -4 }}
           options={[
             { value: 'all', label: 'All', count: ledger.length },
             { value: 'in', label: 'Stock in', count: ledger.filter((r) => r.mv.dir === 'in').length },
             { value: 'out', label: 'Stock out', count: ledger.filter((r) => r.mv.dir === 'out').length },
           ]} />
+        <View style={[s.searchBox, isPhone ? { flexBasis: '100%' } : { width: 280 }]}>
+          <MCI name="magnify" size={18} color={COLORS.grey} />
+          <TextInput value={search} onChangeText={setSearch} placeholder="Search date, details, quantity..." placeholderTextColor={COLORS.grey} style={s.searchInput} />
+          {!!search && (
+            <Pressable onPress={() => setSearch('')} accessibilityLabel="Clear search" hitSlop={8}>
+              <MCI name="close-circle" size={18} color={COLORS.grey} />
+            </Pressable>
+          )}
+        </View>
       </View>
-      {shownLedger.length === 0 ? <Empty icon="clipboard-text-outline" text={ledger.length ? 'No movements of this kind.' : 'No stock entries yet.'} /> : (
+      {shownLedger.length === 0 ? <Empty icon="clipboard-text-outline" text={ledger.length ? 'No movements match your search.' : 'No stock entries yet.'} /> : (
         <View>
           {wide && <Head cols={stockCols} />}
-          {shownLedger.map(({ x, mv }) => {
+                  {pageRows.map(({ x, mv }) => {
             const note = moveNote(x);
             const sign = mv.dir === 'in' ? '+' : mv.dir === 'out' ? '−' : '';
             const qtyColor = mv.dir === 'in' ? COLORS.ok : mv.dir === 'out' ? COLORS.danger : COLORS.grey;
@@ -202,13 +283,18 @@ export default function OverviewMaterialScreen({ route }) {
           })}
         </View>
       )}
+            {shownLedger.length > 0 && pager}
       {ledger.length >= LEDGER_LIMIT && <Note>Showing the latest {LEDGER_LIMIT} movements. Totals above include everything.</Note>}
     </View>
   );
 
+  const Wrap = embedded ? View : ScrollView;
+  const wrapProps = embedded ? {} : {
+    style: s.wrap, contentContainerStyle: { paddingBottom: 60 },
+    refreshControl: <RefreshControl refreshing={refreshing} onRefresh={refresh} colors={[COLORS.primary]} />,
+  };
   return (
-    <ScrollView style={s.wrap} contentContainerStyle={{ paddingBottom: 60 }}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} colors={[COLORS.primary]} />}>
+    <Wrap {...wrapProps}>
       <Container>
         {/* identity */}
         <View style={[s.card, s.headCard]}>
@@ -225,64 +311,33 @@ export default function OverviewMaterialScreen({ route }) {
             <Badge tone={out ? 'danger' : low ? 'warn' : 'ok'} text={out ? 'Out of stock' : low ? 'Low stock' : 'In stock'} />
             <PressableScale to={0.95} hover={1.03} onPress={refresh} style={s.refresh}>
               <MCI name="refresh" size={15} color={COLORS.primary} />
-              <Text style={s.refreshText}>{refreshing ? 'Updating' : updated ? `Updated ${updated.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : 'Refresh'}</Text>
+              <Text style={s.refreshText}>{refreshing ? 'Updating' : updated ? `Open at ${updated.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : 'Refresh'}</Text>
             </PressableScale>
           </View>
         </View>
 
         {/* key numbers */}
         <View style={s.kpis}>
-          <Kpi icon="warehouse" accent={stockColor} label="Available stock" value={fmt(m.current_stock)} unit={unit} tone={low ? COLORS.danger : COLORS.text}
+          <Kpi icon="warehouse" accent="#16A34A" bg="#E8F8EE" label="Available stock" value={fmt(m.current_stock)} unit={unit} tone={low ? COLORS.danger : COLORS.text}
             sub={`Minimum ${fmt(m.minimum_stock)} ${unit}${out ? ' · out of stock' : low ? ' · reorder now' : ''}`} subTone={low ? COLORS.danger : undefined} />
-          <Kpi icon="arrow-down-bold-circle-outline" label="Total received" value={fmt(t.received)} unit={unit} sub="All time, including opening stock" />
-          <Kpi icon="arrow-up-bold-circle-outline" label="Total issued" value={fmt(t.issued)} unit={unit} sub="Production, samples, wastage" />
-        </View>
+          <Kpi icon="flag-outline" accent="#7C3AED" bg="#F1EAFE" label="Opening stock" value={fmt(flow.opening)} unit={unit} sub="Balance before the first entry" />
+          <Kpi icon="arrow-down-bold-circle-outline" accent="#2563EB" bg="#E8F0FE" label="Total received" value={fmt(flow.received)} unit={unit}
+            sub={flow.fixIn > 0 ? `From vendors · plus ${fmt(flow.fixIn)} ${unit} added by corrections` : 'Material receipts from vendors'} />
+          <Kpi icon="arrow-up-bold-circle-outline" accent="#DC2626" bg="#FDEBEC" label="Total issued" value={fmt(flow.issued)} unit={unit} sub="Production, samples, wastage" />          
+           </View>
 
-        {/* stock picture */}
-        <View style={s.card}>
-          <View style={s.rowBetween}>
-            <Text style={s.sec}>Where the stock went</Text>
-            <Text style={s.secSide}>{fmt(flow.received)} {unit} received</Text>
-          </View>
-          {flowTotal > 0 ? (
-            <View style={s.stack}>
-              {segs.filter((g) => g.value > 0).map((g) => <View key={g.key} style={{ flex: g.value, backgroundColor: g.color, borderRightWidth: 2, borderRightColor: COLORS.surface }} />)}
-            </View>
-          ) : <View style={[s.stack, { backgroundColor: COLORS.greyBg }]} />}
-          <View style={s.legend}>
-            {segs.filter((g) => g.key !== 'other' || g.value > 0).map((g) => (
-              <View key={g.key} style={s.legendItem}>
-                <View style={[s.legendDot, { backgroundColor: g.color }]} />
-                <View>
-                  <Text style={s.legendLabel}>{g.label}</Text>
-                  <Text style={s.legendVal}>{fmt(g.value)} {unit}<Text style={s.legendPct}>  {flowTotal > 0 ? Math.round((g.value / flowTotal) * 100) : 0}%</Text></Text>
-                </View>
-              </View>
-            ))}
-          </View>
-          {flow.other > 0 && <Note>{fmt(flow.other)} {unit} more is in stock than the received and issued totals explain. Check recent corrections.</Note>}
-          <View style={s.gauge}>
-            <View style={s.rowBetween}>
-              <Text style={s.gaugeLabel}>Stock level against minimum</Text>
-              <Text style={[s.gaugeLabel, { color: low ? COLORS.danger : COLORS.ok, fontWeight: '900' }]}>{fmt(m.current_stock)} / {fmt(m.minimum_stock)} {unit}</Text>
-            </View>
-            {num(m.minimum_stock) > 0
-              ? <StockBar current={m.current_stock} minimum={m.minimum_stock} low={low} height={8} style={{ marginTop: 8 }} />
-              : <Text style={s.tdMuted}>No minimum level is set for this material.</Text>}
-            {num(m.minimum_stock) > 0 && <Text style={s.gaugeHint}>The line in the middle marks the minimum stock.</Text>}
-          </View>
-        </View>
+        
 
         {/* stock movement */}
         <View style={[s.card, { padding: 0, overflow: 'hidden' }]}>
           <View style={s.secRow}>
             <Text style={s.sec}>Stock movement</Text>
-            <Text style={s.secSide}>{ledger.length} entr{ledger.length === 1 ? 'y' : 'ies'}</Text>
+<Text style={s.secSide}>{shownLedger.length} entr{shownLedger.length === 1 ? 'y' : 'ies'}</Text>
           </View>
           <View style={{ padding: isPhone ? 12 : 16 }}>{stockTab}</View>
         </View>
-      </Container>
-    </ScrollView>
+        </Container>
+    </Wrap>
   );
 }
 
@@ -324,18 +379,25 @@ const s = StyleSheet.create({
 
   secRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   tabHead: { marginBottom: 6 },
+  headRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
+ 
+    pager: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 },
+  pagerRow: { flexDirection: 'row', alignItems: 'center' },
+  pagerText: { fontSize: 12.5, fontWeight: '700', color: COLORS.grey },
+  pageBtn: { width: 34, height: 34, borderRadius: 17, borderWidth: 1.5, borderColor: COLORS.border, backgroundColor: COLORS.surface, alignItems: 'center', justifyContent: 'center', marginHorizontal: 8 },
+  searchBox: { flexDirection: 'row', alignItems: 'center', height: 38, borderRadius: 19, borderWidth: 1.5, borderColor: COLORS.border, backgroundColor: COLORS.surface, paddingHorizontal: 12, marginLeft: 8 },
+  searchInput: { flex: 1, marginLeft: 8, fontSize: 13.5, fontWeight: '600', color: COLORS.text, paddingVertical: 0, ...(Platform.OS === 'web' ? { outlineStyle: 'none' } : {}) },
 
-
-  thead: { flexDirection: 'row', backgroundColor: COLORS.greyBg, borderRadius: RADIUS.sm, paddingVertical: 9, paddingHorizontal: 10 },
-  th: { fontSize: 12, fontWeight: '800', color: COLORS.grey },
-  tr: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: COLORS.line },
-  td: { fontSize: 13.5, fontWeight: '600', color: COLORS.text, paddingRight: 8 },
-  tdMuted: { fontSize: 12.5, fontWeight: '600', color: COLORS.grey },
+  thead: { flexDirection: 'row', alignItems: 'center', borderRadius: 12, paddingVertical: 14, paddingHorizontal: 10 },
+  th: { fontSize: 11.5, fontWeight: '800', color: '#fff', letterSpacing: 0.8, textTransform: 'uppercase', fontFamily: FONT },
+  tr: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: '#F0ECF2' },
+  td: { fontSize: 13.5, fontWeight: '600', color: '#3A3A4A', paddingRight: 8, fontFamily: FONT },
+tdMuted: { fontSize: 12.5, fontWeight: '600', color: COLORS.grey, fontFamily: FONT },
   num: { textAlign: 'right', fontVariant: ['tabular-nums'] },
   strong: { fontWeight: '900', color: COLORS.text },
   typeRow: { flexDirection: 'row', alignItems: 'center', flexShrink: 1 },
-  typeText: { fontSize: 14, fontWeight: '900', color: COLORS.text, flexShrink: 1 },
-  dot: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginRight: 9 },
+ typeText: { fontSize: 14, fontWeight: '900', color: COLORS.text, flexShrink: 1, fontFamily: FONT },
+   dot: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginRight: 9 },
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   qtyBig: { fontSize: 15, fontWeight: '900', color: COLORS.text, marginLeft: 10, fontVariant: ['tabular-nums'] },
   card2: { paddingVertical: 12, paddingHorizontal: 4, borderBottomWidth: 1, borderBottomColor: COLORS.line },

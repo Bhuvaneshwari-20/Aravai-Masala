@@ -3,11 +3,10 @@ const { nextNumber } = require('../utils/numbering');
 const { audit } = require('../utils/audit');
 const AppError = require('../utils/AppError');
 const v = require('../utils/validate');
-
+const { lowLevelSql } = require('../utils/lowStock');
 const BASE_SELECT = `
-  SELECT m.*, c.category_name, (m.current_stock <= m.minimum_stock) AS is_low_stock
+  SELECT m.*, c.category_name, (m.current_stock <= ${lowLevelSql('m')}) AS is_low_stock
   FROM materials m JOIN material_categories c ON c.id = m.category_id`;
-
 const shape = (r) => ({ ...r, is_active: !!r.is_active, is_low_stock: !!r.is_low_stock });
 
 /* ---------- specifications (one material -> many specs) ---------- */
@@ -150,8 +149,8 @@ async function list(q) {
   if (q.category_id) { where.push('m.category_id = ?'); args.push(v.toId(q.category_id, 'category')); }
   if (q.active === 'true') where.push('m.is_active = 1');
   else if (q.active === 'false') where.push('m.is_active = 0');
-  if (q.low_stock === 'true') where.push('m.current_stock <= m.minimum_stock');
-  // Material Stock page: only materials that already have a Material Receipt (or opening stock)
+  if (q.low_stock === 'true') where.push(`m.current_stock <= ${lowLevelSql('m')}`);
+    // Material Stock page: only materials that already have a Material Receipt (or opening stock)
   if (q.received === 'true') where.push("EXISTS (SELECT 1 FROM material_stock_transactions t WHERE t.material_id = m.id AND t.txn_type IN ('INWARD','OPENING'))");
   const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
