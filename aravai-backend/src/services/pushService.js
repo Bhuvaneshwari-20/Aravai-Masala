@@ -1,212 +1,64 @@
-
-// Firebase Cloud Messaging through Firebase Admin SDK
-// Compatible with firebase-admin v11 to v14+
-
+// Firebase Cloud Messaging (mobile push) through the Firebase Admin SDK (modular API: works with firebase-admin 11 to 14+).
+// The service-account key is NEVER in the code or the repo. Give it to the server in ONE of these ways (.env or host secrets):
+//   FIREBASE_SERVICE_ACCOUNT_PATH=C:\secrets\firebase-service-account.json     (file kept outside the project folder)
+//   FIREBASE_SERVICE_ACCOUNT_JSON_B64=<base64 of the json file>                (for hosts that only have env variables)
+// Not configured -> every function here quietly does nothing (bell icon + Telegram keep working).
 const fs = require('fs');
 
-const CHANNEL_ID = 'process-alerts';
-
-const DEAD = [
-  'messaging/registration-token-not-registered',
-  'messaging/invalid-registration-token'
-];
+const CHANNEL_ID = 'process-alerts'; // Android notification channel created by the app (src/pushNotifications.js)
+const DEAD = ['messaging/registration-token-not-registered', 'messaging/invalid-registration-token'];
 
 let messaging = null;
-let ready = null;
+let ready = null; // null = not tried yet, true / false afterwards
 let lastError = '';
 
 function init() {
   if (ready !== null) return ready;
-
   try {
     let raw = null;
-
-    if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON_B64) {
-      raw = Buffer.from(
-        process.env.FIREBASE_SERVICE_ACCOUNT_JSON_B64,
-        'base64'
-      ).toString('utf8');
-
-    } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
-      raw = fs.readFileSync(
-        process.env.FIREBASE_SERVICE_ACCOUNT_PATH,
-        'utf8'
-      );
-    }
-
-    if (!raw) {
-      lastError =
-        'Firebase credentials missing. Configure FIREBASE_SERVICE_ACCOUNT_PATH or FIREBASE_SERVICE_ACCOUNT_JSON_B64';
-
-      console.error(`Push configuration error: ${lastError}`);
-
-      ready = false;
-      return false;
-    }
-
-    const serviceAccount = JSON.parse(raw);
-
-    const {
-      initializeApp,
-      cert,
-      getApps
-    } = require('firebase-admin/app');
-
-    const {
-      getMessaging
-    } = require('firebase-admin/messaging');
-
-    const app = getApps().length
-      ? getApps()[0]
-      : initializeApp({
-          credential: cert(serviceAccount)
-        });
-
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON_B64) raw = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_JSON_B64, 'base64').toString('utf8');
+    else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) raw = fs.readFileSync(process.env.FIREBASE_SERVICE_ACCOUNT_PATH, 'utf8');
+    if (!raw) { lastError = 'FIREBASE_SERVICE_ACCOUNT_PATH is not set'; ready = false; return ready; }
+    const { initializeApp, cert, getApps } = require('firebase-admin/app');
+    const { getMessaging } = require('firebase-admin/messaging');
+    const app = getApps().length ? getApps()[0] : initializeApp({ credential: cert(JSON.parse(raw)) });
     messaging = getMessaging(app);
-
     ready = true;
-    lastError = '';
-
-    console.log('Firebase Cloud Messaging initialized successfully');
-
-    return true;
-
   } catch (e) {
-    lastError = e.code === 'ENOENT'
-      ? 'Firebase service account file not found. Check FIREBASE_SERVICE_ACCOUNT_PATH'
-      : e.message;
-
-    console.error('Firebase initialization failed:', lastError);
-
-    messaging = null;
+    lastError = e.code === 'ENOENT' ? 'service-account file not found (check FIREBASE_SERVICE_ACCOUNT_PATH)' : e.message;
+    console.error(`Push (FCM) could not start: ${lastError}`); // never prints the key
     ready = false;
-
-    return false;
   }
+  return ready;
 }
-
 const isConfigured = () => init();
+const mask = (t) => `...${String(t).slice(-6)}`; // logs never contain a full token
 
-const mask = (token) =>
-  `...${String(token || '').slice(-6)}`;
-
-// Send FCM notifications
-async function send(rows, {
-  title,
-  body,
-  data = {}
-} = {}) {
-
-  const out = {
-    sent: 0,
-    dead: [],
-    failed: 0
-  };
-
-  if (!rows || !rows.length) {
-    console.log('FCM: No registered devices found');
-    return out;
-  }
-
-  if (!init()) {
-    console.error('FCM unavailable:', lastError);
-    return out;
-  }
-
-  // FCM data values must be strings
+// rows: [{ id, device_token }]   payload: { title, body, data: { key: value } }   -> { sent, dead: [row ids to deactivate] }
+async function send(rows, { title, body, data = {} }) {
+  const out = { sent: 0, dead: [] };
+  if (!rows.length || !init()) return out;
   const str = {};
-
-  Object.keys(data).forEach((key) => {
-    if (data[key] !== undefined && data[key] !== null) {
-      str[key] = String(data[key]);
-    }
-  });
-
-  // Firebase supports up to 500 messages per sendEach call
-  for (let i = 0; i < rows.length; i += 500) {
-
+  Object.keys(data).forEach((k) => { if (data[k] !== undefined && data[k] !== null) str[k] = String(data[k]); }); // FCM data values must be strings
+  for (let i = 0; i < rows.length; i += 500) { // sendEach accepts 500 messages per call
     const part = rows.slice(i, i + 500);
-
     const messages = part.map((r) => ({
       token: r.device_token,
-
-      notification: {
-        title: String(title || 'Aravai Masala').slice(0, 120),
-        body: String(body || '').slice(0, 500)
-      },
-
+      notification: { title: String(title).slice(0, 120), body: String(body).slice(0, 500) },
       data: str,
-
-      android: {
-        priority: 'high',
-        ttl: 60 * 60 * 1000,
-
-        notification: {
-          channelId: CHANNEL_ID,
-          sound: 'default',
-          tag: str.notification_id || undefined
-        }
-      }
+      android: { priority: 'high', ttl: 60 * 60 * 1000, notification: { channelId: CHANNEL_ID, sound: 'default', tag: str.notification_id || undefined } },
     }));
-
     try {
-
       const res = await messaging.sendEach(messages);
-
-      res.responses.forEach((result, index) => {
-
-        const device = part[index];
-
-        if (result.success) {
-          out.sent++;
-
-          console.log(
-            `FCM SUCCESS: Device ${mask(device.device_token)}`
-          );
-
-          return;
-        }
-
-        out.failed++;
-
-        const code = result.error?.code || 'unknown';
-        const message = result.error?.message || 'Unknown Firebase error';
-
-        console.error('FCM SEND FAILED:', {
-          code,
-          message,
-          device: mask(device.device_token)
-        });
-
-        // Deactivate only genuinely invalid / expired tokens
-        if (DEAD.includes(code)) {
-          out.dead.push(device.id);
-        }
+      res.responses.forEach((x, n) => {
+        if (x.success) { out.sent += 1; return; }
+        const code = x.error && x.error.code;
+        if (DEAD.includes(code)) out.dead.push(part[n].id);
+        else console.error(`FCM send failed (${code || 'unknown'}) for device ${mask(part[n].device_token)}`);
       });
-
-    } catch (e) {
-
-      out.failed += part.length;
-
-      console.error('FCM BATCH FAILED:', {
-        code: e.code || 'unknown',
-        message: e.message || 'Unknown batch error'
-      });
-    }
+    } catch (e) { console.error(`FCM batch failed: ${e.code || e.message}`); }
   }
-
-  console.log('FCM FINAL RESULT:', {
-    sent: out.sent,
-    failed: out.failed,
-    invalidTokens: out.dead.length
-  });
-
   return out;
 }
 
-module.exports = {
-  isConfigured,
-  send,
-  CHANNEL_ID,
-  lastError: () => lastError
-};
+module.exports = { isConfigured, send, CHANNEL_ID, lastError: () => lastError };

@@ -290,4 +290,4 @@ async function cleanup() {
     await pool.query('DELETE FROM device_tokens WHERE is_active = 0 AND updated_at < NOW() - INTERVAL 90 DAY');
 }
 
-module.exports = { AWAY_SECONDS, notify, list, unreadCount, markRead, markAllRead, remove, clearAll, getSettings, saveSettings, registerDevice, unregisterDevice, sendTestPush, phoneStatus, createLinkCode, disconnectPhone, sendTest, onTelegramMessage, startPhoneLink, cleanup };
+module.exports = { AWAY_SECONDS, notify, list,unreadCount, markRead, markAllRead,getSettings, saveSettings, registerDevice, unregisterDevice, sendTestPush, phoneStatus, createLinkCode, disconnectPhone, sendTest, onTelegramMessage, startPhoneLink, cleanup };
