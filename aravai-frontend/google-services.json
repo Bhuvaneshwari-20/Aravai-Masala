@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "62082717467",
+    "project_id": "aravai-masala",
+    "storage_bucket": "aravai-masala.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:62082717467:android:c1a7819329437eb8b565be",
+        "android_client_info": {
+          "package_name": "com.aravai.masala"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyARriSLKs1-S1XswT68Ltosup7XdMyYru4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

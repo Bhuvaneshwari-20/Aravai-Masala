@@ -13,3 +13,5 @@ build/
 
 # Ignore log files
 *.log
+
+*-firebase-adminsdk-*.json

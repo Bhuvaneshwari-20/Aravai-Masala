@@ -35,6 +35,8 @@ import OverviewListScreen from './src/screens/overview/OverviewListScreen';
 import OverviewMaterialScreen from './src/screens/overview/OverviewMaterialScreen';
 import OverviewBatchScreen from './src/screens/overview/OverviewBatchScreen';
 import MeshListScreen from './src/screens/mesh/MeshListScreen';
+import NotificationCenter from './src/components/NotificationCenter';
+import { usePushNotifications } from './src/pushNotifications';
 
 import MachineQrScreen from './src/screens/machine/MachineQrScreen';
 import { linking } from './src/linking';    
@@ -56,13 +58,17 @@ const headerOpts = {
 function Root() {
   const { user, loading } = useAuth();
   const { width } = useWindowDimensions();
-  const [route, setRoute] = useState('Home');
+    const [route, setRoute] = useState('Home');
+  usePushNotifications(user, navRef); // must stay above the early returns
+
   if (loading) {
     return <View style={{ flex: 1, justifyContent: 'center' }}><ActivityIndicator size="large" color={COLORS.primary} /></View>;
   }
   if (!user) return <LoginScreen />;
   return (
     <View style={{ flex: 1, flexDirection: 'row', backgroundColor: COLORS.bg }}>
+          <StatusBar style="dark" />
+      <NotificationCenter navRef={navRef} route={route} />
       <StatusBar style="dark" />
       {width >= 900 && <Sidebar navRef={navRef} current={route} />}
       <View style={{ flex: 1, minWidth: 0 }}>

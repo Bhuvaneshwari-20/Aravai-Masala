@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import api, { setToken } from './api';
 import { storage } from './storage';
 import { roleCanSee } from './menu';
+import { unregisterPush } from './pushNotifications';
 
 const Ctx = createContext(null);
 export const useAuth = () => useContext(Ctx);
@@ -34,6 +35,7 @@ export function AuthProvider({ children }) {
   };
 
   const logout = async () => {
+     await unregisterPush();
     await storage.del('token');
     setToken(null);
     setUser(null);

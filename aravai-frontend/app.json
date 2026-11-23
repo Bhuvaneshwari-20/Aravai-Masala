@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "aravai-frontend",
+    "name": "Aravai Masala",
     "slug": "aravai-frontend",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,6 +10,8 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.aravai.masala",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -22,7 +24,20 @@
     },
     "plugins": [
       "expo-secure-store",
-      "expo-sharing"
-    ]
+      "expo-sharing",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/android-icon-monochrome.png",
+          "color": "#B91C1C"
+        }
+      ],
+      "expo-status-bar"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "618fef87-1730-4a52-9242-89e7deb523e0"
+      }
+    }
   }
 }
