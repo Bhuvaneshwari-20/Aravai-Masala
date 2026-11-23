@@ -34,14 +34,27 @@ export const imageUri = (t) => (t && t.has_image
   ? `${API_URL}/weighing/transactions/${t.id}/image?token=${encodeURIComponent(getToken() || '')}&v=${t.image_version || 0}`
   : null);
 
+// File name / mime type that match the real file (a PNG is no longer announced as image/jpeg). Falls back to JPEG.
+const IMG_MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif' };
+function imageMeta(uri, blobType) {
+  const m = /\.([a-z0-9]+)(?:[?#]|$)/i.exec(String(uri || ''));
+  const byExt = m ? IMG_MIME[m[1].toLowerCase()] : null;
+  const type = (blobType && /^image\//.test(blobType) ? blobType : byExt) || 'image/jpeg';
+  const ext = Object.keys(IMG_MIME).find((k) => IMG_MIME[k] === type) || 'jpg';
+  return { type, name: `weight.${ext}` };
+}
+
 // Multipart body for the weight photo (native needs { uri, name, type }, web needs a Blob).
+// The file is sent exactly as the camera / picker produced it: no resize, crop or re-compression happens here.
 export async function buildImageForm(uri, field = 'image') {
   const fd = new FormData();
   if (Platform.OS === 'web') {
     const blob = await (await fetch(uri)).blob();
-    fd.append(field, blob, 'weight.jpg');
+    const { name } = imageMeta(uri, blob.type);
+    fd.append(field, blob, name);
   } else {
-    fd.append(field, { uri, name: 'weight.jpg', type: 'image/jpeg' });
+    const { name, type } = imageMeta(uri);
+    fd.append(field, { uri, name, type });
   }
   return fd;
 }

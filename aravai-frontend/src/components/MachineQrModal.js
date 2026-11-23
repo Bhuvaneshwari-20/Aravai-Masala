@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Platform, StyleSheet, useWindowDimensions } from 'react-native';
 import { Text, Button, ActivityIndicator } from 'react-native-paper';
 import * as Print from 'expo-print';
@@ -13,7 +13,7 @@ import { COLORS } from '../theme';
 const PREVIEW_PX = 160; // on-screen preview: 160 x 160 px (4-module quiet zone included, never stretched)
 
 // Machine QR: shows the machine's PERMANENT qr_url (from the backend qrInfo API - nothing is generated here)
-// + Print / Download PDF of a 30 x 30 mm sticker. Read with the phone camera or the app (Machines -> Scan Machine).
+// + Print / Download PDF of a 45 x 45 mm sticker. Read with the phone camera or the app (Machines -> Scan Machine).
 export default function MachineQrModal({ visible, machine, onDismiss }) {
   const { width } = useWindowDimensions();
   const [qr, setQr] = useState(null);        // { token, url }
@@ -28,17 +28,24 @@ export default function MachineQrModal({ visible, machine, onDismiss }) {
     if (!machine) return;
     try { setQr(await fetchMachineQr(machine)); } catch (e) { setLoadErr(e.message); }
   }, [machine]);
-  useEffect(() => { if (visible && machine) load(); }, [visible, id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const check = useMemo(() => (qr ? checkQrUrl(qr.url) : null), [qr]);
-  const ready = !!(machine && qr && check && check.ok);
-  const mm = ready ? moduleMm(qr.url) : 0;
+  // fetch the permanent QR link whenever the modal opens for a machine
+  useEffect(() => {
+    if (visible && machine) load();
+  }, [visible, id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const payload = qr ? qr.url : '';
+  const ready = !!(machine && qr && payload);
+  const mm = ready ? moduleMm(payload) : 0;
+  const check = qr ? checkQrUrl(qr.url) : null;
+  const blocked = !!(check && !check.ok);
 
   const run = (kind) => async () => {
     setBusy(kind); setErr('');
     try {
       if (!ready) throw new Error('QR is not ready yet');
-      const html = machineQrHtml(machine, qr.url);
+      if (blocked) throw new Error(check.error);
+      const html = machineQrHtml(machine, payload);
       if (kind === 'print') await Print.printAsync({ html });
       else {
         const f = await Print.printToFileAsync({ html, width: 595, height: 842 }); // A4 portrait in points (1/72 in)
@@ -55,19 +62,20 @@ export default function MachineQrModal({ visible, machine, onDismiss }) {
         {!!machine && !qr && !loadErr && <ActivityIndicator style={{ margin: 30 }} color={COLORS.primary} />}
         {ready && (
           <View style={s.qrBox}>
-            <QrCode value={qr.url} size={PREVIEW_PX} />
+            <QrCode value={payload} size={PREVIEW_PX} />
             <Text style={s.codeText}>{machine.machine_code}</Text>
           </View>
         )}
         {ready && <Text style={s.note}>One permanent QR per machine. Prints at exactly {STICKER_MM} x {STICKER_MM} mm (module {mm.toFixed(2)} mm). Print at 100%, stick it flat on the machine, then scan it with the phone camera.</Text>}
-        {ready && !!check.warn && <Text style={s.warn}>{check.warn}</Text>}
-        <ErrorBox text={loadErr || (check && !check.ok ? check.error : '') || err} />
+        {ready && blocked && <ErrorBox text={check.error} />}
+        {ready && !blocked && !!(check && check.warn) && <Text style={s.warn}>{check.warn}</Text>}
+        <ErrorBox text={loadErr || err} />
         {!!loadErr && <Button mode="outlined" textColor={COLORS.text} style={s.btn} onPress={load}>Retry</Button>}
         {ready && (
           <View style={s.row}>
-            <Button mode="contained" icon="printer" buttonColor={COLORS.green} style={s.btn} loading={busy === 'print'} disabled={!!busy} onPress={run('print')}>Print</Button>
+            <Button mode="contained" icon="printer" buttonColor={COLORS.green} style={s.btn} loading={busy === 'print'} disabled={!!busy || blocked} onPress={run('print')}>Print</Button>
             {Platform.OS !== 'web' && (
-              <Button mode="outlined" icon="download" textColor={COLORS.text} style={s.btn} loading={busy === 'file'} disabled={!!busy} onPress={run('file')}>Download PDF</Button>)}
+              <Button mode="outlined" icon="download" textColor={COLORS.text} style={s.btn} loading={busy === 'file'} disabled={!!busy || blocked} onPress={run('file')}>Download PDF</Button>)}
           </View>
         )}
       </View>

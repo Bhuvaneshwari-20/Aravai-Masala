@@ -4,9 +4,11 @@ const { audit } = require('../utils/audit');
 const AppError = require('../utils/AppError');
 const v = require('../utils/validate');
 const stock = require('./stockService');
-const REQUIRE_WEIGHT_PHOTO = process.env.REQUIRE_WEIGHT_PHOTO === 'true'; // photo optional unless .env has REQUIRE_WEIGHT_PHOTO=true (demo: optional)
+// Weight photo is MANDATORY for every material unless .env explicitly says REQUIRE_WEIGHT_PHOTO=false (keep the frontend config.js flag the same)
+const REQUIRE_WEIGHT_PHOTO = process.env.REQUIRE_WEIGHT_PHOTO !== 'false';
 const wimg = require('./batchWeightImageService');   // weighing machine photo check
 const machines = require('./machineService');
+const { MACHINE_QR_ENABLED } = require('../utils/featureFlags'); // QR scanning / QR token validation / machine identification: OFF unless MACHINE_QR_ENABLED=true
 const ms = require('../utils/materialStages');       // material-level status (Filtering / Roasting) and batch stage sync
 
 const r3 = (n) => Math.round(n * 1000) / 1000;
@@ -288,10 +290,10 @@ async function start(body, userId, ip) {
     }
 
     // (No cross-batch machine lock any more: the same weighing machine can be chosen for any number of batches.)
-    // Weighing machine photo of every weighed material: OCR MATCH (or supervisor's manual verification), same material + same weight.
+    // Weighing machine photo of every weighed material: the OCR weight must be a MATCH with the entered weight (same material + same weight). Any photo that is sent must be a MATCH.
     for (const i of items) {
       const name = byId.get(i.material_id).material_name;
-      if (REQUIRE_WEIGHT_PHOTO && !i.image_id) throw new AppError(`${name}: take or upload a photo of the weighing machine display and verify the weight`);
+      if (REQUIRE_WEIGHT_PHOTO && !i.image_id) throw new AppError(`${name}: take a photo of the weighing machine display and verify the weight (MATCH needed)`);
       if (i.image_id) {
         try { await wimg.claim(conn, { imageId: i.image_id, batchId: null, materialId: i.material_id, weighedQty: i.quantity_kg, userId, machineId, allowDraft: true }); }
         catch (e) { if (e instanceof AppError) e.message = `${name}: ${e.message}`; throw e; }
@@ -380,19 +382,22 @@ async function addBatching(batchIdRaw, body, user, ip) {
       if (!mc.length) throw new AppError('Selected weighing machine is not available');
     }
 
-    // Batch-wise machine lock: once a batch has a weighing machine, every material must be weighed on it (its QR is scanned),
-    // and the photo of that machine's display must have passed the OCR check (MATCH) or a supervisor's manual verification.
+    // The machine stored on a batch (chosen in New Batch) is kept as data: the weighing row uses it. It is NOT identified or verified.
+    // QR scanning / QR token validation of the machine only runs when MACHINE_QR_ENABLED=true (off by default).
     const lockedId = b.weighing_machine_id || (await firstMachineOfBatch(conn, batchId));
     if (lockedId) {
-      if (!body.qr_value) throw new AppError('Scan the QR code of the batch weighing machine first');
-      const scanned = await machines.getByToken(body.qr_value); // 404 for an unknown code
-      if (String(scanned.id) !== String(lockedId)) throw new AppError(`Wrong machine (${scanned.machine_code}). This batch is locked to another weighing machine. Scan that machine to continue`, 403);
+      if (MACHINE_QR_ENABLED) {
+        if (!body.qr_value) throw new AppError('Scan the QR code of the batch weighing machine first');
+        const scanned = await machines.getByToken(body.qr_value); // 404 for an unknown code
+        if (String(scanned.id) !== String(lockedId)) throw new AppError(`Wrong machine (${scanned.machine_code}). This batch is locked to another weighing machine. Scan that machine to continue`, 403);
+      }
       machineId = lockedId;
     }
+    // Weight verification is compulsory for every batching entry: the photo weight must be a MATCH with the entered weight.
     const imageId = body.weight_image_id ? v.toId(body.weight_image_id, 'weight photo') : null;
-    if (REQUIRE_WEIGHT_PHOTO && lockedId && !imageId) throw new AppError('Take or upload a photo of the weighing machine display and verify the weight first');
-    if (imageId) {
-      // MATCH / MANUAL only, same batch + material + weight + machine, unused
+    if (!imageId) throw new AppError('Take a photo of the weighing machine display and verify the weight first. Saving needs a MATCH');
+    {
+      // MATCH only, same batch + material + weight, unused
       const w = await wimg.claim(conn, { imageId, batchId, materialId, weighedQty: weighed, machineId: machineId || null });
       if (weighed === null) {                                   // auto-save: net weight of the verified photo
         weighed = Number(w.entered_weight);
@@ -556,7 +561,7 @@ async function updateMaterial(batchIdRaw, materialIdRaw, body, user, ip) {
       delta = r3(weighed - old);
       if (Math.abs(delta) > 0.0005) {
         // the photo of the machine display showed the OLD quantity: it is released, and a new verified photo is needed when photos are compulsory
-        if (!imageId && REQUIRE_WEIGHT_PHOTO) throw new AppError('The quantity changed: take or upload a photo of the weighing machine display and verify the new weight');
+        if (!imageId && REQUIRE_WEIGHT_PHOTO) throw new AppError('The quantity changed: take a photo of the weighing machine display and verify the new weight (MATCH needed)');
         const st = await stock.postTxn(conn, {
           material_id: materialId, direction: delta > 0 ? 'OUT' : 'IN', txn_type: delta > 0 ? 'ISSUE' : 'ADJUSTMENT_IN', qty: await stockQtyOf(conn, materialId, Math.abs(delta)), txn_date: v.date(),
           issue_type: delta > 0 ? 'PRODUCTION' : null, purpose: `Batch ${b.batch_no} - ${bd.material_name} quantity corrected (${old} kg to ${weighed} kg)`,

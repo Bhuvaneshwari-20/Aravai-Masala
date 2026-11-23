@@ -1,8 +1,8 @@
 import { qrSvg, qrModuleCount } from './components/QrCode';
 
-// Printed sticker: the QR symbol (its 4-module quiet zone included) is EXACTLY 30 x 30 mm.
-export const STICKER_MM = 30;
-export const GUIDE_MM = 36;          // dashed cut guide: 3 mm extra white margin on every side of the 30 mm symbol
+// Printed sticker: the QR symbol (its 4-module quiet zone included) is EXACTLY 45 x 45 mm.
+export const STICKER_MM = 45;
+export const GUIDE_MM = 51;          // dashed cut guide: 3 mm extra white margin on every side of the 45 mm symbol
 export const MIN_MODULE_MM = 0.5;    // smaller than this and phone cameras start to miss modules on a matte label
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -14,7 +14,7 @@ export const moduleMm = (url) => STICKER_MM / qrModuleCount(url);
 // print at 100% ("Actual size"), never "Fit to page".
 export function machineQrHtml(machine, url) {
   const mm = moduleMm(url);
-  if (mm < MIN_MODULE_MM) throw new Error(`The QR link is too long for a ${STICKER_MM} mm sticker (modules would be ${mm.toFixed(2)} mm). Use a shorter APP_URL.`);
+  if (mm < MIN_MODULE_MM) throw new Error(`The QR text is too long for a ${STICKER_MM} mm sticker (modules would be ${mm.toFixed(2)} mm).`);
   const svg = qrSvg(url, `${STICKER_MM}mm`);
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(machine.machine_code)} QR</title><style>
   @page{size:A4 portrait;margin:15mm}

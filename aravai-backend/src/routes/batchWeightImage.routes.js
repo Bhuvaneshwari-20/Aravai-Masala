@@ -1,7 +1,9 @@
 // Weighing machine photo for batching.  Mounted under /api/v1 (see routes/index.js).
-//   POST /batches/weight-image  (+ /:imageId/manual-verify)           same, for the New Batch form (draft photo, no batch yet)
-//   POST /batches/:id/batching/weight-image                          photo + material_id + entered_weight -> OCR check
-//   POST /batches/:id/batching/weight-image/:imageId/manual-verify   supervisor, UNREADABLE only
+//   POST /batches/weight-image                                        same, for the New Batch form (draft photo, no batch yet)
+//   POST /batches/:id/batching/weight-image                          multipart: image (file) + material_id + entered_weight (kg) -> OCR check
+//        reply: { id, batch_id, material_id, status: MATCH | MISMATCH | UNREADABLE, entered_weight, detected_weight, difference, tolerance,
+//                 ocr_confidence, verified, can_submit, retake_required, message }. No machine_id / qr_value is needed or used.
+//   .../manual-verify                                                 disabled (answers 403): only a MATCH may be saved
 //   GET  /batches/:id/weight-images/:imageId/file                    the stored photo (accepts ?token= so <Image> can load it)
 const router = require('express').Router();
 const multer = require('multer');

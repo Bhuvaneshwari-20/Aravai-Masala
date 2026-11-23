@@ -20,7 +20,8 @@ export const BW_STATUS = {
   UNREADABLE: { label: 'UNREADABLE', color: COLORS.warn, bg: COLORS.warnBg },
 };
 export const bwStatus = (s) => BW_STATUS[s] || BW_STATUS.UNREADABLE;
-export const bwPassed = (s) => s === 'MATCH' || s === 'MANUAL';
+// Only a MATCH between the manually entered weight and the weight read from the photo allows saving.
+export const bwPassed = (s) => s === 'MATCH';
 
 // Protected image. Same ?token= convention as weighing.js and the CSV reports, so <Image> can load it on native and web.
 export const batchWeightImageUri = (batchId, image) => (image && image.id
@@ -29,28 +30,50 @@ export const batchWeightImageUri = (batchId, image) => (image && image.id
 
 // Photo -> server: stores it, reads the weight (OCR) and compares. Resolves { id, status, entered_weight, detected_weight, difference, tolerance }.
 // enteredWeight left out (null / undefined / '') = auto-fill: the weight read from the photo is used, nothing is compared.
-// machine (optional) = selected weighing machine { id }. Only machine_id is sent; no QR scan or machine text recognition is required.
+// machine (optional) = selected weighing machine { id, code, qrValue }. The server decodes the QR code printed on the machine from the SAME photo
+// and compares the Machine ID in that QR with this selected machine (and with the machine stored in the database). The weight is read independently.
+// The reply is normalised here so the screen never has to guess: status is upper-case, the weights are numbers (or null) and
+// entered_weight falls back to the weight that was sent when the server leaves it out.
+const numOrNull = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+function unwrapImage(res, sentWeight, partial = false) {
+  const body = res && res.data;
+  if (body && body.success === false) throw new Error(body.message || 'The server could not check the photo.');
+  const d = body && (body.data !== undefined ? body.data : body);
+  if (!d || typeof d !== 'object' || d.id === undefined || d.id === null) throw new Error('The server sent an unexpected reply for the photo. Please try again.');
+  const entered = numOrNull(d.entered_weight);
+  const out = { ...d, status: d.status ? String(d.status).toUpperCase() : 'UNREADABLE' };
+  if (partial) { // manual verify: only overwrite what the server really sent (the screen merges this into the earlier result)
+    if (d.detected_weight !== undefined) out.detected_weight = numOrNull(d.detected_weight); else delete out.detected_weight;
+    if (entered !== null) out.entered_weight = entered; else delete out.entered_weight;
+    return out;
+  }
+  out.detected_weight = numOrNull(d.detected_weight);
+  out.entered_weight = entered !== null ? entered : numOrNull(sentWeight);
+  return out;
+}
+
 export async function uploadWeightImage(batchId, { uri, materialId, enteredWeight, machine }) {
   const fd = await buildImageForm(uri);
   fd.append('material_id', String(materialId));
   if (enteredWeight !== null && enteredWeight !== undefined && enteredWeight !== '') fd.append('entered_weight', String(enteredWeight));
   if (machine && machine.id != null && machine.id !== '') fd.append('machine_id', String(machine.id));
+  if (machine && machine.code) fd.append('machine_code', String(machine.code));
   const url = batchId ? `/batches/${batchId}/batching/weight-image` : '/batches/weight-image'; // no batchId = New Batch form (batch not saved yet)
   const r = await api.post(url, fd, uploadCfg);
-  return r.data.data;
+  return unwrapImage(r, enteredWeight);
 }
 
 // Supervisor (batching: approve) verifies an UNREADABLE photo by eye. Resolves the updated image { id, status: 'MANUAL', ... }.
 export async function manualVerifyWeightImage(batchId, imageId, reason) {
   const url = batchId ? `/batches/${batchId}/batching/weight-image/${imageId}/manual-verify` : `/batches/weight-image/${imageId}/manual-verify`;
   const r = await api.post(url, { reason });
-  return r.data.data;
+  return unwrapImage(r, null, true);
 }
 
 // Pick an existing photo of the display (gallery on a phone, file dialog on the web build). Resolves { uri } or null when cancelled.
 export async function pickWeightImage() {
   const ImagePicker = require('expo-image-picker'); // eslint-disable-line global-require
-  const r = await ImagePicker.launchImageLibraryAsync({ quality: 0.7 });
+  const r = await ImagePicker.launchImageLibraryAsync({ quality: 1, allowsEditing: false, exif: false, base64: false }); // original file, no crop / edit screen
   if (r.canceled || !r.assets || !r.assets.length) return null;
   return { uri: r.assets[0].uri };
 }
@@ -97,6 +120,9 @@ export function machineCheck(r, expected, trustServer = true) {
   if (has(id) || has(code)) return out('MISMATCH');
   return out(has(expected.name) && norm(name) === norm(expected.name) ? 'MATCH' : 'MISMATCH');
 }
+
+// Machine check result of the photo -> can the weight be submitted?  Only a QR-confirmed MATCH passes (NOT_READ / MISMATCH both block).
+export const machinePassed = (s) => s === 'MATCH';
 
 // Readable text for a failed photo upload / OCR call (the default 10 s axios timeout does not apply here, uploadCfg uses 60 s).
 export function weightImageErrMsg(e) {

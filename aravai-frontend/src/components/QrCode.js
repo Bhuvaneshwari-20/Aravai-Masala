@@ -8,7 +8,7 @@ export const QUIET = 4; // quiet-zone modules around the code (QR spec minimum)
 function matrix(text) {
   const t = String(text ?? '');
   if (!t) throw new Error('Nothing to encode');
-  const { modules } = QRCodeCore.create(t, { errorCorrectionLevel: 'M' });
+const { modules } = QRCodeCore.create(t, { errorCorrectionLevel: 'L' });
   return { size: modules.size, get: (r, c) => !!modules.get(r, c) };
 }
 

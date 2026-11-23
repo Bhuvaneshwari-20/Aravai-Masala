@@ -76,6 +76,24 @@ async function addColumns(pool, db, log) {
   await add('machine_master', 'tare_weight_kg', 'DECIMAL(10,3) NULL');
   await add('batch_weight_images', 'tare_weight', 'DECIMAL(12,3) NULL');
   await add('batch_weight_images', 'net_weight', 'DECIMAL(12,3) NULL');
+  // QR machine check: verdict made at upload (MATCH | MISMATCH | NOT_READ | NOT_CHECKED) and the raw text decoded from the QR. NULL = photo from before QR checking.
+  await add('batch_weight_images', 'machine_status', 'VARCHAR(12) NULL');
+  await add('batch_weight_images', 'qr_value', 'VARCHAR(255) NULL');
+  // OCR weight kept separately on the batching row. weighed_qty (typed / bags x weight per bag) is never touched.
+  await add('batching_details', 'machine_weight_kg', 'DECIMAL(12,3) NULL');
+  await add('batching_details', 'weight_check_status', 'VARCHAR(12) NULL');
+  // manual verification + QR verdict on the batching row (the photo row keeps the same facts; the name is a snapshot so it survives a user rename)
+  await add('batch_weight_images', 'verified_by_name', 'VARCHAR(150) NULL');
+  await add('batching_details', 'machine_qr_status', 'VARCHAR(12) NULL');
+  await add('batching_details', 'manual_reason', 'VARCHAR(255) NULL');
+  await add('batching_details', 'manual_verified_by_name', 'VARCHAR(150) NULL');
+  await add('batching_details', 'manual_verified_at', 'DATETIME NULL');
+  if (!(await has('batching_details', 'manual_verified_by'))) {
+    const [u] = await pool.query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'users' AND COLUMN_NAME = 'id'", [db]);
+    const utype = /^[a-z]+(\(\d+\))?( unsigned)?$/i.test(u[0]?.COLUMN_TYPE || '') ? u[0].COLUMN_TYPE : 'INT';
+    await pool.query(`ALTER TABLE batching_details ADD COLUMN manual_verified_by ${utype} NULL`);
+    log.log('Batch weight images: added batching_details.manual_verified_by');
+  }
   if (!(await has('batch_weight_images', 'machine_id'))) {
     const [t] = await pool.query("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'machine_master' AND COLUMN_NAME = 'id'", [db]);
     const type = /^[a-z]+(\(\d+\))?( unsigned)?$/i.test(t[0]?.COLUMN_TYPE || '') ? t[0].COLUMN_TYPE : 'INT';

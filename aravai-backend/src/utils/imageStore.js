@@ -11,6 +11,7 @@ const REL_RE = /^\d{4}\/\d{2}\/[0-9a-f-]{36}\.jpg$/;
 
 // Decode the upload with sharp (proves it is a real image, whatever the client claimed),
 // apply EXIF rotation, strip metadata (GPS etc.), cap the size. Always stored as JPEG.
+// 2400 px / quality 92 (was 2000 / 85): thin 7-segment bars and the small decimal point stay sharp for the OCR.
 async function normalise(buffer) {
   let img;
   try {
@@ -18,7 +19,7 @@ async function normalise(buffer) {
     const meta = await img.metadata();
     if (!['jpeg', 'png', 'webp'].includes(meta.format)) throw new Error('format');
     if (!meta.width || !meta.height || Math.min(meta.width, meta.height) < 200) throw new AppError('Image is too small. Take a clearer photo of the display');
-    const out = await img.rotate().resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+    const out = await img.rotate().resize({ width: 2400, height: 2400, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 92 }).toBuffer();
     return out;
   } catch (e) {
     if (e instanceof AppError) throw e;

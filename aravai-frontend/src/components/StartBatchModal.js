@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, TextInput, Pressable, TouchableOpacity, StyleSheet } from 'react-native';
 import { Text, ActivityIndicator } from 'react-native-paper';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
@@ -10,7 +10,6 @@ import SelectField from './SelectField';
 import FormRow from './FormRow';
 import useOptions from '../hooks/useOptions';
 import useLayout from '../hooks/useLayout';
-import { useAuth } from '../AuthContext';
 import WeightImageVerify from './WeightImageVerify';
 import { ErrorBox, InfoBox, ModalFooter } from './FormBits';
 import { COLORS, fmt } from '../theme';
@@ -90,7 +89,7 @@ function PhotoBtn({ photo, onPress }) {
   );
 }
 
-function SheetRow({ item, row, errors, wide, onChange, onLine, onAddLine, onRemoveLine, onRemoveMaterial, canRemove, filter, onToggleFilter, photo, panel, onTogglePhoto, onPhoto, onDetected, canManual, machine }) {
+function SheetRow({ item, row, errors, wide, onChange, onLine, onAddLine, onRemoveLine, onRemoveMaterial, canRemove, filter, onToggleFilter, photo, panel, onTogglePhoto, onPhoto }) {
   const extra = row.extra || [];
   const inputs = (
     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -150,9 +149,7 @@ function SheetRow({ item, row, errors, wide, onChange, onLine, onAddLine, onRemo
       {/* kept mounted once opened, so a verified photo is not lost when the panel is closed */}
       {panel !== undefined && (
         <View style={panel === 'open' ? { marginTop: 8 } : { display: 'none' }}>
-          <WeightImageVerify batchId={null} materialId={item.material_id} enteredWeight={row.qty} required={REQUIRE_WEIGHT_PHOTO} canManual={canManual} error={errors.photo} onChange={onPhoto}
-            autoFill={extra.length === 0} onDetected={onDetected} expectedMachine={machine}
-            blockedReason={machine ? '' : 'Select the weighing machine above first, so the machine on the photo can be matched.'} />
+          <WeightImageVerify key={item.material_id} batchId={null} materialId={item.material_id} enteredWeight={row.qty} required={REQUIRE_WEIGHT_PHOTO} error={errors.photo} onChange={onPhoto} />
         </View>
       )}
     </View>
@@ -240,7 +237,6 @@ const fetchRecipe = async (productId) => {
 // New batch (follows the Aravai batching sheet): date, product -> its recipe materials -> bags / weight / weighed qty
 // for each -> done by + checked by -> save.  Saving closes BATCHING; the batch continues at FILTERING and/or ROASTING.
 export default function StartBatchModal({ visible, onDismiss, onSaved }) {
-  const { can } = useAuth();
   const { isWide } = useLayout();
   const products = useOptions('/products', { active: 'true' }, (p) => ({ value: p.id, label: p.product_name }), visible);
   // any active weighing machine can be chosen, also one that was used for an earlier batch (no "in use" lock)
@@ -258,13 +254,14 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   const [panels, setPanels] = useState({}); // material_id -> 'open' | 'closed' (undefined = photo panel never opened)
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false); // double-tap guard: a second Save press while the first request runs must not create a second batch (stock would be deducted twice)
   const [err, setErr] = useState('');
   const [addOpen, setAddOpen] = useState(false); // "Add Material" popup
 
   useEffect(() => {
     if (visible) {
       setAddOpen(false);
-      setDate(today()); setProductId(null); setRecipe(null); setRows({}); setPhotos({}); setPanels({}); setErrors({}); setErr(''); setSaving(false);
+      setDate(today()); setProductId(null); setRecipe(null); setRows({}); setPhotos({}); setPanels({}); setErrors({}); setErr(''); setSaving(false); savingRef.current = false;
       setMachineId(null); setFilterIds({}); setRemoved({}); setRoastMode('SEQUENTIAL');
     }
   }, [visible]); // eslint-disable-line
@@ -312,18 +309,12 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
 
   const togglePhoto = (id) => () => setPanels((p) => ({ ...p, [id]: p[id] === 'open' ? 'closed' : 'open' }));
   const onPhoto = (id) => (st) => {
-    setPhotos((p) => ((p[id] && p[id].imageId === st.imageId && p[id].passed === st.passed && p[id].status === st.status && p[id].machineStatus === st.machineStatus && !!p[id].stale === !!st.stale) ? p : { ...p, [id]: st }));
+    setPhotos((p) => ((p[id] && p[id].imageId === st.imageId && p[id].passed === st.passed && p[id].status === st.status && p[id].machineStatus === st.machineStatus && !!p[id].hasPhoto === !!st.hasPhoto && !!p[id].stale === !!st.stale) ? p : { ...p, [id]: st }));
     if (st.stale) setPanels((p) => (p[id] === 'open' ? p : { ...p, [id]: 'open' })); // weighed qty changed (e.g. bag size added): ask for the photo check again
   };
 
-  // photo of the weighing machine display was read -> its weight becomes the weighed qty (bags x kg/bag no longer overwrites it)
-  const onDetected = (id) => (kg) => {
-    setRows((p) => ({ ...p, [id]: { ...(p[id] || {}), qty: String(r3(kg)), touched: true } }));
-    setErrors((p) => ({ ...p, [`m${id}qty`]: undefined, [`m${id}photo`]: undefined }));
-  };
-
-  const machineOpt = machines.find((o) => o.value === machineId);
-  const machine = machineOpt ? { id: machineOpt.value, code: machineOpt.code, name: machineOpt.name } : null; // machine the photos must show
+  // The weight read from the photo is only compared with the weighed qty; it never replaces it.
+  // QR scanning / machine identification on the photo is switched off (MACHINE_QR_ENABLED in config.js); the machine chosen above is only stored with the batch.
 
   // materials that are part of this batch (a material can be removed with "Remove material")
   const active = recipe ? recipe.ingredients.filter((i) => !removed[i.material_id]) : [];
@@ -357,11 +348,19 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   const needsFiltering = filterItems.length > 0;
   // some materials are filtered and some are not -> the user decides: roast the others now, or wait for the filtering
   const mixed = filterItems.length > 0 && directItems.length > 0;
-  // Save Batch stays clickable so that every empty / wrong field is highlighted when it is pressed
-  const photoPending = active.filter((i) => !(photos[i.material_id] && photos[i.material_id].passed));
-  const canSave = !!recipe && active.length > 0;
+  // Materials whose weighing machine photo weight is not a MATCH yet. A photo is needed for every material when
+  // REQUIRE_WEIGHT_PHOTO is on; when it is off a photo is optional, but one that was taken (even a stale / failed / unchecked one) must be a MATCH.
+  const photoPending = active.filter((i) => {
+    const p = photos[i.material_id];
+    const ok = !!(p && p.passed && String(p.materialId) === String(i.material_id));
+    return !ok && (REQUIRE_WEIGHT_PHOTO || !!(p && (p.imageId || p.stale || p.hasPhoto)));
+  });
+  // Save Batch stays clickable for the other fields so that every empty / wrong one is highlighted when it is pressed,
+  // but it is locked until QR and weight verification have passed for the materials above.
+  const canSave = !!recipe && active.length > 0 && photoPending.length === 0;
 
   const save = async (modeArg) => {
+    if (savingRef.current) return; // already saving: ignore the second tap
     const e = {};
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) e.date = 'Use YYYY-MM-DD';
     if (!productId) e.product = 'Select the product';
@@ -380,12 +379,12 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
         if (multi && (x.extra || []).some((l) => !(Number(l.bags) >= 1) || !(Number(l.wt) > 0))) { e[`${k}qty`] = 'Fill bags and kg/bag in every bag size line'; e[`${k}lines`] = true; }
       });
       if (!e.total && !(total > 0)) e.total = 'Enter the quantity for every material';
-      // every material needs its weighing machine photo to MATCH (or be verified manually) - checked again by the server
-      if (REQUIRE_WEIGHT_PHOTO) {
-        const missing = active.filter((i) => !(photos[i.material_id] && photos[i.material_id].passed));
+      // the photo weight must be a MATCH with the weighed qty - checked again by the server
+      {
+        const missing = photoPending;
         if (missing.length) {
-          e.photo = `Weighing machine photo is not verified for: ${missing.map((i) => i.material_name).join(', ')}`;
-          missing.forEach((i) => { e[`m${i.material_id}photo`] = 'Verify the weight with the weighing machine photo'; });
+          e.photo = `Weight MATCH with the weighing machine photo is needed for: ${missing.map((i) => i.material_name).join(', ')}`;
+          missing.forEach((i) => { e[`m${i.material_id}photo`] = 'Verify the weighed qty with the weighing machine photo (MATCH needed)'; });
           setPanels((p) => ({ ...p, ...Object.fromEntries(missing.map((i) => [i.material_id, 'open'])) }));
         }
       }
@@ -394,7 +393,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
     if (Object.keys(e).length || !recipe) return;
     const pm = needsFiltering ? (typeof modeArg === 'string' ? modeArg : roastMode) || 'SEQUENTIAL' : 'SEQUENTIAL';
     const finalMode = !needsFiltering ? 'DIRECT' : pm === 'SIMULTANEOUS' ? 'PARALLEL' : 'AFTER_FILTERING';
-    setSaving(true); setErr('');
+    savingRef.current = true; setSaving(true); setErr('');
     try {
       const r = await api.post('/batches', { product_id: productId, recipe_id: recipe.id, production_date: date, weighing_machine_id: machineId, needs_filtering: needsFiltering,
         // DIRECT = nothing filtered | AFTER_FILTERING = roast only after filtering | PARALLEL = unfiltered materials roast now, filtered ones roast after their filtering
@@ -404,16 +403,16 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
           const multi = (x.extra || []).length > 0;
           return { material_id: i.material_id, no_of_bags: multi ? undefined : (x.bags || undefined), weight_per_bag: multi ? undefined : (x.wt || undefined), weighed_qty: x.qty || 0,
             bag_lines: multi ? [{ bags: x.bags, weight: x.wt }, ...x.extra].map((l) => ({ bags: Number(l.bags), weight: Number(l.wt) })) : undefined, needs_filtering: !!filterIds[i.material_id],
-            weight_image_id: photos[i.material_id] && photos[i.material_id].passed ? photos[i.material_id].imageId : undefined };
+            weight_image_id: photos[i.material_id] && photos[i.material_id].passed && String(photos[i.material_id].materialId) === String(i.material_id) ? photos[i.material_id].imageId : undefined };
         }) });
-      setSaving(false);
+      setSaving(false); savingRef.current = false;
       onSaved && onSaved(r.data.data);
-    } catch (x) { setErr(errMsg(x)); setSaving(false); }
+    } catch (x) { setErr(errMsg(x)); setSaving(false); savingRef.current = false; }
   };
 
   return (
     <View>
-   
+
     <ModalShell visible={visible} onDismiss={onDismiss} busy={saving} icon="scale-balance" maxWidth={1000} title="New Batch"
       subtitle="Aravai Batching Process Plan"
       footer={<ModalFooter onCancel={onDismiss} onSave={() => save()} saving={saving} disabled={!canSave} label="Save Batch" />}>
@@ -438,7 +437,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
                 onRemoveMaterial={removeMaterial(i.material_id)} canRemove={active.length > 1}
                 filter={!!filterIds[i.material_id]} onToggleFilter={toggleFilter(i.material_id)}
                 errors={{ bags: errors[`${k}bags`], wt: errors[`${k}wt`], qty: errors[`${k}qty`], lines: errors[`${k}lines`], photo: errors[`${k}photo`] }}
-                photo={photos[i.material_id]} panel={panels[i.material_id]} onTogglePhoto={togglePhoto(i.material_id)} onPhoto={onPhoto(i.material_id)} onDetected={onDetected(i.material_id)} canManual={can('batching', 'approve')} machine={machine} />;
+                photo={photos[i.material_id]} panel={panels[i.material_id]} onTogglePhoto={togglePhoto(i.material_id)} onPhoto={onPhoto(i.material_id)} />;
             })}
             {/* a material that is not in the recipe yet (e.g. Salt): added to the recipe as a new version, used from this batch onwards */}
             <Pressable onPress={() => setAddOpen(true)} style={t.addMat} accessibilityRole="button" accessibilityLabel="Add material">
@@ -456,13 +455,13 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
                 ))}
               </View>
             )}
-      
+
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: total > 0 ? COLORS.okBg : COLORS.warnBg, borderRadius: 10, padding: 12, marginTop: 10, marginBottom: 14 }}>
               <Text style={{ fontWeight: '800', color: total > 0 ? COLORS.ok : COLORS.warn }}>Total weighed</Text>
               <Text style={{ fontWeight: '900', fontSize: 16, color: total > 0 ? COLORS.ok : COLORS.warn }}>{fmt(total)} kg</Text>
             </View>
 
-            {REQUIRE_WEIGHT_PHOTO && photoPending.length > 0 && <InfoBox text={`Save Batch unlocks when the weighing machine photo is read, the machine matches and the weight matches the weighed qty. Pending: ${photoPending.map((i) => i.material_name).join(', ')}`} />}
+            {photoPending.length > 0 && <InfoBox text={`Save Batch unlocks when the weight read from the weighing machine photo is a MATCH with the weighed qty. Pending: ${photoPending.map((i) => i.material_name).join(', ')}`} />}
 
             {/* Filtering is not done here. Ticked materials go to the Filtering menu; the others can go to Roasting. */}
             <View style={[t.fcheck, needsFiltering && t.fcheckOn]}>

@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Image, StyleSheet, Linking, Platform } from 'react-native';
 import { Text, Button } from 'react-native-paper';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -13,21 +13,34 @@ const insecureWeb = Platform.OS === 'web' && typeof window !== 'undefined' && wi
 // Live camera -> preview -> Retake / Upload. Only a photo taken right now is accepted (no gallery picker).
 // onUpload(photo) must return a promise; errors are shown by the parent through `error`.
 // autoSubmit: onUpload runs as soon as the photo is taken (no extra tap); Retake / the upload button stay available if it fails.
-export default function PhotoCapture({ onUpload, uploading, error, uploadLabel = 'Upload & Verify', autoSubmit = false }) {
+export default function PhotoCapture({ onUpload, uploading, error, uploadLabel = 'Upload & Verify', autoSubmit = false, guideText = 'Keep the whole weight display in view', helpText = 'Hold steady, avoid glare, and keep the whole weight display in view.', reviewText = 'Check that every digit and the decimal point are sharp and readable.' }) {
   const [perm, request] = useCameraPermissions();
   const cam = useRef(null);
   const [ready, setReady] = useState(false);
   const [taking, setTaking] = useState(false);
   const [photo, setPhoto] = useState(null);
   const [localErr, setLocalErr] = useState('');
+  const live = useRef(true); // with autoSubmit the parent closes this camera as soon as the photo is taken
+  useEffect(() => () => { live.current = false; }, []);
 
-  const accept = (p) => { setPhoto(p); if (autoSubmit && onUpload) onUpload(p); };
+  const accept = (p) => {
+    if (live.current) setPhoto(p);
+    if (autoSubmit && onUpload) Promise.resolve(onUpload(p)).catch(() => {}); // errors are shown by the parent
+  };
 
   const snap = async () => {
     if (!cam.current || !ready || taking) return;
     setTaking(true); setLocalErr('');
-    try { accept(await cam.current.takePictureAsync({ quality: 0.7 })); } catch (e) { setLocalErr('Could not take the photo. Please try again.'); }
-    setTaking(false);
+    try {
+      // quality: 1 = no extra JPEG compression, the display digits must stay sharp for the OCR.
+      // skipProcessing stays false on purpose: expo-camera then bakes the device rotation into the pixels (correct orientation).
+      // Nothing is resized or cropped here - the file is the full-size picture the camera produced.
+      const p = await cam.current.takePictureAsync({ quality: 1, skipProcessing: false, exif: false, base64: false });
+      if (!p || !p.uri) throw new Error('no photo');
+      if (typeof __DEV__ !== 'undefined' && __DEV__) console.log('[PhotoCapture] captured', p.width + 'x' + p.height, p.uri); // eslint-disable-line no-console
+      accept(p);
+    } catch (e) { if (live.current) setLocalErr('Could not take the photo. Please try again.'); }
+    if (live.current) setTaking(false);
   };
 
   // phone camera app (native camera screen on a phone, <input capture> on the web) -> same preview / upload step below
@@ -35,8 +48,13 @@ export default function PhotoCapture({ onUpload, uploading, error, uploadLabel =
     setLocalErr('');
     try {
       const ImagePicker = require('expo-image-picker'); // eslint-disable-line global-require
-      const r = await ImagePicker.launchCameraAsync({ quality: 0.7 });
-      if (!r.canceled && r.assets && r.assets.length) accept({ uri: r.assets[0].uri });
+      // quality 1 + allowsEditing false: no compression and no crop/edit screen. The picker already returns an upright image.
+      const r = await ImagePicker.launchCameraAsync({ quality: 1, allowsEditing: false, exif: false, base64: false });
+      if (!r.canceled && r.assets && r.assets.length) {
+        const a = r.assets[0];
+        if (typeof __DEV__ !== 'undefined' && __DEV__) console.log('[PhotoCapture] picked', a.width + 'x' + a.height, a.uri); // eslint-disable-line no-console
+        accept({ uri: a.uri, width: a.width, height: a.height, mimeType: a.mimeType });
+      }
     } catch (e) { setLocalErr('Could not open the camera. Please allow camera access in the browser / phone settings.'); }
   };
 
@@ -45,7 +63,7 @@ export default function PhotoCapture({ onUpload, uploading, error, uploadLabel =
       <View>
         <View style={[s.box, s.center]}>
           <MCI name="camera" size={44} color="#fff" />
-          <Text style={s.msg}>Tap below to open your phone camera and photograph the weighing machine display.</Text>
+          <Text style={s.msg}>Tap below to open your phone camera and photograph the weighing machine weight display.</Text>
           <Button mode="contained" icon="camera" buttonColor={COLORS.accent} textColor="#2B1B14" onPress={openPhoneCamera}>Open camera</Button>
         </View>
         <ErrorBox text={localErr} />
@@ -59,7 +77,7 @@ export default function PhotoCapture({ onUpload, uploading, error, uploadLabel =
       <View>
         <View style={[s.box, s.center]}>
           <MCI name="camera-off" size={44} color="#fff" />
-          <Text style={s.msg}>Camera permission is needed to photograph the weighing machine display.</Text>
+          <Text style={s.msg}>Camera permission is needed to photograph the weighing machine.</Text>
           <Button mode="contained" buttonColor={COLORS.accent} textColor="#2B1B14" onPress={perm.canAskAgain ? request : () => Linking.openSettings()}>
             {perm.canAskAgain ? 'Allow camera' : 'Open settings'}
           </Button>
@@ -74,7 +92,7 @@ export default function PhotoCapture({ onUpload, uploading, error, uploadLabel =
     return (
       <View>
         <View style={s.box}><Image source={{ uri: photo.uri }} style={StyleSheet.absoluteFill} resizeMode="contain" /></View>
-        <Text style={s.help}>Check that every digit on the display is sharp and readable.</Text>
+        <Text style={s.help}>{reviewText}</Text>
         <ErrorBox text={error || localErr} />
         <View style={s.row}>
           <Button mode="outlined" icon="camera-retake" textColor={COLORS.text} style={s.btn} disabled={uploading}
@@ -90,9 +108,9 @@ export default function PhotoCapture({ onUpload, uploading, error, uploadLabel =
     <View>
       <View style={s.box}>
         <CameraView ref={cam} style={StyleSheet.absoluteFill} facing="back" onCameraReady={() => setReady(true)} />
-        <View style={s.guide} pointerEvents="none"><Text style={s.guideText}>Fit the weight display inside this box</Text></View>
+        <View style={s.guide} pointerEvents="none"><Text style={s.guideText}>{guideText}</Text></View>
       </View>
-      <Text style={s.help}>Hold steady, avoid glare, and keep the whole display in view.</Text>
+      <Text style={s.help}>{helpText}</Text>
       <ErrorBox text={localErr} />
       <View style={s.row}>
         <Button mode="contained" icon="camera" buttonColor={COLORS.primary} style={[s.btn, { flex: 1 }]} contentStyle={{ paddingVertical: 6 }}
