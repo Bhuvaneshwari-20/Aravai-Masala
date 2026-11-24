@@ -1,6 +1,6 @@
 const app = require('./app');
 const { pool } = require('./config/db');
-const port = process.env.PORT || 4000;
+const port = process.env.PORT || 5000;
 (async () => {
   await pool.query('SELECT 1'); // fail fast if DB is unreachable
   await require('./utils/ensureBatchMachineLock')(pool); // adds batch_master.weighing_machine_id / machine_locked_at if missing
@@ -20,7 +20,10 @@ const port = process.env.PORT || 4000;
     console.log(`Aravai API running on :${port}`);
     try { require('./jobs/processAlerts').start(); } // Filtering / Roasting / Grinding "5 minutes to go" alerts (server side)
     catch (e) { console.error(`WARNING: process alert job not started: ${e.message}`); }
+        try { require('./services/blendingAlertJob').startBlendingAlerts(); } // Blending "planned time is over" alert
+    catch (e) { console.error(`WARNING: blending alert job not started: ${e.message}`); }
     try { require('./services/notificationService').startPhoneLink(); } // lets users connect their phone (Telegram) - only when TELEGRAM_BOT_TOKEN is set
     catch (e) { console.error(`WARNING: phone alerts not started: ${e.message}`); }
   });
+  
 })().catch((e) => { console.error('Startup failed:', e.message); process.exit(1); });
