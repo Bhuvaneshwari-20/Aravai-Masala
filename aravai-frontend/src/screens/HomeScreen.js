@@ -4,7 +4,7 @@ import { Text } from 'react-native-paper';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
-import Svg, { Circle } from 'react-native-svg'; // npx expo install react-native-svg
+import Svg, { Circle, Path } from 'react-native-svg';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import api from '../api';
@@ -153,7 +153,8 @@ export default function HomeScreen({ navigation }) {
     if (can('recipe', 'view')) job('recipes', total('/recipes', { active: 'true' }));
     if (can('product', 'view')) job('products', total('/products'));
     if (can('batching', 'view')) {
-      job('recent', api.get('/batches', { params: { limit: 3 } }).then((r) => r.data.data.items || []));
+      job('today', api.get('/dashboard/today').then((r) => r.data.data));
+      job('recent', api.get('/batches', { params: { limit: 5 } }).then((r) => r.data.data.items || []));
       job('inProgress', total('/batches', { status: 'IN_PROGRESS' }));
       job('completed', total('/batches', { status: 'COMPLETED' }));
       job('hold', total('/batches', { status: 'ON_HOLD' }));
@@ -216,12 +217,7 @@ export default function HomeScreen({ navigation }) {
                 <Text style={s.brand}>ARAVAI MASALA</Text>
                 <Text style={s.brandSub}>Manufacturing Management</Text>
               </View></>)}
-            {isWide && (
-              <View style={s.search}>
-                <MCI name="magnify" size={20} color={C.mute} />
-                <TextInput value={q} onChangeText={setQ} placeholder="Search batch, product, material…" placeholderTextColor={C.mute} style={s.searchInput} />
-              </View>
-            )}
+          
             <View style={{ flex: 1 }} />
             {/* notification bell sits in the top bar (scrolls with it), logout stays next to it */}
             <View style={{ marginRight: 10 }}><NotificationBell /></View>
@@ -234,7 +230,7 @@ export default function HomeScreen({ navigation }) {
 
           {/* welcome banner */}
           <FadeIn from={10}>
-            <View style={[s.banner, { height: isPhone ? 130 : 150 }]}>
+            <View style={[s.banner, { height: isPhone ? 130 : 180 }]}>
               <Image source={BANNER} resizeMode="cover" style={[s.bannerImg, { width: isPhone ? '65%' : '62%' }]} />
               <LinearGradient
                 colors={['#FBF1E4', '#FBF1E400']}
@@ -242,17 +238,33 @@ export default function HomeScreen({ navigation }) {
                 start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
                 style={[s.bannerImg, { width: isPhone ? '65%' : '62%' }]}
               />
-              <View style={{ maxWidth: isPhone ? '60%' : '45%' }}>
-                <Text style={[s.welcome, isPhone && { fontSize: 17 }]}>Welcome to</Text>
-                <Text style={[s.welcomeBrand, isPhone && { fontSize: 22 }]}>ARAVAI MASALA</Text>
-                <Text style={[s.welcomeSub, isPhone && { fontSize: 11 }]}>Manufacturing & Production Management</Text>
-                <View style={s.swoosh} />
-              </View>
+<View style={{ maxWidth: isPhone ? '60%' : '45%' }}>
+  <Text style={[s.welcome, isPhone && { fontSize: 18 }]}>Welcome to</Text>
+  <Text style={[s.welcomeBrand, isPhone && { fontSize: 22 }]}>ARAVAI MASALA</Text>
+  <Text style={[s.welcomeSub, isPhone && { fontSize: 11 }]}>Manufacturing & Production Management</Text>
+<Svg width={isPhone ? 150 : 200} height={isPhone ? 12 : 16} viewBox="0 0 200 16" style={{ marginTop: 4 }}>
+  <Path d="M2 7 C 40 14, 110 14, 198 3 C 120 8, 50 5, 2 7 Z" fill={C.gold} />
+</Svg>
+</View>
             </View>
           </FadeIn>
 
+         
+         
           {/* KPI row */}
-
+{/* today */}
+<View style={s.kpiRow}>
+  {[
+    ['layers-triple-outline', '#E8942A', 'Batches Started Today', dash(d.today, (t) => String(t.started))],
+    ['tray-arrow-down', '#2F80ED', 'Material Received Today', dash(d.today, (t) => `${num(Math.round(t.received_kg * 10) / 10)} kg`)],
+    ['tray-arrow-up', '#D93B3B', 'Material Used Today', dash(d.today, (t) => `${num(Math.round(t.used_kg * 10) / 10)} kg`)],
+    ['package-variant-closed', '#2E9E5B', 'Packed Today', dash(d.today, (t) => `${num(Math.round(t.packed_kg * 10) / 10)} kg`)],
+  ].map(([icon, tint, label, value]) => (
+    <View key={label} style={{ width: isPhone ? '50%' : '25%', padding: 5 }}>
+      <Kpi icon={icon} tint={tint} label={label} value={value} />
+    </View>
+  ))}
+</View>
           {/* production flow */}
           <Card>
             <CardTitle icon="layers-outline" title="Production Flow" right="View Batches" onRight={() => goStage('Batching')} />
@@ -305,7 +317,7 @@ export default function HomeScreen({ navigation }) {
               </View>
               {[...(d.mats || [])]
                 .sort((a, b) => ['OUT', 'LOW', 'SOON', 'OK'].indexOf(a.state) - ['OUT', 'LOW', 'SOON', 'OK'].indexOf(b.state))
-                .slice(0, 4)
+                .slice(0, 5)
                 .map((m) => {
                   const p = STOCK_PILL[m.state] || STOCK_PILL.OK;
                   return (

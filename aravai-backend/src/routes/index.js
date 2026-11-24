@@ -21,4 +21,5 @@ router.use('/packing', require('./packing'));
 router.use('/grinding', require('./grinding'));
 router.use('/mesh', require('./mesh'));
 router.use('/notifications', require('./notifications'));
+router.use('/dashboard', require('./dashboard'));
 module.exports = router;

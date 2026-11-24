@@ -636,7 +636,9 @@ function OverviewPane({ search, navigation }) {
         </View>
 
   {/* material table */}
+  
         <View style={s.panel}>
+          
           <LinearGradient colors={HEAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ height: 4, marginHorizontal: -14, marginTop: -14, marginBottom: 14 }} />
                <View style={s.tabsRow}>
             <View style={s.pills}>
@@ -795,8 +797,7 @@ const s = StyleSheet.create({
   sortLabel: { fontSize: 12.5, fontWeight: '800', color: COLORS.grey, marginRight: 10 },
 
   // Overview dashboard
-  kpiRow: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -6, marginTop: 4 },
-  kpi: { flex: 1, minWidth: 180, flexDirection: 'row', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: '#F0E6E6', paddingVertical: 14, paddingHorizontal: 14, margin: 6, shadowColor: '#2B1B14', shadowOpacity: 0.06, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } },
+kpiRow: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -6, marginTop: 4, marginBottom: 14 },  kpi: { flex: 1, minWidth: 180, flexDirection: 'row', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: '#F0E6E6', paddingVertical: 14, paddingHorizontal: 14, margin: 6, shadowColor: '#2B1B14', shadowOpacity: 0.06, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } },
   kpiIconBox: { width: 52, height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
   kpiLabel: { fontSize: 12.5, fontWeight: '700', color: '#3A3A4A', fontFamily: FONT },
   kpiValue: { fontSize: 22, fontWeight: '800', color: COLORS.text, marginTop: 2, fontFamily: FONT },
