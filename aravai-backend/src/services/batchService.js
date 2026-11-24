@@ -4,8 +4,9 @@ const { audit } = require('../utils/audit');
 const AppError = require('../utils/AppError');
 const v = require('../utils/validate');
 const stock = require('./stockService');
-// Weight photo is MANDATORY for every material unless .env explicitly says REQUIRE_WEIGHT_PHOTO=false (keep the frontend config.js flag the same)
-const REQUIRE_WEIGHT_PHOTO = process.env.REQUIRE_WEIGHT_PHOTO !== 'false';
+// Weight photo is OPTIONAL by default. It is mandatory only when .env explicitly says REQUIRE_WEIGHT_PHOTO=true (keep the frontend config.js flag the same).
+// A photo that IS sent is always checked: it must be a MATCH with the entered weight.
+const REQUIRE_WEIGHT_PHOTO = String(process.env.REQUIRE_WEIGHT_PHOTO || '').toLowerCase() === 'true';
 const wimg = require('./batchWeightImageService');   // weighing machine photo check
 const machines = require('./machineService');
 const { MACHINE_QR_ENABLED } = require('../utils/featureFlags'); // QR scanning / QR token validation / machine identification: OFF unless MACHINE_QR_ENABLED=true
@@ -393,10 +394,11 @@ async function addBatching(batchIdRaw, body, user, ip) {
       }
       machineId = lockedId;
     }
-    // Weight verification is compulsory for every batching entry: the photo weight must be a MATCH with the entered weight.
+    // The weighing machine photo is optional (compulsory only when REQUIRE_WEIGHT_PHOTO=true). A photo that is sent must be a MATCH with the entered weight.
+    // Without a photo the weighed quantity must be entered by hand (a blank quantity is only allowed together with a photo, see autoQty above).
     const imageId = body.weight_image_id ? v.toId(body.weight_image_id, 'weight photo') : null;
-    if (!imageId) throw new AppError('Take a photo of the weighing machine display and verify the weight first. Saving needs a MATCH');
-    {
+    if (REQUIRE_WEIGHT_PHOTO && !imageId) throw new AppError('Take a photo of the weighing machine display and verify the weight first. Saving needs a MATCH');
+    if (imageId) {
       // MATCH only, same batch + material + weight, unused
       const w = await wimg.claim(conn, { imageId, batchId, materialId, weighedQty: weighed, machineId: machineId || null });
       if (weighed === null) {                                   // auto-save: net weight of the verified photo
