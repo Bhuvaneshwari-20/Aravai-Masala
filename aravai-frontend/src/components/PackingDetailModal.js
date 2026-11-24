@@ -17,7 +17,8 @@ function Section({ title, children }) {
   return (
     <View style={{ marginBottom: 14 }}>
       <Text style={{ fontSize: 11, fontWeight: '900', letterSpacing: 1.4, color: COLORS.grey, marginBottom: 6 }}>{title}</Text>
-<View style={{ borderWidth: 1, borderColor: COLORS.border, borderRadius: 14, backgroundColor: '#FFFDF9', paddingHorizontal: 12, overflow: 'hidden' }}>        {children}
+      <View style={{ borderWidth: 1, borderColor: COLORS.border, borderRadius: 14, backgroundColor: '#FFFDF9', paddingHorizontal: 12, overflow: 'hidden' }}>
+        {children}
       </View>
     </View>
   );

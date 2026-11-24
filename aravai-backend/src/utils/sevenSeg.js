@@ -52,7 +52,9 @@ function decode(mask, w, h) {
   if (!comps.length) return fail('no lit segments');
   // drop specks
   const tot = Math.max(...comps.map((c) => c.area));
-  const keep = new Set(comps.filter((c) => c.area >= tot * 0.02).map((c) => c.id));
+  const keep = new Set(
+  comps.filter((c) => c.area >= tot * 0.005).map((c) => c.id)
+);
   for (let i = 0; i < m.length; i++) if (m[i] && !keep.has(lab[i])) m[i] = 0;
   comps = comps.filter((c) => keep.has(c.id));
   // vertical extent of the digits = tallest group of components (a digit's vertical bars are the tall ones)
@@ -136,4 +138,4 @@ function decode(mask, w, h) {
   return { ok: true, text, value, reason: null, digits: digits.length, widest };
 }
 
-module.exports = { decode };
+module.exports = { decode, components };

@@ -1,13 +1,16 @@
-// Weighing machine display reader - Node.js only (sharp + tesseract.js). No Python, no OpenCV.
+// Weighing machine display reader - Node.js only (sharp + tesseract.js). No Python, no OpenCV. Fully local: no external API, no cloud service.
 //
-// Public contract is unchanged (used by batchWeightImageService and weighingService):
-//   readWeight(jpegBuffer) -> { value, unit, confidence, text, engine, reason }
+// Public contract (used by batchWeightImageService and weighingService):
+//   readWeight(jpegBuffer) -> { value, unit, confidence, text, engine, reason, status? }
 //     value = number as shown on the display, or null when the display cannot be read with certainty
 //     unit  = always null (callers treat "no unit" as kg)
 //     reason = clear message when value is null
+//     status = 'UNREADABLE' when value is null (extra field, callers may ignore it)
 // The QR code is NOT read here (see qrReader.js); both run independently on the same photo.
 //
-// Pipeline
+// Pipeline  (v5: local only - stroke-map fix + colour-first display detection)
+//   0. The photo is NEVER modified or stored by this file. Every step below works on a throw-away copy (crop -> enlarge -> enhance) made from the
+//      colour buffer it is given; the colour JPEG saved by imageStore.js is untouched.
 //   1. Find the DIGIT DISPLAY only: lit LED pixels (red / green / amber / cyan) are masked, grouped into blobs, and the
 //      wide, dense blob is cropped. A QR code, labels, buttons and stickers are black/white or not LED-coloured, so they are ignored.
 //      When no LED blob is found (LCD, dark digits on grey) a few wide bands of the photo are tried as fallback candidates.
@@ -17,9 +20,11 @@
 //      Other crops, or when the decoder cannot read: tesseract.js reads digits only (whitelist 0-9 and '.'), single text line.
 //   4. A weight is accepted only when at least WEIGHING_OCR_MIN_AGREE variants read the SAME number.
 //   5. A time budget is enforced: when the caller's timeout fires, the running job is cancelled (it no longer blocks later photos).
+//   6. When the local reader cannot read the display with certainty, the result is UNREADABLE (value null + a clear reason). There is NO
+//      external fallback of any kind.
 //
 // .env (all optional)
-//   WEIGHING_OCR_TIMEOUT_MS      max time for one photo                     default 25000
+//   WEIGHING_OCR_TIMEOUT_MS      max time for the local reader of one photo  default 25000
 //   WEIGHING_OCR_REQUIRE_DECIMAL true|false  refuse a reading without '.'  default true
 //   WEIGHING_OCR_DECIMALS        e.g. 1  -> if tesseract loses the dot, the last N digits are the decimals (112.2 shows as 1122)
 //   WEIGHING_OCR_MIN_AGREE       variants that must agree                   default 2
@@ -34,9 +39,9 @@
 const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
-const { decode: decodeSevenSeg } = require('./sevenSeg');
+const { decode: decodeSevenSeg, components: labelComponents } = require('./sevenSeg');
 
-const OCR_VERSION = '2026-11-23-core-crop-v2';
+const OCR_VERSION = '2026-11-24-v5-local-only';
 const ENGINE = 'tesseract-digits';
 const ENGINE_7SEG = 'led-7segment';
 // brightness levels (share of the brightest pixels) at which the lit segments are decoded. Glow merges the bars at low levels and thin bars vanish at
@@ -130,13 +135,41 @@ function isLit(r, g, b) {
   return false;
 }
 
+/* ---------------- 0. glow / background removal: the "stroke map" ---------------- */
+// A pixel counts as a lit stroke when it is brighter than its OWN neighbourhood (brightest channel minus a heavy blur of itself): the flat
+// glow, the tinted panel, reflections and keys vanish, thin bright strokes stay - whatever the LED colour or exposure.
+function maxChannel(raw, n, ch = 3) {
+  const v = new Uint8Array(n);
+  for (let i = 0, j = 0; i < n; i++, j += ch) { const r = raw[j], g = raw[j + 1], b = raw[j + 2]; v[i] = r > g ? (r > b ? r : b) : (g > b ? g : b); }
+  return v;
+}
+async function strokeMap(v, w, h, sigma) {
+  // sharp's blur() on a 1-channel raw image returns a 3-channel image. Without toColourspace('b-w') the blurred buffer is 3x too long and every
+  // pixel is compared with the wrong neighbour (this was the v3 bug: the map came out as horizontal stripes).
+  const bg = await sharp(Buffer.from(v.buffer, v.byteOffset, v.length), { raw: { width: w, height: h, channels: 1 } })
+    .blur(clamp(sigma, 0.5, 200))
+    .toColourspace('b-w')
+    .raw().toBuffer();
+  if (bg.length !== w * h) throw new Error(`strokeMap: expected ${w * h} bytes, got ${bg.length}`);
+  const s = new Uint8Array(w * h);
+  for (let i = 0; i < s.length; i++) { const d = v[i] - bg[i]; s[i] = d > 0 ? d : 0; }
+  return s;
+}
+function histOf(a) { const h = new Uint32Array(256); for (let i = 0; i < a.length; i++) h[a[i]]++; return h; }
+function histPct(h, total, p) { const goal = total * p; let acc = 0; for (let k = 0; k < 256; k++) { acc += h[k]; if (acc >= goal) return k; } return 255; }
+function otsu(h, total) { // best split between background and strokes
+  let sum = 0; for (let k = 0; k < 256; k++) sum += k * h[k];
+  let wB = 0, sumB = 0, best = 0, bestT = 128;
+  for (let t = 0; t < 256; t++) { wB += h[t]; if (!wB) continue; const wF = total - wB; if (!wF) break; sumB += t * h[t]; const mB = sumB / wB, mF = (sum - sumB) / wF; const between = wB * wF * (mB - mF) * (mB - mF); if (between > best) { best = between; bestT = t; } }
+  return bestT;
+}
+
 // connected blobs of lit pixels, on an 6px block grid after dilation. Returns boxes in SCAN_W coordinates.
-function litBlobs(raw, w, h) {
+function blobsOf(w, h, test) {
   const B = 6, bw = Math.ceil(w / B), bh = Math.ceil(h / B);
   const cnt = new Uint16Array(bw * bh);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    const i = (y * w + x) * 3;
-    if (isLit(raw[i], raw[i + 1], raw[i + 2])) cnt[Math.floor(y / B) * bw + Math.floor(x / B)]++;
+    if (test(y * w + x)) cnt[Math.floor(y / B) * bw + Math.floor(x / B)]++;
   }
   const on = new Uint8Array(bw * bh);
   for (let i = 0; i < on.length; i++) on[i] = cnt[i] >= 3 ? 1 : 0;
@@ -164,6 +197,8 @@ function litBlobs(raw, w, h) {
   }
   return out;
 }
+
+const litBlobs = (raw, w, h) => blobsOf(w, h, (p) => isLit(raw[p * 3], raw[p * 3 + 1], raw[p * 3 + 2]));
 
 // A narrow digit ('1' lights only its two right-hand bars) leaves a big empty gap, so the 2-block join above can split ONE display into
 // several blobs - the leading 1s of 112.2 / 100.0 were then cut off the crop. Blobs that sit on the same row (>= 60 % vertical overlap) and are
@@ -201,9 +236,22 @@ async function candidates(jpeg, quiet = false) {
     log(`candidate ${c.name}: ${boxStr(c)} (${c.width}x${c.height}px)${why ? ` REJECTED: ${why}` : ' ok'}`);
     if (!why) list.push({ ...c, imgW: W, imgH: H });
   };
-  const blobs = mergeRow(litBlobs(data, info.width, info.height))
-    .filter((b) => b.lit >= 25 && b.w >= 30 && b.h >= 10 && b.aspect >= 1.4 && b.aspect <= 9 && b.w < info.width * 0.95)
-    .sort((a, b) => b.lit - a.lit).slice(0, 3);
+  const keep = (b) => b.lit >= 25 && b.w >= 30 && b.h >= 10 && b.aspect >= 1.4 && b.aspect <= 9 && b.w < info.width * 0.95;
+  // a real digit display is never most of the photo: huge stroke blobs are glare / panel edges / labels merged together
+  const keepStroke = (b) => keep(b) && b.w < info.width * 0.7 && b.h < info.height * 0.5;
+  // (a) colour independent: thin bright strokes after glow removal. Finds white-hot cores and any LED colour, ignores flat lit keys / panels.
+  const sv = maxChannel(data, info.width * info.height);
+  const sm = await strokeMap(sv, info.width, info.height, info.width * 0.012);
+  const sh = histOf(sm), sTop = histPct(sh, sm.length, 0.995), sThr = Math.max(22, sTop * 0.45);
+  const strokeBlobs = sTop < 30 ? [] : mergeRow(blobsOf(info.width, info.height, (p) => sm[p] >= sThr)).filter(keepStroke).sort((a, b) => b.lit - a.lit).slice(0, 2);
+  // (b) the colour rules (red / green / amber / cyan): the lit display itself
+  const colourBlobs = mergeRow(litBlobs(data, info.width, info.height)).filter(keep).sort((a, b) => b.lit - a.lit).slice(0, 3);
+  const overlap = (a, b) => { const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x), iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y); return ix > 0 && iy > 0 && (ix * iy) / Math.min(a.w * a.h, b.w * b.h) > 0.5; };
+  // colour blobs (the lit display) go FIRST; stroke blobs only add what the colour rules did not already cover
+  const blobs = [
+    ...colourBlobs.map((b) => ({ ...b, src: 'colour' })),
+    ...strokeBlobs.filter((s2) => !colourBlobs.some((b) => overlap(s2, b))).map((b) => ({ ...b, src: 'stroke' })),
+  ].slice(0, 4);
   for (const [i, b] of blobs.entries()) {
     // Keep a generous margin around the detected glow. The display detector can
     // find the bright core but the outer digit strokes / decimal point may sit
@@ -211,7 +259,7 @@ async function candidates(jpeg, quiet = false) {
     const padX = Math.max(b.w * 0.28, 12), padY = Math.max(b.h * 0.42, 12);
     // box in the small scan image -> original pixels, then snapped INSIDE the photo.
     const f = fitBox((b.x - padX) * scale, (b.y - padY) * scale, (b.w + 2 * padX) * scale, (b.h + 2 * padY) * scale, W, H);
-    add({ name: `led${i + 1}`, ...f, led: true });
+    add({ name: `led${i + 1}-${b.src}`, ...f, led: true });
   }
   // fallback for LCD / unusual displays: wide bands (never the whole photo: it holds the QR, labels and other numbers).
   // Trusted less than an LED blob: see 'needed' in readOnceInner.
@@ -232,29 +280,132 @@ function upscales(width) {
 // re-threshold so each digit is one solid glyph. LED = bright digits on dark: negated so tesseract sees dark digits on white.
 async function* variants(jpeg, c) {
   const pad = (p) => p.extend({ top: 40, bottom: 40, left: 60, right: 60, background: '#ffffff' });
-  // LED crops: every 4x/5x/6x scale. LCD fallback bands are big and only a last resort: one scale, two versions.
-  for (const k of (c.led ? upscales(c.width) : upscales(c.width).slice(0, 1))) {
+  if (c.led) {
+    // LED versions: the glow is subtracted first (stroke map) and the result is handed over as SOFT dark-on-white greyscale
+    // (tesseract binarises it itself) - plus one gently closed version.
+    for (const k of upscales(c.width).slice(0, 2)) {
+      try {
+        const { data, info } = await cropPipe(jpeg, c).resize({ width: Math.max(1, Math.round(c.width * k)), kernel: 'lanczos3' }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+        const v = maxChannel(data, info.width * info.height);
+        const S = await strokeMap(v, info.width, info.height, info.height * 0.10);
+        const sMax = Math.max(30, histPct(histOf(S), S.length, 0.995));
+        const soft = new Uint8Array(S.length); for (let i = 0; i < S.length; i++) soft[i] = 255 - Math.min(255, Math.round((S[i] * 255 * 1.15) / sMax));
+        const grey = (b) => sharp(Buffer.from(b.buffer, b.byteOffset, b.length), { raw: { width: info.width, height: info.height, channels: 1 } });
+        const defs = [
+          ['stroke-soft', () => grey(soft)],
+          ['stroke-closed', () => grey(soft).blur(1.4 * k / 4 + 0.6).threshold(150)],
+          ['glow-soft', () => grey(v).normalise().negate().linear(1.25, -30)],
+        ];
+        for (const [name, build] of defs) {
+          try { const o = await pad(build()).png().toBuffer({ resolveWithObject: true }); yield { name: `${name}-x${k}`, buf: o.data, w: o.info.width, h: o.info.height }; } catch (e) { dbg(`version ${c.name}/${name}-x${k} skipped: ${e.message}`); }
+        }
+      } catch (e) { dbg(`versions ${c.name}-x${k} skipped: ${e.message}`); }
+    }
+    return;
+  }
+  // LCD fallback bands are big and only a last resort: one scale, two versions.
+  for (const k of upscales(c.width).slice(0, 1)) {
     const up = () => cropPipe(jpeg, c).resize({ width: Math.max(1, Math.round(c.width * k)), kernel: 'lanczos3' });
-    const grey = () => { const p = up().greyscale().normalise(); return c.led ? p.negate() : p; };
-    const defs = c.led ? [
-      ['led-r', () => up().extractChannel(0).normalise().negate().threshold(110).median(3)],
-      ['led-g', () => up().extractChannel(1).normalise().negate().threshold(110).median(3)],
-      ['grey-contrast', () => grey().linear(1.4, -40)],
-      ['grey-thr', () => grey().threshold(128)],
-      ['grey-closed', () => grey().blur(1.5).threshold(140)],
-    ] : [
+    const grey = () => up().greyscale().normalise();
+    const defs = [
       ['grey-contrast', () => grey().sharpen().linear(1.4, -40)],
       ['grey-thr', () => grey().sharpen().threshold(120)],
       ['grey-inv', () => up().greyscale().normalise().negate().threshold(120)],
       ['grey-closed', () => grey().blur(1.2).threshold(130)],
     ];
-    for (const [name, build] of (c.led ? defs : defs.slice(0, 2))) {
+    for (const [name, build] of defs.slice(0, 2)) {
       try { const { data, info } = await pad(build()).png().toBuffer({ resolveWithObject: true }); yield { name: `${name}-x${k}`, buf: data, w: info.width, h: info.height }; } catch (e) { dbg(`version ${c.name}/${name}-x${k} skipped: ${e.message}`); }
     }
   }
 }
 
 /* ---------------- 2b. LED display: lit-segment mask -> 7-segment decoder ---------------- */
+// Several brightness levels each give one reading; a number counts only when enough levels agree and it clearly beats the runner-up.
+function vote(reads, need) {
+  const m = new Map();
+  for (const r of reads) if (r.value !== null && r.value !== undefined) { const e = m.get(r.value) || { n: 0, texts: [] }; e.n += 1; e.texts.push(r.text); m.set(r.value, e); }
+  const ranked = [...m.entries()].sort((a, b) => b[1].n - a[1].n);
+  if (!ranked.length) return { ok: false, ambiguous: false, ranked };
+  const [value, top] = ranked[0], second = ranked[1];
+  const ambiguous = !!second && top.n < second[1].n * 2;
+  return { ok: top.n >= need && !ambiguous, ambiguous, value, top, second, ranked };
+}
+// A dot is never invented, only lost: a level that shows the SAME digits without a dot supports the level that found the dot.
+function mergeDots(out) {
+  const dotted = out.find((r) => r.text.includes('.'));
+  if (!dotted) return;
+  const bare = dotted.text.replace('.', '');
+  for (const r of out) if (!r.text.includes('.') && r.text === bare) { r.text = dotted.text; r.value = toNumber(dotted.text, { insertDot: false }); }
+}
+
+// A phone photo is rarely perfectly level. The 7-segment decoder removes the italic slant itself but not a tilted baseline, so the tilt is measured
+// first, on the digit box only: the lower and the upper edge of the lit digits are straight lines when the photo is level, so the slope of a
+// line fitted through them is the tilt. Returns degrees to rotate CLOCKWISE (sharp.rotate), 0 when level.
+function estimateTilt(strong, W, x0, x1, y0, y1) {
+  const fit = (pts) => { // least squares y = a + b x, one round of outlier trimming
+    let use = pts;
+    for (let round = 0; round < 2; round++) {
+      const n = use.length; if (n < 8) return null;
+      let sx = 0, sy = 0, sxx = 0, sxy = 0; for (const [x, y] of use) { sx += x; sy += y; sxx += x * x; sxy += x * y; }
+      const den = n * sxx - sx * sx; if (!den) return null;
+      const b = (n * sxy - sx * sy) / den, a = (sy - b * sx) / n;
+      const res = use.map(([x, y]) => y - (a + b * x)), sd = Math.sqrt(res.reduce((t, r) => t + r * r, 0) / n) || 1;
+      if (round === 1) return b;
+      use = use.filter((_, i) => Math.abs(res[i]) <= 2 * sd);
+    }
+    return null;
+  };
+  const top = [], bot = [];
+  for (let x = x0; x <= x1; x += 2) {
+    let lo = -1, hi = -1;
+    for (let y = y0; y <= y1; y++) if (strong[y * W + x]) { if (lo < 0) lo = y; hi = y; }
+    if (lo >= 0) { top.push([x, lo]); bot.push([x, hi]); }
+  }
+  const bt = fit(top), bb = fit(bot);
+  const slopes = [bt, bb].filter((v) => v !== null);
+  if (!slopes.length) return 0;
+  const deg = -(Math.atan(slopes.reduce((a, b) => a + b, 0) / slopes.length) * 180) / Math.PI; // image rotated clockwise -> rotate back counter-clockwise
+  return Math.abs(deg) >= 0.8 && Math.abs(deg) <= 12 ? Math.round(deg * 10) / 10 : 0;
+}
+
+// Tier 1 of readLed: masks from the stroke map (glow removed). Pushes decoded readings into `out`.
+// Returns { tilt } = the measured tilt of the digit row (degrees, 0 = level) so the caller can retry on a straightened copy when this pass is unclear.
+async function strokeReads(data, W, H, maxPixels, c, decodeMask, alive) {
+  const S = await strokeMap(maxPixels, W, H, H * 0.10);
+  alive();
+  const hist = histOf(S), sMax = histPct(hist, S.length, 0.995);
+  if (sMax < 30) { dbg(`stroke-map ${c.name}: no contrast (max ${sMax}), not a lit display`); return null; }
+  // where are the digits? strong strokes -> connected parts -> the row of tall parts (digit bars) -> nearest group (drops labels like 'NET', 'kg')
+  const strong = new Uint8Array(W * H); for (let i = 0; i < S.length; i++) strong[i] = S[i] >= sMax * 0.5 ? 1 : 0;
+  const { comps } = labelComponents(strong, W, H);
+  if (!comps.length) return null;
+  const maxArea = Math.max(...comps.map((k) => k.area)), big = comps.filter((k) => k.area >= maxArea * 0.004);
+  const tall = Math.max(...big.map((k) => k.y1 - k.y0 + 1));
+  const rowC = big.filter((k) => k.y1 - k.y0 + 1 >= tall * 0.5);
+  const by0 = Math.min(...rowC.map((k) => k.y0)), by1 = Math.max(...rowC.map((k) => k.y1)), Hb = by1 - by0 + 1;
+  if (Hb < 36) { dbg(`stroke-map ${c.name}: digit rows only ${Hb}px high, too small`); return null; }
+  const band = big.filter((k) => { const cy = (k.y0 + k.y1) / 2; return cy >= by0 - 0.1 * Hb && cy <= by1 + 0.1 * Hb; }).sort((a, b) => a.x0 - b.x0);
+  const groups = []; let g = null;
+  for (const k of band) { if (g && k.x0 - g.x1 <= Hb * 1.1) { g.list.push(k); g.x1 = Math.max(g.x1, k.x1); g.area += k.area; } else { g = { list: [k], x1: k.x1, area: k.area }; groups.push(g); } }
+  const best = groups.sort((a, b) => b.area - a.area)[0];
+  let x0 = Math.min(...best.list.map((k) => k.x0)), x1 = Math.max(...best.list.map((k) => k.x1)), y0 = Math.min(...best.list.map((k) => k.y0)), y1 = Math.max(...best.list.map((k) => k.y1));
+  const mX = Math.max(4, Math.round((x1 - x0 + 1) * 0.06)), mY = Math.max(4, Math.round((y1 - y0 + 1) * 0.12));
+  x0 = Math.max(0, x0 - mX); x1 = Math.min(W - 1, x1 + mX); y0 = Math.max(0, y0 - mY); y1 = Math.min(H - 1, y1 + mY);
+  const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+  dbg(`stroke-map ${c.name}: sigma=${(H * 0.10).toFixed(1)} sMax=${sMax} digit box x=${x0}..${x1} y=${y0}..${y1} (${bw}x${bh})`);
+  if (bw < 30 || bh < 20) return null;
+  const tilt = estimateTilt(strong, W, x0, x1, y0, y1);
+  const sub = new Uint8Array(bw * bh); for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) sub[y * bw + x] = S[(y0 + y) * W + x0 + x];
+  const sh = histOf(sub), ot = otsu(sh, sub.length);
+  const levels = [['0.22', sMax * 0.22], ['0.30', sMax * 0.30], ['0.38', sMax * 0.38], ['0.46', sMax * 0.46], ['0.55', sMax * 0.55], ['otsu', clamp(ot, sMax * 0.15, sMax * 0.7)]];
+  for (const [label, th] of levels) {
+    const m = new Uint8Array(bw * bh); for (let i = 0; i < m.length; i++) if (sub[i] >= th) m[i] = 1;
+    decodeMask(`stroke level ${label}`, m, bw, bh);
+  }
+  return { tilt };
+}
+
+
 // Returns [{ text, value }] one per brightness level that could be decoded.
 // alive(): throws when the caller's time limit has passed, so a timed-out photo stops using the CPU.
 async function readLed(jpeg, c, alive = () => {}) {
@@ -266,6 +417,39 @@ async function readLed(jpeg, c, alive = () => {}) {
   const { data, info } = await pipe.removeAlpha().raw().toBuffer({ resolveWithObject: true });
   alive();
   const W = info.width, H = info.height;
+  let out = [];
+  const decodeMask = (label, m, bw, bh) => {
+    alive();
+    let d; try { d = decodeSevenSeg(m, bw, bh); } catch (e) { d = { ok: false }; }
+    dbg(`7-seg ${c.name}: ${label} -> ${d.ok ? `"${d.text}"` : `unreadable (${d.reason})`}`);
+    if (d.ok) out.push({ text: d.text, value: toNumber(d.text, { insertDot: false }) });
+  };
+  const needTier1 = Math.max(Math.round(envNum('WEIGHING_OCR_MIN_AGREE', 2)), 3);
+  // Tier 1: glow-removed stroke map (any LED colour, white-hot cores included). Decisive result -> done.
+  // Pass 1 reads the crop as it is. Only when that is not decisive, a straightened COPY is tried (measured tilt first, then a few fixed angles).
+  const first = [];
+  try {
+    const r1 = await strokeReads(data, W, H, maxChannel(data, W * H), c, decodeMask, alive);
+    mergeDots(out);
+    if (vote(out, needTier1).ok) { dbg(`7-seg ${c.name}: stroke-map readings agree, colour rules not needed`); return out; }
+    first.push(...out);
+    const angles = []; if (r1 && r1.tilt) angles.push(r1.tilt);
+    for (const a of [3, -3, 6, -6]) if (!angles.some((x) => Math.abs(x - a) < 1.5)) angles.push(a);
+    for (const deg of angles) {
+      alive();
+      out = [];
+      dbg(`stroke-map ${c.name}: not clear, trying the crop straightened by ${deg} degrees`);
+      const rp = cropPipe(jpeg, c);
+      const rs = up > 1.05 ? rp.resize({ width: Math.round(c.width * up), height: Math.round(c.height * up), kernel: 'lanczos3' }) : rp;
+      const rr = await rs.rotate(deg, { background: '#000000' }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+      alive();
+      await strokeReads(rr.data, rr.info.width, rr.info.height, maxChannel(rr.data, rr.info.width * rr.info.height), c, decodeMask, alive);
+      mergeDots(out);
+      if (vote(out, needTier1).ok) return out;
+    }
+  } catch (e) { if (/timed out/i.test(e.message)) throw e; dbg(`stroke-map ${c.name} skipped: ${e.message}`); }
+  out = first; // nothing decisive after straightening: keep only what the untouched crop said
+  // Tier 2: the original colour / brightness masks, only when tier 1 was not decisive.
   // Find the bright LED cores, not the whole coloured glow / tinted display panel.
   // Including the panel in this box makes the decoder treat the background as lit
   // segments and often pushes the crop to an edge.
@@ -282,10 +466,12 @@ async function readLed(jpeg, c, alive = () => {}) {
     const i = (y * W + x) * 3;
     const r = data[i], g = data[i + 1], b = data[i + 2];
     const max = maxPixels[y * W + x];
-    const mid = r + g + b - max - Math.min(r, g, b);
-    if (max >= coreThreshold && mid > 55 && isLit(r, g, b)) { xs.push(x); ys.push(y); }
+    if (max >= coreThreshold && isLit(r, g, b)) {
+      xs.push(x);
+      ys.push(y);
+    }
   }
-  if (xs.length < 60) { dbg(`7-seg ${c.name}: only ${xs.length} bright core pixels, not a readable display`); return []; }
+  if (xs.length < 60) { dbg(`7-seg ${c.name}: only ${xs.length} bright core pixels, not a readable display`); return out; }
   xs.sort((a, b) => a - b); ys.sort((a, b) => a - b);
   const q = (a, p) => a[Math.min(a.length - 1, Math.floor(a.length * p))];
   // Keep nearly all core pixels so the first / last digit and decimal point are not clipped.
@@ -294,19 +480,13 @@ async function readLed(jpeg, c, alive = () => {}) {
   x0 = Math.max(0, x0 - mX); x1 = Math.min(W - 1, x1 + mX); y0 = Math.max(0, y0 - mY); y1 = Math.min(H - 1, y1 + mY);
   const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
   dbg(`7-seg ${c.name}: crop ${c.width}x${c.height} -> read at ${W}x${H}, bright-core box x=${x0}..${x1} y=${y0}..${y1} (${bw}x${bh}), threshold=${coreThreshold.toFixed(1)}`);
-  if (bw < 30 || bh < 20) { dbg(`7-seg ${c.name}: bright-core box ${bw}x${bh}px is too small`); return []; }
+  if (bw < 30 || bh < 20) { dbg(`7-seg ${c.name}: bright-core box ${bw}x${bh}px is too small`); return out; }
   // brightness of every pixel inside the box (mean of R, G, B): the pale core of a lit segment is brighter than its coloured glow whatever the
   // LED colour is (red, green, cyan ...), so this mask needs no colour rule. p98 of it = the lit cores.
   const mean = new Uint8Array(bw * bh);
   for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) { const i = ((y0 + y) * W + x0 + x) * 3; mean[y * bw + x] = (data[i] + data[i + 1] + data[i + 2]) / 3; }
   const mSorted = Uint8Array.from(mean).sort(); const mp98 = mSorted[Math.floor(mSorted.length * 0.98)];
-  const out = [];
-  const attempt = (label, m) => {
-    alive();
-    let d; try { d = decodeSevenSeg(m, bw, bh); } catch (e) { d = { ok: false }; }
-    dbg(`7-seg ${c.name}: ${label} -> ${d.ok ? `"${d.text}"` : `unreadable (${d.reason})`}`);
-    if (d.ok) out.push({ text: d.text, value: toNumber(d.text, { insertDot: false }) });
-  };
+  const attempt = (label, m) => decodeMask(label, m, bw, bh);
   for (const frac of LED_LEVELS) { // model A: colour mask (lit segment = bright AND not a pure glow colour)
     const cth = p98 * frac, m = new Uint8Array(bw * bh);
     for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
@@ -321,14 +501,7 @@ async function readLed(jpeg, c, alive = () => {}) {
     for (let i = 0; i < m.length; i++) if (mean[i] >= th) m[i] = 1;
     attempt(`brightness level ${frac}`, m);
   }
-  // The small decimal point is the first thing to vanish when the brightness level changes (112.2 at one level, 1122 at the next).
-  // A level that shows the SAME digits without a dot supports the level that found the dot (a dot is never invented, only lost);
-  // dots at different places, or different digits, still disagree and the photo is refused.
-  const dotted = out.find((r) => r.text.includes('.'));
-  if (dotted) {
-    const bare = dotted.text.replace('.', '');
-    for (const r of out) if (!r.text.includes('.') && r.text === bare) { r.text = dotted.text; r.value = toNumber(dotted.text, { insertDot: false }); }
-  }
+  mergeDots(out);
   return out;
 }
 
@@ -354,7 +527,8 @@ function toNumber(text, opts = {}) {
 }
 
 /* ---------------- 4. read ---------------- */
-const refuse = (text, reason, engine = ENGINE) => ({ value: null, unit: null, confidence: null, text: text || null, engine, reason });
+// An unreadable display: value null + a clear reason. status = 'UNREADABLE' so callers can tell it apart from a real reading.
+const refuse = (text, reason, engine = ENGINE) => ({ value: null, unit: null, confidence: null, text: text || null, engine, reason, status: 'UNREADABLE' });
 
 // ctx.dead is set by readWeight() when its time limit passes; every long step checks it and stops.
 async function readOnce(jpeg, ctx = { dead: false }) {
@@ -397,6 +571,14 @@ async function readOnceInner(jpeg, ctx = { dead: false }) {
     let reads = [];
     try { reads = (await readLed(jpeg, c, alive)).filter((r) => r.value !== null); } catch (e) { if (/timed out/i.test(e.message)) throw e; dbg(`7-seg ${c.name} skipped: ${e.message}`); }
     tried += LED_LEVELS.length + BRIGHT_LEVELS.length;
+    // judge each display candidate ON ITS OWN. Readings of a wrong region (lit keys, labels) used to be pooled with the real display and
+    // spoil the 2x-runner-up rule; now the first candidate whose readings clearly agree wins.
+    const own = vote(reads, minAgree);
+    if (own.ok) {
+      dbg(`7-seg ${c.name}: accepted ${own.value} (${own.top.n} of ${reads.length} readings)`);
+      const confidence = Math.round(Math.min(99, 0.5 * 92 + 0.5 * (own.top.n / reads.length) * 100) * 10) / 10;
+      return { value: own.value, unit: null, confidence, text: own.top.texts[0], engine: ENGINE_7SEG, reason: null };
+    }
     for (const r of reads) { const e = segVotes.get(r.value) || { n: 0, texts: [] }; e.n += 1; e.texts.push(r.text); segVotes.set(r.value, e); }
   }
   if (segVotes.size) {
@@ -469,8 +651,15 @@ async function readWeight(buffer) {
   let timer;
   const timeout = new Promise((_, rej) => { timer = setTimeout(() => { ctx.dead = true; rej(new Error('OCR timed out')); }, limit); });
   // the job is also marked dead on timeout, so it stops at its next check instead of blocking every later photo in the queue
-  try { return await Promise.race([serial(() => readOnce(buffer, ctx)), timeout]); }
-  finally { clearTimeout(timer); }
+  let res;
+  try { res = await Promise.race([serial(() => readOnce(buffer, ctx)), timeout]); }
+  catch (e) {
+    // a timeout is an unreadable photo; a real failure (e.g. tesseract language file could not be loaded) is still thrown to the caller
+    if (!/timed out/i.test(e.message)) throw e;
+    res = refuse(null, 'The local reader timed out. Retake a clearer photo');
+  } finally { clearTimeout(timer); }
+  // Local reader only: when it cannot read the display with certainty the result stays UNREADABLE (value null + reason). No external fallback.
+  return res;
 }
 
 async function terminate() {
