@@ -32,7 +32,7 @@ function stageFor(remaining) {
 async function reminders() {
   const window = STAGES.length ? STAGES[0] * 60 : 0;
   const [rows] = await pool.query(
-    `SELECT s.id, s.batch_id, s.process_type, s.started_by, TIMESTAMPDIFF(SECOND, NOW(), s.expected_end) AS remaining_sec,
+    `SELECT s.id, s.batch_id, s.process_type, s.started_by, TIMESTAMPDIFF(SECOND, NOW(), s.expected_end) AS remaining_sec,UNIX_TIMESTAMP(s.start_time) AS start_ts,
             mt.material_name, mc.machine_name, b.batch_no
        FROM process_sessions s
        JOIN materials mt ON mt.id = s.material_id
@@ -56,7 +56,7 @@ async function reminders() {
       screen: SCREEN[r.process_type],
       params: { process_id: r.id, batch_id: r.batch_id, process_type: r.process_type },
       processType: r.process_type, processId: r.id, batchId: r.batch_id, stage: st.code,
-      dedupeKey: `${st.code}:${r.id}`,
+           dedupeKey: `${st.code}:${r.id}:${r.start_ts}`,
       userIds: [r.started_by], roles: FULL_ACCESS,
       module: MODULE_USERS ? r.process_type.toLowerCase() : undefined,
     });
@@ -65,7 +65,7 @@ async function reminders() {
 
 async function completions() {
   const [rows] = await pool.query(
-    `SELECT s.id, s.batch_id, s.process_type, s.started_by, s.completed_by, s.output_weight, s.actual_minutes,
+    `SELECT s.id, s.batch_id, s.process_type, s.started_by, s.completed_by, s.output_weight, s.actual_minutes,UNIX_TIMESTAMP(s.start_time) AS start_ts,
             mt.material_name, mc.machine_name, b.batch_no
        FROM process_sessions s
        JOIN materials mt ON mt.id = s.material_id
@@ -82,7 +82,7 @@ async function completions() {
       screen: SCREEN[r.process_type],
       params: { process_id: r.id, batch_id: r.batch_id, process_type: r.process_type },
       processType: r.process_type, processId: r.id, batchId: r.batch_id, stage: 'done',
-      dedupeKey: `done:${r.id}`,
+      dedupeKey: `done:${r.id}:${r.start_ts}`,
       userIds: [r.started_by, r.completed_by].filter(Boolean), roles: FULL_ACCESS,
       module: MODULE_USERS ? r.process_type.toLowerCase() : undefined,
     });
