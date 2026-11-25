@@ -20,6 +20,8 @@ const port = process.env.PORT || 4000;
     console.log(`Aravai API running on :${port}`);
     try { require('./jobs/processAlerts').start(); } // Filtering / Roasting / Grinding "5 minutes to go" alerts (server side)
     catch (e) { console.error(`WARNING: process alert job not started: ${e.message}`); }
+       try { require('./services/blendingAlertJob').startBlendingAlerts(); } // Blending alerts
+    catch (e) { console.error(`WARNING: blending alert job not started: ${e.message}`); }
     try { require('./services/notificationService').startPhoneLink(); } // lets users connect their phone (Telegram) - only when TELEGRAM_BOT_TOKEN is set
     catch (e) { console.error(`WARNING: phone alerts not started: ${e.message}`); }
   });

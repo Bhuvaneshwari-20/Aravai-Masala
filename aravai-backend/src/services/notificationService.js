@@ -273,8 +273,7 @@ async function onTelegramMessage(msg) {
     if (!rows.length) return reply('This link has expired. Open Aravai Masala, press "Get alerts on my phone" again and tap the new link.');
     await pool.query("INSERT INTO phone_channels (user_id, kind, address) VALUES (?, 'TELEGRAM', ?) ON DUPLICATE KEY UPDATE kind = 'TELEGRAM', address = VALUES(address), linked_at = NOW()", [rows[0].user_id, chatId]);
     await pool.query('DELETE FROM phone_link_codes WHERE user_id = ?', [rows[0].user_id]);
-    return reply(`✅ Connected, ${rows[0].full_name}. Filtering, Roasting and Grinding alerts will come here when you are away from the website.`);
-  }
+    return reply(`✅ Connected, ${rows[0].full_name}. Filtering, Roasting, Grinding and Blending alerts will come here when you are away from the website.`);  }
   if (/^\/stop\b/.test(text)) {
     await pool.query("DELETE FROM phone_channels WHERE kind = 'TELEGRAM' AND address = ?", [chatId]);
     return reply('Alerts stopped. You can connect again from Aravai Masala any time.');

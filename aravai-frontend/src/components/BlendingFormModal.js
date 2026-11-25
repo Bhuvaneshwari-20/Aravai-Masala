@@ -36,8 +36,8 @@ function IngredientRow({ i, name, weight, pct }) {
 }
 
 // Blending entry: header (batch, machine, time, output) + ingredient rows. One submit saves everything.
-export default function BlendingFormModal({ visible, onDismiss, onSaved }) {
-  const { user } = useAuth();
+export default function BlendingFormModal({ visible, onDismiss, onSaved, initialBatchId }) {
+    const { user } = useAuth();
   const [lk, setLk] = useState(null);
   const [loading, setLoading] = useState(false);
   const [f, setF] = useState(initial(user?.id));
@@ -53,8 +53,16 @@ export default function BlendingFormModal({ visible, onDismiss, onSaved }) {
     if (!visible) return;
     setF(initial(user?.id)); setLines([]); setErrors({}); setErr(''); setSaving(false); setLoading(true);
     api.get('/blending/lookups')
-      .then((r) => setLk(r.data.data))
-      .catch((e) => setErr(errMsg(e)))
+.then((r) => {
+  const d = r.data.data;
+  setLk(d);
+  const b = initialBatchId ? d.batches.find((x) => x.id === initialBatchId) : null;
+  if (b) {
+    setF((p) => ({ ...p, batch_id: b.id, recipe_id: b.recipe_id || null }));
+    setLines((d.batch_materials || []).filter((m) => m.batch_id === b.id)
+      .map((m) => ({ ...newLine(), material_id: m.material_id, material_name: m.material_name, ingredient_weight: String(m.qty) })));
+  }
+})      .catch((e) => setErr(errMsg(e)))
       .finally(() => setLoading(false));
   }, [visible]); // eslint-disable-line
 

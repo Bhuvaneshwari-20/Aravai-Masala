@@ -223,4 +223,38 @@ async function detail(idRaw) {
   return buildTimeline(b, { batching, filtering, roasting, grinding, blending, packing });
 }
 
-module.exports = { board, detail, buildTimeline };
+
+// One row per batch x process with input / output / loss kg (same numbers as the Batch Timeline)
+async function processWeights(q) {
+  const search = v.clean(q.search);
+  const args = [];
+  let like = '';
+  if (search) { 
+    like += ' AND (b.batch_no LIKE ? OR p.product_name LIKE ?)'; args.push(`%${search}%`, `%${search}%`);
+
+}
+  const date = (x) => (/^\d{4}-\d{2}-\d{2}$/.test(String(x || '')) ? x : null);
+  if (date(q.from)) { like += ' AND b.created_at >= ?'; args.push(q.from); }
+  if (date(q.to)) { like += ' AND b.created_at < DATE_ADD(?, INTERVAL 1 DAY)'; args.push(q.to); }
+
+  const [batches] = await pool.query(
+    `SELECT b.id FROM batch_master b JOIN product_master p ON p.id = b.product_id
+      WHERE b.status <> 'CANCELLED'${like} ORDER BY b.id DESC LIMIT 100`, args);
+  const details = await Promise.all(batches.map((b) => detail(b.id)));
+  const items = [];
+  details.forEach((d) => {
+    d.steps.filter((s) => s.status === 'DONE' || s.status === 'CURRENT').forEach((s) => {
+      items.push({
+        id: `${d.batch.id}-${s.key}`, batch_id: d.batch.id, batch_no: d.batch.batch_no, product_name: d.batch.product_name,
+        process: s.key, process_label: s.label, status: s.status,
+        in_kg: s.key === 'BATCHING' ? s.out_kg : s.in_kg,   // batching input = total weighed
+        out_kg: s.out_kg, loss_kg: s.loss_kg, loss_pct: s.loss_pct,
+                out_kg: s.out_kg, loss_kg: s.loss_kg, loss_pct: s.loss_pct,
+        completed_at: s.ended_at || null,   // when this process finished (Running ones have none)
+      });
+    });
+  });
+  return { items };
+}
+
+module.exports = { board, detail, buildTimeline, processWeights };

@@ -36,6 +36,7 @@ import OverviewMaterialScreen from './src/screens/overview/OverviewMaterialScree
 import OverviewBatchScreen from './src/screens/overview/OverviewBatchScreen';
 import MeshListScreen from './src/screens/mesh/MeshListScreen';
 import NotificationCenter from './src/components/NotificationCenter';
+import ProcessLossScreen from './src/screens/tracking/ProcessLossScreen';
 import { usePushNotifications } from './src/pushNotifications';
 
 import MachineQrScreen from './src/screens/machine/MachineQrScreen';
@@ -101,6 +102,8 @@ function Root() {
    <Stack.Screen name="OverviewMaterial" component={OverviewMaterialScreen} options={{ title: 'Material Trace' }} />
    <Stack.Screen name="OverviewBatch" component={OverviewBatchScreen} options={{ title: 'Batch Materials' }} />
    <Stack.Screen name="MachineQr" component={MachineQrScreen} options={{ title: 'Machine' }} />
+   <Stack.Screen name="ProcessLossList" component={ProcessLossScreen} options={{ title: 'Process Yield & Loss' }} />   
+      
       </Stack.Navigator>
     </NavigationContainer>
     </View>

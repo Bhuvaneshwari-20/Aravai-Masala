@@ -11,14 +11,16 @@ async function lookups() {
             wm.id AS weighing_machine_id, wm.machine_code AS weighing_machine_code, wm.machine_name AS weighing_machine_name,
             COALESCE((SELECT SUM(pd.total_packing_weight) FROM packing_details pd
                        WHERE pd.batch_id = b.id AND pd.status <> 'CANCELLED'), 0) AS packed_kg,
-            COALESCE((SELECT SUM(bd.weighed_qty) FROM batching_details bd WHERE bd.batch_id = b.id), 0) AS batching_kg
+            COALESCE((SELECT SUM(bd.weighed_qty) FROM batching_details bd WHERE bd.batch_id = b.id), 0) AS batching_kg,
+            (SELECT DATE_FORMAT(MAX(g.grind_date), '%Y-%m-%d') FROM grinding_details g
+              WHERE g.batch_id = b.id AND g.status <> 'REJECTED') AS grinding_date
        FROM batch_master b JOIN product_master p ON p.id = b.product_id
        LEFT JOIN machine_master wm ON wm.id = b.weighing_machine_id
       WHERE b.current_stage = 'PACKING' AND b.status IN ('OPEN','IN_PROGRESS')
      HAVING b.current_output_kg - packed_kg > 0.001   -- nothing left to pack = not offered
       ORDER BY b.id DESC`);
         const [machines] = await pool.query(
-    "SELECT id, machine_code, machine_name FROM machine_master WHERE machine_type = 'PACKING' AND status IN ('ACTIVE','IDLE') ORDER BY machine_name");
+    "SELECT id, machine_code, machine_name, print_code FROM machine_master WHERE machine_type = 'PACKING' AND status IN ('ACTIVE','IDLE') ORDER BY machine_name");
   const [rates] = await pool.query(
     'SELECT id, product_id, sku_code, packing_size_label, weight_grams, mrp FROM product_packing_rates WHERE is_active = 1 ORDER BY product_id, weight_grams');
   return { batches, machines, rates };

@@ -99,24 +99,6 @@ const batchDone = !!d && (d.batch_stage === 'COMPLETED' || d.batch_status === 'C
               <Row label="Status" value={String(d.status).replace('_', ' ')} color={d.status === 'COMPLETED' ? COLORS.ok : undefined} last />
             </Section>
 
-            <Section title="INGREDIENTS (MIXING %)">
-              <View style={{ flexDirection: 'row', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
-                <Text style={{ width: 24 }} />
-                <Text style={{ flex: 1, fontSize: 11, fontWeight: '900', color: COLORS.grey }}>MATERIAL</Text>
-                <Text style={{ width: 86, textAlign: 'right', fontSize: 11, fontWeight: '900', color: COLORS.grey }}>WEIGHT</Text>
-                <Text style={{ width: 66, textAlign: 'right', fontSize: 11, fontWeight: '900', color: COLORS.grey }}>MIX %</Text>
-              </View>
-              {d.ingredients.map((l, i) => (
-                <IngredientLine key={l.id} i={i} name={l.material_code ? `${l.material_code} · ${l.ingredient_name}` : l.ingredient_name}
-                  weight={l.ingredient_weight} pct={l.percent} last={false} />
-              ))}
-              <View style={{ flexDirection: 'row', paddingVertical: 10 }}>
-                <Text style={{ width: 24 }} />
-                <Text style={{ flex: 1, fontWeight: '900', color: COLORS.text }}>Total</Text>
-                <Text style={{ width: 86, textAlign: 'right', fontWeight: '900', color: COLORS.text }}>{fmt(d.total_input_weight)} kg</Text>
-                <Text style={{ width: 66, textAlign: 'right', fontWeight: '900', color: COLORS.primary }}>100.00%</Text>
-              </View>
-            </Section>
 
             <Section title="WEIGHT">
               <Row label="input weight" value={dash(d.total_input_weight, ' kg')} />

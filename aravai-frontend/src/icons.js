@@ -20,6 +20,7 @@ export const ICON = {
   "finished_goods": "warehouse",
   "reports": "chart-line",
   "tracking": "map-marker-path",
+    "process_loss": "chart-line-variant",
   "material_overview": "magnify",
   "users": "account-group",
   "materials": "package-variant",
