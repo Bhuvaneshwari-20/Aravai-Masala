@@ -47,12 +47,12 @@ const PILL = { IN_PROGRESS: ['warn', 'In Progress'], COMPLETED: ['ok', 'Complete
 const count = (params) => api.get('/batches', { params: { ...params, limit: 1 } }).then((r) => r.data.data.total);
 
 // ---------- desktop table ----------
-const COL = { idx: { width: 44 }, no: { flex: 1.4 }, product: { flex: 1.6 }, qty: { flex: 1 }, stage: { flex: 1.4 }, status: { flex: 1.2 }, view: { width: 70, alignItems: 'flex-end' } };
+const COL = { idx: { width: 60 }, no: { flex: 1.4 }, product: { flex: 1.6 }, qty: { flex: 1 }, stage: { flex: 1.4 }, status: { flex: 1.2 }, view: { width: 70, alignItems: 'flex-end' } };
 
 function TableHead() {
   return (
     <View style={[t.row, t.head]}>
-      <Text style={[t.th, COL.idx]}>#</Text>
+      <Text style={[t.th, COL.idx]}>S.No</Text>
       <Text style={[t.th, COL.no]}>Batch No.</Text>
       <Text style={[t.th, COL.product]}>Product</Text>
       <Text style={[t.th, COL.qty]}>Qty</Text>

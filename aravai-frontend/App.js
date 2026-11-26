@@ -38,6 +38,7 @@ import MeshListScreen from './src/screens/mesh/MeshListScreen';
 import NotificationCenter from './src/components/NotificationCenter';
 import ProcessLossScreen from './src/screens/tracking/ProcessLossScreen';
 import { usePushNotifications } from './src/pushNotifications';
+import { Platform } from 'react-native';
 
 import MachineQrScreen from './src/screens/machine/MachineQrScreen';
 import { linking } from './src/linking';    
@@ -67,12 +68,12 @@ function Root() {
   }
   if (!user) return <LoginScreen />;
   return (
-    <View style={{ flex: 1, flexDirection: 'row', backgroundColor: COLORS.bg }}>
+       <View style={[{ flex: 1, flexDirection: 'row', backgroundColor: COLORS.bg }, Platform.OS === 'web' && { height: '100vh', overflow: 'hidden' }]}>
           <StatusBar style="dark" />
       <NotificationCenter navRef={navRef} route={route} />
       <StatusBar style="dark" />
       {width >= 900 && <Sidebar navRef={navRef} current={route} />}
-      <View style={{ flex: 1, minWidth: 0 }}>
+      <View style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
     <View style={{ flex: 1 }}>
       <NavigationContainer ref={navRef} linking={linking} onStateChange={() => setRoute(navRef.getCurrentRoute()?.name || 'Home')}>
 

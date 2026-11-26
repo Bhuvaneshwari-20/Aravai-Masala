@@ -4,6 +4,8 @@ const { pool } = require('../config/db');
 const AppError = require('../utils/AppError');
 const { audit } = require('../utils/audit');
 const { FULL_ACCESS } = require('../utils/roles');
+const menuAccess = require('../utils/userMenuAccess');
+const bcrypt = require('bcryptjs');
 
 async function login(username, password, ip) {
   if (!username || !password) {
@@ -17,11 +19,12 @@ async function login(username, password, ip) {
 
   const u = rows[0];
 
-  // Plain-text password comparison
-  if (!u || password !== u.password_hash) {
+   // bcrypt hash ($2a$/$2b$...) for accounts made in Users; plain text for the old accounts
+  const isHash = !!u && /^\$2[aby]\$/.test(u.password_hash || '');
+  const okPw = !!u && (isHash ? await bcrypt.compare(password, u.password_hash) : password === u.password_hash);
+  if (!okPw) {
     throw new AppError('Invalid username or password', 401);
   }
-
   if (!u.is_active) {
     throw new AppError('This account is deactivated. Contact your admin.', 403);
   }
@@ -67,9 +70,9 @@ async function profile(userId) {
     [u.role_id]
   );
 
-  return {
+   return {
     ...u,
-    permissions: FULL_ACCESS.includes(u.role_name) ? 'ALL' : perms
+    permissions: FULL_ACCESS.includes(u.role_name) ? 'ALL' : await menuAccess.apply(u.id, perms)
   };
 }
 
@@ -111,7 +114,9 @@ async function changePassword(userId, oldPw, newPw) {
     [userId]
   );
 
-  if (!u || oldPw !== u.password_hash) {
+   const isHash = !!u && /^\$2[aby]\$/.test(u.password_hash || '');
+  const okOld = !!u && (isHash ? await bcrypt.compare(oldPw, u.password_hash) : oldPw === u.password_hash);
+  if (!okOld) {
     throw new AppError('Old password is incorrect', 401);
   }
 
@@ -121,7 +126,7 @@ async function changePassword(userId, oldPw, newPw) {
 
   await pool.query(
     'UPDATE users SET password_hash = ? WHERE id = ?',
-    [newPw, userId]
+        [await bcrypt.hash(newPw, 10), userId]
   );
 }
 

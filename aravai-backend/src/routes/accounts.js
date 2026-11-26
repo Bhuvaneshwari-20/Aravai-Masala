@@ -12,4 +12,6 @@ router.get('/roles', c.roles);
 router.post('/', c.create);
 router.put('/:id', c.update);
 router.patch('/:id/active', c.setActive);
+
+router.get('/roles/permissions', allowRoles(SUPER), c.rolePermissions);
 module.exports = router;

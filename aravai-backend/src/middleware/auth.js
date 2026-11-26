@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const { pool } = require('../config/db');
 const AppError = require('../utils/AppError');
 const { roleDecision } = require('../utils/roles');
+const menuAccess = require('../utils/userMenuAccess');
 
 // 1) Verify JWT and load the user
 async function authenticate(req, res, next) {
@@ -29,9 +30,7 @@ function authorize(module, action = 'view') {
       const d = roleDecision(req.user.role_name, module, action);   // Super Admin / Admin decided by role
       if (d === true) return next();
       if (d === false) throw new AppError('You do not have permission for this action', 403);
-      const [rows] = await pool.query(
-        `SELECT can_${action} AS ok FROM role_permissions WHERE role_id = ? AND module = ?`, [req.user.role_id, module]);
-      if (!rows.length || !rows[0].ok) throw new AppError('You do not have permission for this action', 403);
+      if (!(await menuAccess.allows(req.user, module, action))) throw new AppError('You do not have permission for this action', 403);
       next();
     } catch (e) { next(e); }
   };
