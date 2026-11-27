@@ -17,9 +17,13 @@ let configured = false;
 function configure() {
   if (!native || configured) return;
   configured = true;
-  // App open: no system banner (the in-app pop-up shows it). App in background / closed: Android shows the system notification by itself.
+   // App open: still show the system notification. Both names are given so it works with older and newer expo-notifications.
   Notifications.setNotificationHandler({
-    handleNotification: async () => ({ shouldShowBanner: false, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false }),
+    handleNotification: async () => ({
+      shouldShowAlert: true,               // older versions
+      shouldShowBanner: true, shouldShowList: true,   // newer versions
+      shouldPlaySound: true, shouldSetBadge: false,
+    }),
   });
    if (Platform.OS === 'android') {
     Notifications.setNotificationChannelAsync(CHANNEL, {

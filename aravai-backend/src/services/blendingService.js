@@ -8,7 +8,7 @@ const h = require('../utils/productionHelpers');
 // false = blending only records the weights and never touches stock.
 const DEDUCT_STOCK = false;
 const MAX_LINES = 50;
-
+const START_TOLERANCE_MIN = Math.max(Number(process.env.START_TIME_TOLERANCE_MIN) || 10, 0);   // phone clock may be a few minutes ahead of the server
 // The spices of a batch with their weights. Per-spice weights exist only at batching (or in the recipe), so they are
 // scaled to the powder grinding actually handed over (batch_master.current_output_kg). Mixing % = spice weight / total.
 async function loadIngredients(db, batchId = null) {
@@ -310,7 +310,7 @@ async function start(body, userId, ip) {
     // the start time field only has hours:minutes. When it is the current minute (the default),
     // use the exact current second, otherwise the timer would already show up to 59 seconds
     const startStr = time === n.hm ? n.full : `${n.d} ${time}:00`;
-    const [[fut]] = await conn.query('SELECT (? > NOW() + INTERVAL 2 MINUTE) AS fut', [startStr]);
+       const [[fut]] = await conn.query('SELECT (? > NOW() + INTERVAL ? MINUTE) AS fut', [startStr, START_TOLERANCE_MIN]);
     if (Number(fut.fut)) throw new AppError('Start time cannot be later than the current time');
 
     const [r] = await conn.query(

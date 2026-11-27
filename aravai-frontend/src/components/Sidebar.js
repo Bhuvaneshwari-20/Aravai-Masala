@@ -20,7 +20,7 @@ const DECO = require('../../assets/banner-spices.jpg');
 export default function Sidebar({ navRef, current }) {
   const { user, can, logout } = useAuth();
   const { toast } = useUi();
-  const groups = groupsForRole(user.role_name)
+    const groups = groupsForRole(user.role_name, user.explicit)
     .map((g) => ({ ...g, items: g.modules.map((m) => MENU.find((x) => x.module === m)).filter((m) => m && can(m.module, 'view')) }))
     .filter((g) => g.items.length);
 
@@ -90,7 +90,7 @@ export default function Sidebar({ navRef, current }) {
 }
 
 const s = StyleSheet.create({
-  wrap: { width: SIDEBAR_W },
+  wrap: { width: SIDEBAR_W, height: '100%' },
   deco: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 210, opacity: 0.85 },
   brand: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 20, paddingBottom: 18 },
   brandLogo: { width: 44, height: 44, borderRadius: 13, backgroundColor: '#FFF4E0', alignItems: 'center', justifyContent: 'center', marginRight: 11 },

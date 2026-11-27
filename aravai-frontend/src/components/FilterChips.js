@@ -2,11 +2,13 @@ import React from 'react';
 import { ScrollView, Pressable, View, StyleSheet } from 'react-native';
 import { Text } from 'react-native-paper';
 import { COLORS } from '../theme';
+import useLayout from '../hooks/useLayout';
 
 // options: [{ value, label, count? }]  -  single select. `children` = extra chips shown after the options.
 export default function FilterChips({ options, value, onChange, children, style }) {
+  const { pad } = useLayout();   // same side gap as the banner / cards, so the chips never touch the sidebar
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.row} style={[s.scroll, style]}>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[s.row, { paddingHorizontal: pad }]} style={[s.scroll, style]}>
       {options.map((o) => {
         const on = value === o.value;
         return (

@@ -32,7 +32,8 @@ const shape = (m) => ({
   installation_date: fmtDate(m.installation_date),
   last_maintenance_date: fmtDate(m.last_maintenance_date),
   next_maintenance_date: fmtDate(m.next_maintenance_date),
-  calibration_due_date: fmtDate(m.calibration_due_date)
+  calibration_due_date: fmtDate(m.calibration_due_date),
+    print_codes: parseJson(m.print_codes) || {},
 });
 
 // Optional date: blank -> null
@@ -203,8 +204,9 @@ async function parse(body, db) {
     tare = v.clean(body.tare_weight_kg) ? v.num(body.tare_weight_kg, 'Tare weight (kg)', { max: 1000000, decimals: 3 }) : null;
     if (tare === 0) tare = null;
   }
-
-  return {
+const defCode = (v.optStr(body.print_code, 'Print code', 10) || '').toUpperCase();
+  if (defCode && !/^[A-Z0-9]{1,10}$/.test(defCode)) throw new AppError('Print code can have only letters and numbers (max 10)');
+    const result = {
     tare_weight_kg: tare,
     machine_name: v.reqStr(body.machine_name, 'Machine name', 100),
     machine_type: type,
@@ -222,11 +224,38 @@ async function parse(body, db) {
     serial_no: v.optStr(body.serial_no, 'Serial no', 50),
     calibration_due_date: optDate(body.calibration_due_date, 'Calibration due date'),
     maintenance_interval_days: intervalDays,
-    remarks: v.optStr(body.remarks, 'Remarks', 255)
+    remarks: v.optStr(body.remarks, 'Remarks', 255),
+        print_code: (v.optStr(body.print_code, 'Print code', 10) || '').toUpperCase() || null,
+    print_codes: parsePrintCodes(body.print_codes)
   };
+
+  if (type === 'PACKING' && (body.print_codes !== undefined || body.print_code !== undefined)) {
+    if (!result.print_code && !result.print_codes) {
+      throw new AppError('Enter a code for the pack sizes, or one default print code');
+    }
+    if (result.print_code && result.print_codes) {
+      throw new AppError('Use either the pack size print codes or one default print code, not both');
+    }
+  }
+  return result;
 }
-
-
+// { "50": "x1", "100": "x2" } -> JSON text saved in machine_master.print_codes (blank codes are dropped)
+function parsePrintCodes(x) {
+  
+  if (!x || typeof x !== 'object') return null;
+  const out = {};
+  const used = {};
+  Object.keys(x).forEach((k) => {
+    const g = Number(k);
+    const c = String(x[k] === null || x[k] === undefined ? '' : x[k]).trim().toUpperCase();
+    if (!(g > 0) || !c) return;
+    if (!/^[A-Z0-9]{1,10}$/.test(c)) throw new AppError(`Print code for ${g} g can have only letters and numbers (max 10)`);
+    if (used[c]) throw new AppError(`Print code ${c} is used for both ${used[c]} g and ${g} g. Each pack size needs its own code`);
+    used[c] = g;
+    out[String(g)] = c;
+  });
+  return Object.keys(out).length ? JSON.stringify(out) : null;
+}
 // --------------------------------------------------
 // CREATE MACHINE
 // QR TOKEN IS GENERATED DURING MACHINE CREATION
@@ -265,9 +294,11 @@ async function create(body, userId, ip) {
             maintenance_interval_days,
             remarks,
             qr_token,
-            tare_weight_kg
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [
+            tare_weight_kg,
+            print_code,
+                print_codes
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                     [
             code,
             d.machine_name,
             d.machine_type,
@@ -286,7 +317,9 @@ async function create(body, userId, ip) {
             d.maintenance_interval_days,
             d.remarks,
             token,
-            d.tare_weight_kg === undefined ? null : d.tare_weight_kg
+            d.tare_weight_kg === undefined ? null : d.tare_weight_kg,
+                d.print_code,
+                   d.print_codes
           ]
         );
 
@@ -355,9 +388,12 @@ async function update(idRaw, body, userId, ip) {
         calibration_due_date = ?,
         maintenance_interval_days = ?,
         remarks = ?,
-        tare_weight_kg = ?
+        tare_weight_kg = ?,
+        print_code = ?,
+        
+  print_codes = ?
        WHERE id = ?`,
-      [
+             [
         d.machine_name,
         d.machine_type,
         d.manufacturer,
@@ -375,6 +411,8 @@ async function update(idRaw, body, userId, ip) {
         d.maintenance_interval_days,
         d.remarks,
         d.tare_weight_kg === undefined ? (old.tare_weight_kg ?? null) : d.tare_weight_kg,
+          d.print_code,
+             d.print_codes,
         id
       ]
     );
@@ -903,7 +941,11 @@ async function getByToken(input) {
   return shape(rows[0]);
 }
 
-
+// distinct active pack sizes (grams) for the "print code by pack size" boxes in the machine form
+async function packSizes() {
+  const [rows] = await pool.query('SELECT DISTINCT weight_grams FROM product_packing_rates WHERE is_active = 1 ORDER BY weight_grams');
+  return { items: rows.map((r) => Number(r.weight_grams)) };
+}
 // ==================================================
 // EXPORT MODULE FUNCTIONS
 // ==================================================
@@ -928,7 +970,7 @@ module.exports = {
   ensureToken,
   backfillMissingTokens,
   getByToken,
-
+  packSizes,
   TYPES,
   STATUSES
 };

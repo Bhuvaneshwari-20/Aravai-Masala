@@ -131,8 +131,40 @@
           <ModeTag mode={g.process_mode} />
           {g.batch_status === 'ON_HOLD' && <View style={[s.tag, { backgroundColor: COLORS.warnBg }]}><Text style={[s.tagText, { color: COLORS.warn }]}>Batch on hold</Text></View>}
         </View>
+<<<<<<< HEAD
         <View style={s.statRow}>
           {STATUS_ORDER.filter((k) => g.counts[k] > 0).map((k) => <Chip key={k} st={STATUS[k]} text={`${g.counts[k]} ${STATUS[k].label.toLowerCase()}`} />)}
+=======
+        <ProgressBar pct={pct} color={accent === COLORS.border ? COLORS.primary : accent} />
+        <Text style={s.pbText}>{g.counts.COMPLETED} of {total} completed</Text>
+      </View>
+    </View>
+  );
+}
+
+/* ------------------------------ one material card ------------------------------ */
+function MaterialCard({ card, label, machines, canStart, canStop, tick, fetchedAt, draft, setDraft, busy, onStart, onStop, onProceed, err }) {
+  const ses = card.session;
+  const running = card.status === 'RUNNING';
+  const delta = running ? Math.floor((Date.now() - fetchedAt) / 1000) : 0;
+  const elapsed = running ? ses.elapsed_sec + delta : 0;
+  const remaining = running ? ses.remaining_sec - delta : 0;
+  const delayed = running && remaining < 0;
+  const st = delayed ? STATUS.DELAYED : STATUS[card.status];
+  const soon = running && !delayed && remaining <= ALERT_SECONDS;
+  const d = draft || {};
+  const pending = card.status === 'PENDING';
+  const total = running ? Math.max(ses.expected_minutes * 60, 1) : 1;
+  const pct = running ? Math.min((elapsed / total) * 100, 100) : 0;
+
+  return (
+    <View style={[s.card, { borderLeftWidth: 5, borderLeftColor: st.color }, delayed && { borderColor: COLORS.danger }, soon && { borderColor: COLORS.warn }]}>
+      <View style={s.head}>
+        <View style={[s.mIcon, { backgroundColor: st.bg }]}><MCI name={st.icon} size={22} color={st.color} /></View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={s.mat} numberOfLines={1}>{card.material_name}</Text>
+          <Text style={s.sub} numberOfLines={1}>{card.batch_no}  •  {card.product_name}</Text>
+>>>>>>> b42c6d78301730fc78c0f20736b7313cad711453
         </View>
         <View style={{ marginTop: 10 }}>
           <ProgressBar pct={pct} color={accent === COLORS.border ? COLORS.primary : accent} />
@@ -162,9 +194,130 @@
             <ModeTag mode={g.process_mode} />
             {g.batch_status === 'ON_HOLD' && <View style={[s.tag, { backgroundColor: COLORS.warnBg }]}><Text style={[s.tagText, { color: COLORS.warn }]}>Batch on hold</Text></View>}
           </View>
+<<<<<<< HEAD
           <ProgressBar pct={pct} color={accent === COLORS.border ? COLORS.primary : accent} />
           <Text style={s.pbText}>{g.counts.COMPLETED} of {total} completed</Text>
         </View>
+=======
+          {!!(err && err.server) && <Text style={s.err}>{err.server}</Text>}
+            {canStart && (
+            <Button mode="contained" icon="play" buttonColor={COLORS.green} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
+              loading={busy} disabled={busy || !machines.length} onPress={onStart}>Start</Button>
+          )}
+        </View>
+      )}
+
+      {/* ----- waiting: only the quantity ----- */}
+      {card.status === 'WAITING' && <StatGrid><Stat label="QUANTITY" value={card.quantity == null ? '–' : `${fmt(card.quantity)} kg`} strong wide /></StatGrid>}
+
+      {/* ----- running: live timer ----- */}
+      {running && (
+        <View>
+          <View style={[s.timer, { backgroundColor: st.bg }]}>
+            <Text style={[s.timerLabel, { color: st.color }]}>{delayed ? 'OVER EXPECTED TIME' : soon ? 'COMPLETING SOON' : 'RUNNING FOR'}</Text>
+            <Text style={[s.timerVal, { color: st.color }]}>{delayed ? `+${clock(remaining)}` : clock(elapsed)}</Text>
+            <View style={s.timerTrack}><View style={[s.timerFill, { width: `${pct}%`, backgroundColor: st.color }]} /></View>
+            <Text style={s.timerSub}>{delayed ? `Elapsed ${clock(elapsed)} · the machine keeps running until you press Stop` : `Time left ${clock(remaining)}  ·  ${ses.expected_minutes} min planned`}</Text>
+          </View>
+          <StatGrid>
+            <Stat label="QUANTITY" value={`${fmt(card.quantity)} kg`} strong />
+            <Stat label="MACHINE" value={`${ses.machine_code} · ${ses.machine_name}`} />
+            <Stat label="START TIME" value={t12(ses.start_time)} />
+            <Stat label="EXPECTED COMPLETION" value={t12(ses.expected_end)} strong color={delayed ? COLORS.danger : undefined} />
+          </StatGrid>
+          <Text style={s.byLine}>Started by {ses.started_by_name}</Text>
+            {canStop &&<Button mode="contained" icon="stop-circle-outline" buttonColor={COLORS.danger} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
+            loading={busy} disabled={busy} onPress={onStop}>Stop / Complete</Button>}
+        </View>
+      )}
+
+      {/* ----- completed ----- */}
+      {card.status === 'COMPLETED' && ses && (
+        <StatGrid>
+          <Stat label="MACHINE" value={`${ses.machine_code} · ${ses.machine_name}`} wide />
+          <Stat label="START TIME" value={t12(ses.start_time)} />
+          <Stat label="ACTUAL END" value={t12(ses.actual_end)} strong />
+          <Stat label="EXPECTED" value={`${ses.expected_minutes} min · ${t12(ses.expected_end)}`} />
+          <Stat label="ACTUAL DURATION" value={`${ses.actual_minutes} min`} strong />
+          <Stat label="I/P → O/P" value={`${fmt(card.quantity)} → ${fmt(ses.output_weight)} kg`} />
+          <LossRow ip={card.quantity} op={ses.output_weight} />
+        </StatGrid>
+      )}
+      {card.status === 'COMPLETED' && !ses && <Text style={s.legacy}>Completed earlier (saved with the old form).</Text>}
+      {card.awaiting_proceed &&canStart && (
+        <View style={s.proceedBox}>
+          <Text style={s.proceedText}>Filtering is complete. Proceed to Roasting?</Text>
+          <Button mode="contained" icon="fire" buttonColor={COLORS.primary} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
+            loading={busy} disabled={busy} onPress={onProceed}>Proceed to Roasting</Button>
+        </View>
+      )}
+    </View>
+  );
+}
+
+/* ------------------------------ stop / complete dialog ------------------------------ */
+function StopModal({ type, card, label, canAddMesh, toast, onDismiss, onDone }) {
+  const [f, setF] = useState({});
+  const [errors, setErrors] = useState({});
+  const [err, setErr] = useState('');
+  const [saving, setSaving] = useState(false);
+  const set = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
+  useEffect(() => { if (card) { setF({ output_weight: '', remarks: '', sieved: 'NO', mesh_id: null }); setErrors({}); setErr(''); setSaving(false); } }, [card]);
+  if (!card) return null;
+  const ip = Number(card.session.input_weight || card.quantity);
+  const op = Number(f.output_weight);
+  const loss = ip > 0 && op > 0 && op <= ip ? Math.round(((ip - op) / ip) * 10000) / 100 : null;
+
+  const save = async () => {
+    const e = {};
+    if (!(op > 0)) e.output_weight = 'Enter O/P weight';
+    else if (op > ip) e.output_weight = `Cannot be more than I/P (${fmt(ip)} kg)`;
+    if (type === 'GRINDING' && !f.mesh_id) e.mesh = 'Select the mesh size';
+    setErrors(e);
+    if (Object.keys(e).length) return;
+    setSaving(true); setErr('');
+    try {
+      const r = await api.post(`/${type.toLowerCase()}/stop`, {
+        session_id: card.session.id, output_weight: f.output_weight, remarks: f.remarks || undefined,
+        ...(type === 'ROASTING' ? { temp_before: f.temp_before, std_temp: f.std_temp, temp_after: f.temp_after } : {}),
+        ...(type === 'GRINDING' ? { mesh_id: f.mesh_id, sieved: f.sieved } : {}),
+      });
+      setSaving(false);
+      onDone(r.data.data);
+    } catch (x) { setErr(errMsg(x)); setSaving(false); }
+  };
+
+  return (
+    <ModalShell visible={!!card} onDismiss={onDismiss} busy={saving} icon="stop-circle-outline" maxWidth={560}
+      title={`Stop ${label}`} subtitle={`${card.material_name}  •  ${card.batch_no}`}
+      footer={<ModalFooter onCancel={onDismiss} onSave={save} saving={saving} label="Stop & Save" />}>
+      <View>
+        <View style={s.stopInfo}>
+          <Text style={s.stopInfoText}>The end time is taken automatically when you press Stop & Save. The machine becomes available after the record is saved.</Text>
+        </View>
+        <FormRow>
+          <FormField label="I/P weight (kg)" value={String(fmt(ip))} editable={false} />
+          <FormField label="O/P weight (kg) *" numeric value={f.output_weight || ''} onChangeText={set('output_weight')} error={errors.output_weight} />
+        </FormRow>
+        <Text style={{ color: loss !== null && loss > 12 ? COLORS.danger : COLORS.grey, fontWeight: '700', marginBottom: 8 }}>Loss: {loss === null ? '–' : `${loss} %`}</Text>
+        {type === 'ROASTING' && (
+          <FormRow>
+            <FormField label="Temp before (°C)" numeric value={f.temp_before || ''} onChangeText={set('temp_before')} />
+            <FormField label="STD temp (°C)" numeric value={f.std_temp || ''} onChangeText={set('std_temp')} />
+            <FormField label="Temp after (°C)" numeric value={f.temp_after || ''} onChangeText={set('temp_after')} />
+          </FormRow>
+        )}
+        {type === 'GRINDING' && (
+          <FormRow>
+            {/* sizes come from the Mesh Size master; a new size can be added right here and is selected at once */}
+                        <MeshSelectField value={f.mesh_id} onChange={(id) => set('mesh_id')(id)} error={errors.mesh}
+              canAdd={canAddMesh} onAdded={(m) => toast(`Mesh ${m.mesh_size} mm added`)} />
+            <SelectField label="Sieved" value={f.sieved} options={YESNO} onChange={set('sieved')} />
+          </FormRow>
+        )}
+        <FormField label="Remarks" multiline value={f.remarks || ''} onChangeText={set('remarks')} maxLength={255} />
+        <ErrorBox text={err} />
+>>>>>>> b42c6d78301730fc78c0f20736b7313cad711453
       </View>
     );
   }
@@ -254,6 +407,7 @@
           </View>
         )}
 
+<<<<<<< HEAD
         {/* ----- completed ----- */}
         {card.status === 'COMPLETED' && ses && (
           <StatGrid>
@@ -277,6 +431,34 @@
       </View>
     );
   }
+=======
+/* ------------------------------ the board ------------------------------ */
+export default function ProcessBoard({ type, path, module: mod, title, icon }) {
+  const { can } = useAuth();
+  const { toast } = useUi();
+  const label = title;
+   const canStart = can(mod, 'start');
+  const canStop = can(mod, 'stop');
+  const canHistory = can(mod, 'history');
+  const grid = useCardCols({ min: 320, phoneMin: 280 });
+  const [tab, setTab] = useState('queue');
+  const [status, setStatus] = useState('ALL');
+  const [search, setSearch] = useState('');
+  const dSearch = useDebounce(search, 400);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [drafts, setDrafts] = useState({});
+  const [errs, setErrs] = useState({});
+  const [busyKey, setBusyKey] = useState('');
+  const [stopCard, setStopCard] = useState(null);
+  const [proceedCard, setProceedCard] = useState(null);
+  const [selBatch, setSelBatch] = useState(null);   // batch whose materials are open (null = list of batches)
+  const [alerts, setAlerts] = useState([]);
+  const [, setTick] = useState(0);
+  const fetchedAt = useRef(Date.now());
+  const acked = useRef(new Set());
+>>>>>>> b42c6d78301730fc78c0f20736b7313cad711453
 
   /* ------------------------------ stop / complete dialog ------------------------------ */
   function StopModal({ type, card, label, canAddMesh, toast, onDismiss, onDone }) {
@@ -345,6 +527,7 @@
     );
   }
 
+<<<<<<< HEAD
   /* ------------------------------ history tab ------------------------------ */
   function HistoryList({ type, path, search, label }) {
     const grid = useCardCols({ min: 300, phoneMin: 280 });
@@ -379,6 +562,102 @@
                 <LossRow ip={i.input_weight} op={i.output_weight} />
               </StatGrid>
               <Text style={s.byLine}>Started by {i.started_by_name}  ·  Completed by {i.completed_by_name || '–'}</Text>
+=======
+  const draftOf = (c) => {
+    const d = drafts[c.key] || {};
+    return { machine_id: d.machine_id, start_time: d.start_time !== undefined ? d.start_time : nowHHMM(), minutes: d.minutes !== undefined ? d.minutes : '' };
+  };
+  const setDraft = (c) => (patch) => { setDrafts((p) => ({ ...p, [c.key]: { ...draftOf(c), ...patch } })); setErrs((p) => ({ ...p, [c.key]: undefined })); };
+
+  const machineOpts = useMemo(() => (data ? data.machines.map((m) => ({ value: m.id, label: `${m.machine_code} - ${m.machine_name}` })) : []), [data]);
+
+  const start = async (c) => {
+    const d = draftOf(c);
+    const e = {};
+    if (!d.machine_id) e.machine = 'Select a machine';
+    if (!TIME_RE.test(d.start_time || '')) e.start = 'Select the start time';
+    if (!(Number(d.minutes) >= 1)) e.minutes = 'Enter duration in minutes';
+    if (Object.keys(e).length) { setErrs((p) => ({ ...p, [c.key]: e })); return; }
+    setBusyKey(c.key);
+    try {
+      await api.post(`/${path}/start`, { batch_id: c.batch_id, material_id: c.material_id, machine_id: d.machine_id, start_time: d.start_time, expected_minutes: Number(d.minutes) });
+      setDrafts((p) => ({ ...p, [c.key]: undefined }));
+      toast(`${c.material_name} started`);
+      await load(true);
+    } catch (x) { setErrs((p) => ({ ...p, [c.key]: { server: errMsg(x) } })); await load(true); }
+    setBusyKey('');
+  };
+
+  const proceed = async (c) => {
+    setBusyKey(c.key);
+    try {
+      await api.post('/filtering/proceed', { batch_id: c.batch_id, material_id: c.material_id });
+      toast(`${c.material_name} moved to the Roasting queue`);
+      setProceedCard(null);
+      await load(true);
+    } catch (x) { toast(errMsg(x)); }
+    setBusyKey('');
+  };
+
+  const onStopped = (r) => {
+    const c = stopCard; setStopCard(null);
+    toast(`${c.material_name} ${label.toLowerCase()} completed${r.batch_moved ? ` - batch moved to ${r.batch_moved.to.charAt(0) + r.batch_moved.to.slice(1).toLowerCase()}` : ''}`);
+    load(true).then(() => { if (type === 'FILTERING' && c.process_mode === 'SEQUENTIAL') setProceedCard(c); });
+  };
+
+  // ----- batch-wise view: one group per batch, with its material cards -----
+  const cardStatus = (c) => (c.status === 'RUNNING' && (c.session.remaining_sec - Math.floor((Date.now() - fetchedAt.current) / 1000)) < 0 ? 'DELAYED' : c.status);
+  const groups = useMemo(() => {
+    if (!data) return [];
+    const m = new Map();
+    data.items.forEach((c) => {
+      if (!m.has(c.batch_id)) m.set(c.batch_id, { id: c.batch_id, batch_no: c.batch_no, product_name: c.product_name, process_mode: c.process_mode, batch_status: c.batch_status, cards: [] });
+      m.get(c.batch_id).cards.push(c);
+    });
+    return [...m.values()];
+  }, [data]);
+  // counts / quantity / next finish are worked out on every render: DELAYED depends on the clock
+  const full = groups.map((g) => {
+    const counts = { RUNNING: 0, PENDING: 0, WAITING: 0, COMPLETED: 0, DELAYED: 0 };
+    let qty = 0; let nextEnd = null;
+    g.cards.forEach((c) => {
+      const k = cardStatus(c);
+      counts[k] = (counts[k] || 0) + 1;
+      qty += Number(c.quantity || 0);
+      if (c.status === 'RUNNING' && c.session && c.session.expected_end && (!nextEnd || c.session.expected_end < nextEnd)) nextEnd = c.session.expected_end;
+    });
+    return { ...g, counts, qty: Math.round(qty * 1000) / 1000, nextEnd };
+  });
+  const detail = selBatch ? full.find((g) => g.id === selBatch) || null : null;
+  useEffect(() => { if (selBatch && data && !groups.some((g) => g.id === selBatch)) setSelBatch(null); }); // the batch moved on: back to the list
+  const items = detail ? detail.cards.filter((c) => status === 'ALL' || cardStatus(c) === status) : [];
+  const batchList = detail ? [] : full.filter((g) => status === 'ALL' || g.counts[status] > 0);
+  const openBatch = (id) => { setSelBatch(id); setStatus('ALL'); };
+  const backToBatches = () => { setSelBatch(null); setStatus('ALL'); };
+
+  // chip numbers: in the list = number of batches that have a card in that status; inside a batch = number of its cards
+  const countOf = (k) => (detail ? detail.counts[k] : full.filter((g) => g.counts[k] > 0).length);
+  const chips = [{ value: 'ALL', label: `All${data ? ` (${detail ? detail.cards.length : full.length})` : ''}` }].concat(
+    ['RUNNING', 'PENDING', 'WAITING', 'COMPLETED', 'DELAYED'].map((k) => ({ value: k, label: `${STATUS[k].label.charAt(0)}${STATUS[k].label.slice(1).toLowerCase()}${data ? ` (${countOf(k)})` : ''}` })));
+
+  return (
+    <View style={s.wrap}>
+      <PageToolbar icon={icon} title={title} count={tab === 'queue' ? (detail ? items.length : batchList.length) : undefined} noun={detail ? 'material' : 'batch'}
+        search={search} onSearch={setSearch} placeholder="Search batch / product / material" />
+      <Container>
+                <FilterChips options={canHistory ? [{ value: 'queue', label: 'Batches' }, { value: 'history', label: 'History' }] : [{ value: 'queue', label: 'Batches' }]} value={tab} onChange={setTab} />
+        {tab === 'queue' && detail && <BatchHeader g={detail} onBack={backToBatches} />}
+        {tab === 'queue' && <FilterChips options={chips} value={status} onChange={setStatus} />}
+      </Container>
+
+      {alerts.length > 0 && (
+        <Container>
+          {alerts.map((a) => (
+            <View key={a.id} style={s.alert}>
+              <MCI name="bell-ring-outline" size={20} color={COLORS.warn} />
+              <Text style={s.alertText}>{a.text}</Text>
+              <Pressable hitSlop={8} onPress={() => setAlerts((x) => x.filter((y) => y.id !== a.id))}><MCI name="close" size={18} color={COLORS.warn} /></Pressable>
+>>>>>>> b42c6d78301730fc78c0f20736b7313cad711453
             </View>
           );
         }} />
@@ -525,6 +804,7 @@
           {tab === 'queue' && <FilterChips options={chips} value={status} onChange={setStatus} />}
         </Container>
 
+<<<<<<< HEAD
         {alerts.length > 0 && (
           <Container>
             {alerts.map((a) => (
@@ -536,6 +816,36 @@
             ))}
           </Container>
         )}
+=======
+      <Container fill>
+               {tab === 'history' && canHistory ? <HistoryList type={type} path={path} search={dSearch} label={label} />
+          : !data && !error ? <LoadingView />
+            : error && !data ? <EmptyView error={error} onRetry={() => load(false)} />
+              : detail ? (
+                // ----- materials of the opened batch -----
+                <CardList {...grid} key={`${detail.id}-${status}-${grid.cols}`} data={items} keyExtractor={(i) => i.key}
+                  refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await load(true); setRefreshing(false); }} colors={[COLORS.primary]} />}
+                  ListEmptyComponent={<EmptyView icon="🧺" message={`No ${label.toLowerCase()} cards ${status === 'ALL' ? 'in this batch' : 'with this status'}.`} />}
+                  ListHeaderComponent={data && data.busy_machines.length ? (
+                    <Text style={s.busyNote}>Busy machines: {data.busy_machines.map((m) => `${m.machine_code} (${m.material_name})`).join(', ')}</Text>
+                  ) : null}
+                  renderItem={(c) => (
+                                        <MaterialCard card={c} label={label} machines={machineOpts} canStart={canStart} canStop={canStop} fetchedAt={fetchedAt.current}
+                      draft={draftOf(c)} setDraft={setDraft(c)} err={errs[c.key]} busy={busyKey === c.key}
+                      onStart={() => start(c)} onStop={() => setStopCard(c)} onProceed={() => setProceedCard(c)} />
+                  )} />
+              ) : (
+                // ----- batch-wise: one card per batch -----
+                <CardList {...grid} key={`batches-${status}-${grid.cols}`} data={batchList} keyExtractor={(g) => `b${g.id}`}
+                  refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await load(true); setRefreshing(false); }} colors={[COLORS.primary]} />}
+                  ListEmptyComponent={<EmptyView icon="🧺" message={`No batches ${status === 'ALL' ? 'yet' : 'with this status'}. Batches appear here after Batching.`} />}
+                  ListHeaderComponent={data && data.busy_machines.length ? (
+                    <Text style={s.busyNote}>Busy machines: {data.busy_machines.map((m) => `${m.machine_code} (${m.material_name})`).join(', ')}</Text>
+                  ) : null}
+                  renderItem={(g) => <BatchCard g={g} onPress={() => openBatch(g.id)} />} />
+              )}
+      </Container>
+>>>>>>> b42c6d78301730fc78c0f20736b7313cad711453
 
         <Container fill>
           {tab === 'history' ? <HistoryList type={type} path={path} search={dSearch} label={label} />

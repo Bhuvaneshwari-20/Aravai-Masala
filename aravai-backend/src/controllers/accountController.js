@@ -7,3 +7,6 @@ exports.roles = wrap(() => svc.staffRoles());
 exports.create = wrap((req) => svc.create(req.user, req.body, req.ip), 201);
 exports.update = wrap((req) => svc.update(req.user, req.params.id, req.body, req.ip));
 exports.setActive = wrap((req) => svc.setActive(req.user, req.params.id, req.body.is_active, req.ip));
+exports.rolePermissions = wrap(() => svc.rolePermissions());
+exports.permissions = wrap((req) => svc.permissionsOf(req.user, req.params.id));
+exports.remove = wrap((req) => svc.remove(req.user, req.params.id, req.ip));

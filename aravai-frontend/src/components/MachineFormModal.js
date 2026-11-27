@@ -201,12 +201,12 @@ export const MACHINE_TYPES = [
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UNITS = ['KG/HR', 'T/HR', 'L/HR', 'PCS/HR'];
-const ORDER = ['machine_name', 'machine_type', 'status', 'manufacturer', 'operator_id', 'capacity', 'capacity_unit', 'model_no', 'serial_no',
+const ORDER = ['machine_name', 'machine_type', 'status', 'manufacturer', 'operator_id', 'capacity', 'capacity_unit', 'model_no', 'serial_no','print_codes', 'print_code',
   'location', 'calibration_due_date', 'installation_date', 'last_maintenance_date', 'maintenance_interval_days', 'next_maintenance_date'];
 
 const blank = { machine_name: '', machine_type: null, manufacturer: '', capacity: '', capacity_unit: 'KG/HR', status: 'ACTIVE',
   installation_date: '', last_maintenance_date: '', next_maintenance_date: '', operator_id: null,
-  location: '', model_no: '', serial_no: '', calibration_due_date: '', maintenance_interval_days: '', remarks: '' };
+  location: '', model_no: '', serial_no: '', calibration_due_date: '', maintenance_interval_days: '', remarks: '',print_code: ''  , print_codes: ''};
 
 const toForm = (m) => ({
   machine_name: m.machine_name, machine_type: m.machine_type, manufacturer: m.manufacturer || '',
@@ -216,9 +216,8 @@ const toForm = (m) => ({
   location: m.location || '', model_no: m.model_no || '', serial_no: m.serial_no || '',
   calibration_due_date: m.calibration_due_date || '',
   maintenance_interval_days: m.maintenance_interval_days != null ? String(m.maintenance_interval_days) : '',
-  remarks: m.remarks || '',
+  remarks: m.remarks || '', print_code: m.print_code || '',  print_codes: m.print_codes && typeof m.print_codes === 'object' ? { ...m.print_codes } : {},
 });
-
 // Wraps one field. When `active`, it gets a soft pulse + a clear border so the user sees what they clicked.
 function Box({ name, active, register, grow, children }) {
   const ref = useRef(null);
@@ -290,6 +289,29 @@ export default function MachineFormModal({ visible, machine, focusField, onDismi
   const register = useCallback((name, ref) => { boxes.current[name] = ref; }, []);
   const set = (k) => (v) => { setF((p) => ({ ...p, [k]: v })); setErrors((p) => (p[k] ? { ...p, [k]: undefined } : p)); };
 
+
+    const [packSizes, setPackSizes] = useState([]);
+  useEffect(() => {
+    if (!visible) return;
+    api.get('/machines/pack-sizes').then((r) => setPackSizes((r.data.data.items || []).map(String))).catch(() => setPackSizes([]));
+  }, [visible]);
+  // active pack sizes + any size that already has a code (so a saved code never disappears)
+  const sizeList = [...new Set([...packSizes, ...Object.keys(f.print_codes || {})])].sort((a, b) => Number(a) - Number(b));
+const setCode = (size, t) => {
+  setF((p) => ({ ...p, print_codes: { ...p.print_codes, [size]: t.toUpperCase().replace(/[^A-Z0-9]/g, '') } }));
+  setErrors((p) => ({ ...p, [`code_${size}`]: undefined, print_codes: undefined }));
+};
+// live duplicate check: size -> the earlier size that already has the same code
+const dupOf = {};
+const anySize = sizeList.some((sz) => String((f.print_codes || {})[sz] || '').trim());
+const hasDefault = !!String(f.print_code || '').trim();
+const bothSet = anySize && hasDefault;
+const seenCode = {};
+sizeList.forEach((sz) => {
+  const c = String((f.print_codes || {})[sz] || '').trim().toUpperCase();
+  if (!c) return;
+  if (seenCode[c]) dupOf[sz] = seenCode[c]; else seenCode[c] = sz;
+});
   const scrollTo = useCallback((name) => {
     const box = boxes.current[name] && boxes.current[name].current;
     const content = contentRef.current;
@@ -316,25 +338,44 @@ export default function MachineFormModal({ visible, machine, focusField, onDismi
     } catch (e) { throw new Error(errMsg(e)); }
   };
 
-  const save = async () => {
+    const save = async () => {
     const e = {};
     if (!f.machine_name.trim()) e.machine_name = 'Enter the machine name';
     if (!f.machine_type) e.machine_type = 'Select the type';
     if (f.capacity && !(Number(f.capacity) >= 0)) e.capacity = 'Enter a valid number';
     if (f.maintenance_interval_days && !(Number(f.maintenance_interval_days) >= 1 && Number(f.maintenance_interval_days) <= 3650)) e.maintenance_interval_days = 'Use 1 to 3650 days';
     ['installation_date', 'last_maintenance_date', 'next_maintenance_date', 'calibration_due_date'].forEach((k) => { if (f[k] && !DATE_RE.test(f[k])) e[k] = 'Use YYYY-MM-DD'; });
+
+    if (f.machine_type === 'PACKING') {
+      sizeList.forEach((sz) => {
+        const c = String((f.print_codes || {})[sz] || '').trim().toUpperCase();
+        if (!c) return;
+        if (!/^[A-Z0-9]{1,10}$/.test(c)) e[`code_${sz}`] = 'Letters and numbers only (max 10)';
+        else if (dupOf[sz]) e[`code_${sz}`] = `Same code as ${dupOf[sz]} g`;
+      });
+      const d = String(f.print_code || '').trim().toUpperCase();
+      if (d && !/^[A-Z0-9]{1,10}$/.test(d)) e.print_code = 'Letters and numbers only (max 10)';
+      if (!anySize && !d) e.print_codes = 'Enter a code for the pack sizes, or one default code';
+      else if (bothSet) { e.print_code = 'Use either the pack size codes or one default code, not both'; e.print_codes = 'Use either the pack size codes or one default code, not both. Clear one of them'; }
+      else if (Object.keys(e).some((k) => k.startsWith('code_') || k === 'print_code')) e.print_codes = 'Please fix the highlighted print codes';
+    }
+
     setErrors(e);
-    const first = ORDER.find((k) => e[k]);
-    if (first) { setActive(first); scrollTo(first); return; }
+    if (Object.keys(e).some((k) => e[k])) {
+      const first = ORDER.find((k) => e[k]) || 'print_codes';
+      setActive(first); scrollTo(first); return;
+    }
     setSaving(true); setErr('');
     try {
-      const body = { ...f, machine_name: f.machine_name.trim() };
+      const codes = {};
+      Object.keys(f.print_codes || {}).forEach((k) => { const c = String(f.print_codes[k] || '').trim().toUpperCase(); if (c) codes[k] = c; });
+      const isPack = f.machine_type === 'PACKING';
+      const body = { ...f, machine_name: f.machine_name.trim(), print_code: isPack ? f.print_code.trim().toUpperCase() : '', print_codes: isPack ? codes : {} };
       const r = machine ? await api.put(`/machines/${machine.id}`, body) : await api.post('/machines', body);
       setSaving(false);
       onSaved && onSaved(r.data.data, !!machine);
     } catch (x) { setErr(errMsg(x)); setSaving(false); }
   };
-
   const Bx = (name, node) => <Box name={name} active={active === name} register={register}>{node}</Box>;
   const showCalibration = f.machine_type === 'WEIGHING' || !!f.calibration_due_date || focusField === 'calibration_due_date';
 
@@ -387,6 +428,34 @@ export default function MachineFormModal({ visible, machine, focusField, onDismi
               <FormField label="Serial no." value={f.serial_no} onChangeText={set('serial_no')} maxLength={50} />
             </Box>
           </Row>
+        {(f.machine_type === 'PACKING' || focusField === 'print_code') && (
+  <View>
+    <Section icon="printer-outline" title="PRINT CODE BY PACK SIZE" />
+    <Text style={b.hint}>Printed in the packing code. Each pack size has its own code, e.g. 50 g = X1, 100 g = X2.</Text>
+    {Bx('print_codes', (
+      sizeList.length === 0 ? <Text style={b.hint}>No pack sizes yet. Add pack sizes in Product & MRP.</Text> : (
+        <View>
+          <View style={b.sizeGrid}>
+            {sizeList.map((sz) => (
+              <View key={sz} style={[b.sizeCell, { width: wide ? '25%' : '50%' }]}>
+                <FormField label={`${sz} g`} value={(f.print_codes || {})[sz] || ''} maxLength={10} placeholder="e.g. X1"
+                  error={errors[`code_${sz}`] || (dupOf[sz] ? `Same code as ${dupOf[sz]} g` : undefined)}
+                  onChangeText={(t) => setCode(sz, t)} />
+              </View>
+            ))}
+          </View>
+          {typeof errors.print_codes === 'string' && <Text style={{ color: COLORS.danger, fontSize: 12, fontWeight: '700', marginBottom: 8, paddingHorizontal: 6 }}>{errors.print_codes}</Text>}
+        </View>
+      )
+    ))}
+    {Bx('print_code', (
+<FormField label="Default print code (optional)" value={f.print_code} maxLength={10}
+  error={errors.print_code || (bothSet ? 'Use either the pack size codes or one default code, not both' : undefined)}
+  onChangeText={(t) => set('print_code')(t.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+  hint="Use only if one code is printed for every pack size. Leave the pack size boxes empty then" />
+      ))}
+  </View>
+)}
           <Row wide={wide}>
             <Box name="location" active={active === 'location'} register={register}>
               <FormField label="Location / Section" value={f.location} onChangeText={set('location')} maxLength={100} />
@@ -438,4 +507,7 @@ const b = StyleSheet.create({
   unitOn: { borderColor: COLORS.primary, backgroundColor: COLORS.primarySoft },
   unitText: { fontSize: 11, fontWeight: '800', color: COLORS.grey },
   hint: { fontSize: 12, color: COLORS.grey, fontWeight: '600', marginBottom: 10, paddingHorizontal: 6 },
+
+    sizeGrid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 },
+  sizeCell: { paddingHorizontal: 4 },
 });

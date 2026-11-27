@@ -1,20 +1,14 @@
 const AppError = require('../utils/AppError');
-const { pool } = require('../config/db');
 const { authenticate } = require('./auth');
-const { roleDecision } = require('../utils/roles');
+const perms = require('../utils/userPermissions');
 
 // Same checks as authorize(), but passes when ANY of the (module, action) pairs is allowed.
-const ACTIONS = ['view', 'create', 'edit', 'delete', 'approve'];
 function authorizeAny(...pairs) {
-  for (const [, a] of pairs) if (!ACTIONS.includes(a)) throw new Error(`Bad action ${a}`);
+  for (const [, a] of pairs) if (!perms.ACTIONS.includes(a)) throw new Error(`Bad action ${a}`);
   return async (req, res, next) => {
     try {
       for (const [module, action] of pairs) {
-        const d = roleDecision(req.user.role_name, module, action);
-        if (d === true) return next();
-        if (d === false) continue;
-        const [rows] = await pool.query(`SELECT can_${action} AS ok FROM role_permissions WHERE role_id = ? AND module = ?`, [req.user.role_id, module]);
-        if (rows.length && rows[0].ok) return next();
+        if (await perms.check(req.user, module, action)) return next();
       }
       throw new AppError('You do not have permission for this action', 403);
     } catch (e) { next(e); }
