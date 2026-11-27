@@ -18,12 +18,9 @@ function configure() {
   if (!native || configured) return;
   configured = true;
    // App open: still show the system notification. Both names are given so it works with older and newer expo-notifications.
+   // App open: still show the system notification (banner + notification list)
   Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowAlert: true,               // older versions
-      shouldShowBanner: true, shouldShowList: true,   // newer versions
-      shouldPlaySound: true, shouldSetBadge: false,
-    }),
+    handleNotification: async () => ({ shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false }),
   });
    if (Platform.OS === 'android') {
     Notifications.setNotificationChannelAsync(CHANNEL, {

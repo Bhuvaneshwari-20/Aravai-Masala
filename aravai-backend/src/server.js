@@ -9,6 +9,9 @@ const port = process.env.PORT || 4000;
   
     try { await require('./utils/ensureMaterialUnits')(pool); } // creates material_units (the Unit dropdown list) if missing
   catch (e) { console.error(`WARNING: material units table could not be created: ${e.message}`); }// adds batch_master.roasting_mode (DIRECT / AFTER_FILTERING / PARALLEL) if missing
+    try { await require('./utils/ensureRoastTime')(pool); } // adds materials.roast_seconds + batching_details.roast_seconds if missing
+  catch (e) { console.error(`WARNING: roast time columns could not be added: ${e.message}`); }
+
 
   try { await require('./utils/ensureNotifications')(pool); } // creates notifications / phone alert tables if missing
   catch (e) { console.error(`WARNING: notification tables could not be created: ${e.message}`); }
