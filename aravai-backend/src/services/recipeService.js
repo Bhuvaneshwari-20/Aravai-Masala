@@ -14,7 +14,7 @@ async function getById(idRaw, db = pool) {
   if (!rows.length) throw new AppError('Recipe not found', 404);
   const [ing] = await db.query(
     `SELECT d.id, d.material_id, m.material_code, m.material_name, m.unit, d.quantity_kg, d.percentage,
-            m.current_stock, m.default_filter_stages
+            m.current_stock, m.default_filter_stages, m.roast_seconds
      FROM recipe_details d JOIN materials m ON m.id = d.material_id WHERE d.recipe_id = ? ORDER BY d.id`, [id]);
   return { ...shape(rows[0]), ingredients: ing };
 }
@@ -228,7 +228,7 @@ async function loadIngredients(db, recipeIds) {
   const map = new Map(recipeIds.map((id) => [id, []]));
   if (!recipeIds.length) return map;
   const [rows] = await db.query(
-    `SELECT d.id, d.recipe_id, d.material_id, m.material_code, m.material_name, m.unit, d.quantity_kg, d.percentage
+    `SELECT d.id, d.recipe_id, d.material_id, m.material_code, m.material_name, m.unit, d.quantity_kg, d.percentage, m.roast_seconds
      FROM recipe_details d JOIN materials m ON m.id = d.material_id WHERE d.recipe_id IN (?) ORDER BY d.id`, [recipeIds]);
   rows.forEach((r) => map.get(r.recipe_id).push(r));
   return map;

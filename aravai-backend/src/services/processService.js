@@ -57,12 +57,13 @@ async function loadContext(db, batchIds) {
        FROM batch_master b JOIN product_master p ON p.id = b.product_id LEFT JOIN recipe_master r ON r.id = b.recipe_id WHERE b.id IN (?)`, [batchIds]);
   bs.forEach((b) => out.set(b.id, { ...b, materials: [] }));
   const [mats] = await db.query(
-    `SELECT bd.batch_id, bd.material_id, m.material_code, m.material_name, SUM(bd.weighed_qty) AS weighed, MAX(bd.needs_filtering) AS needs
+    `SELECT bd.batch_id, bd.material_id, m.material_code, m.material_name, SUM(bd.weighed_qty) AS weighed, MAX(bd.needs_filtering) AS needs,
+            COALESCE(MAX(bd.roast_seconds), MAX(m.roast_seconds)) AS roast_seconds
        FROM batching_details bd JOIN materials m ON m.id = bd.material_id WHERE bd.batch_id IN (?)
       GROUP BY bd.batch_id, bd.material_id, m.material_code, m.material_name ORDER BY MIN(bd.id)`, [batchIds]);
   const byKey = new Map();
   mats.forEach((x) => {
-    const m = { material_id: x.material_id, material_code: x.material_code, material_name: x.material_name, weighed: Number(x.weighed), needs: Number(x.needs) === 1, s: {} };
+    const m = { material_id: x.material_id, material_code: x.material_code, material_name: x.material_name, weighed: Number(x.weighed), needs: Number(x.needs) === 1, roast_seconds: x.roast_seconds == null ? null : Number(x.roast_seconds), s: {} };
     byKey.set(`${x.batch_id}:${x.material_id}`, m);
     if (out.has(x.batch_id)) out.get(x.batch_id).materials.push(m);
   });
@@ -125,7 +126,7 @@ function toCard(b, m, type, ev) {
   return {
     key: `${b.id}:${m.material_id}:${type}`, process_type: type,
     batch_id: b.id, batch_no: b.batch_no, product_name: b.product_name, process_mode: b.process_mode === 'SIMULTANEOUS' ? 'SIMULTANEOUS' : 'SEQUENTIAL',
-    material_id: m.material_id, material_code: m.material_code, material_name: m.material_name,
+    material_id: m.material_id, material_code: m.material_code, material_name: m.material_name, roast_seconds: m.roast_seconds == null ? null : m.roast_seconds,
     quantity: ev.input == null ? null : r3(ev.input), status: ev.status, reason: ev.reason || '', awaiting_proceed: !!ev.awaiting_proceed,
     delayed: ev.status === 'RUNNING' && s.remaining_sec < 0, batch_status: b.status,
     session: s ? { id: s.id, machine_id: s.machine_id, machine_code: s.machine_code, machine_name: s.machine_name, start_time: s.start_time, expected_minutes: s.expected_minutes,
@@ -398,4 +399,4 @@ async function history(type, q) {
   return { items: rows.map(shapeSession), page, limit, total, total_pages: Math.max(Math.ceil(total / limit), 1) };
 }
 
-module.exports = { TYPES, queue, start, stop, proceed, alertDue, history };
+module.exports = { TYPES, queue, start, stop, proceed, alertDue, history, loadContext, evalCard };
