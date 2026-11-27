@@ -12,7 +12,7 @@ router.post('/types', authorize('machine', 'create'), c.typeCreate);
 router.get('/types/:id/history', authorize('machine', 'view'), c.typeHistory);
 router.put('/types/:id', authorize('machine', 'edit'), c.typeUpdate);
 router.delete('/types/:id', authorize('machine', 'delete'), c.typeRemove);
-
+router.get('/pack-sizes', authorize('machine', 'view'), c.packSizes);
 // Machine QR routes
 router.get('/by-token/:code', authorize('machine', 'view'), c.byToken);
 router.get('/:id/qr', authorize('machine', 'view'), c.qrInfo);

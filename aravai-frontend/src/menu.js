@@ -14,6 +14,7 @@ export const MENU = [
   { module: 'packing', label: 'Packing', icon: '📫', color: '#06B6D4', screen: 'PackingList' },
   { module: 'tracking', label: 'Batch Tracking', icon: '🧭', color: '#0E7490', screen: 'TrackingList' },
   { module: 'process_loss', label: 'Process Yield & Loss', icon: '📉', color: '#B01E1E', screen: 'ProcessLossList' },
+    { module: 'wastage', label: 'Wastage & Fill Report', icon: '🗑️', color: '#B45309', screen: 'WastageList' },
   // { module: 'finished_goods', label: 'Finished Goods', icon: '✅', color: '#22C55E' },
   // { module: 'reports', label: 'Reports', icon: '📈', color: '#6366F1' },
   { module: 'users', label: 'Users', icon: '👤', color: '#0F766E', screen: 'AccountList' },
@@ -25,7 +26,7 @@ export const GROUPS = [
   { title: 'Production', icon: 'factory', color: '#D97706', modules: ['batching', 'filtering', 'roasting', 'grinding', 'blending', 'packing'] },
     { title: 'Factory Administration', icon: 'domain', color: '#0F766E', modules: ['vendor', 'product', 'machine'] },
   { title: 'Stock & Tracking', icon: 'chart-box', color: '#6D28D9', modules: ['stock', 'tracking', 'process_loss', 'finished_goods', 'reports'] },
-  { title: 'Admin', icon: 'shield-account', color: '#BE185D', modules: ['users'] },
+    { title: 'Admin', icon: 'shield-account', color: '#BE185D', modules: ['users', 'wastage'] },
 ];
 
 // ---- Role-based visibility (three levels) ----

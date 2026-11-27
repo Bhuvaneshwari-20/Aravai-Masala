@@ -39,7 +39,7 @@ import NotificationCenter from './src/components/NotificationCenter';
 import ProcessLossScreen from './src/screens/tracking/ProcessLossScreen';
 import { usePushNotifications } from './src/pushNotifications';
 import { Platform } from 'react-native';
-
+import WastageScreen from './src/screens/wastage/WastageScreen';
 import MachineQrScreen from './src/screens/machine/MachineQrScreen';
 import { linking } from './src/linking';    
 
@@ -104,7 +104,7 @@ function Root() {
    <Stack.Screen name="OverviewBatch" component={OverviewBatchScreen} options={{ title: 'Batch Materials' }} />
    <Stack.Screen name="MachineQr" component={MachineQrScreen} options={{ title: 'Machine' }} />
    <Stack.Screen name="ProcessLossList" component={ProcessLossScreen} options={{ title: 'Process Yield & Loss' }} />   
-      
+        <Stack.Screen name="WastageList" component={WastageScreen} options={{ title: 'Wastage & Fill Report' }} /> 
       </Stack.Navigator>
     </NavigationContainer>
     </View>

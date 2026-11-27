@@ -25,7 +25,8 @@ export const ICON = {
   "users": "account-group",
   "materials": "package-variant",
   "low": "alert-circle",
-  "vendors": "store"
+  "vendors": "store",
+    "wastage": "delete-sweep-outline"
 };
 
 // darker spice shades for icons on tinted tiles
