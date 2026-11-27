@@ -27,6 +27,25 @@ export const GROUPS = [
   { title: 'Stock & Tracking', icon: 'chart-box', color: '#6D28D9', modules: ['stock', 'tracking', 'finished_goods', 'reports'] },
   { title: 'Admin', icon: 'shield-account', color: '#BE185D', modules: ['users'] },
 ];
+// ---- Permission switches the Super Admin can give per module (User Access & Permission Management) ----
+// "View" is the sidebar tick itself. These are the extra switches; only the ones that make sense for a module are listed.
+export const ACTION_LABELS = {
+  create: 'Create', edit: 'Edit', delete: 'Delete',
+  start: 'Production Start', stop: 'Production Stop',
+  history: 'History View', review: 'Review', remark: 'Add Remarks', approve: 'Approve',
+};
+const CRUD = ['create', 'edit', 'delete'];
+const RUN = ['start', 'stop', 'create', 'edit', 'history', 'review', 'remark', 'approve'];   // filtering / roasting / grinding: start + stop machines
+export const MODULE_ACTIONS = {
+  batching: ['create', 'edit', 'delete', 'history', 'review', 'remark', 'approve'],
+  filtering: RUN, roasting: RUN, grinding: RUN,
+  blending: ['create', 'edit', 'history', 'review', 'remark', 'approve'],
+  packing: ['create', 'edit', 'history', 'review', 'remark', 'approve'],
+  stock: ['create', 'edit', 'history'],
+  tracking: [],                                   // view only
+  process_loss: ['history', 'review', 'remark'],
+};
+export const actionsFor = (module) => MODULE_ACTIONS[module] || CRUD;
 
 // ---- Role-based visibility (three levels) ----
 // Super Admin -> every group.   Admin -> Masters + Factory Administration + Stock & Reports.   Everyone else (User level) -> Production only.
@@ -38,8 +57,8 @@ export const ROLE_GROUPS = {
 };
 export const USER_GROUPS = null; // staff roles: every group except 'Admin'; can_view in role_permissions decides the modules
 
-export const groupsForRole = (role) => {
-  if (!(role in ROLE_GROUPS)) return GROUPS.filter((g) => g.title !== 'Admin');
+export const groupsForRole = (role,explicit = false) => {
+  if (explicit ||!(role in ROLE_GROUPS)) return GROUPS.filter((g) => g.title !== 'Admin');
   const allowed = ROLE_GROUPS[role];
   return allowed === null ? GROUPS : GROUPS.filter((g) => allowed.includes(g.title));
 };

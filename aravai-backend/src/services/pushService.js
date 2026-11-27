@@ -34,9 +34,11 @@ function init() {
 const isConfigured = () => init();
 const mask = (t) => `...${String(t).slice(-6)}`; // logs never contain a full token
 
-// rows: [{ id, device_token }]   payload: { title, body, data: { key: value } }   -> { sent, dead: [row ids to deactivate] }
+// rows: [{ id, device_token }]   payload: { title, body, data: { key: value } }
+// -> { sent, ok: [row ids FCM accepted], dead: [row ids to deactivate], failed: [{ id, code }] }
+// Every phone is its own message: one phone failing (or being offline) never stops the others.
 async function send(rows, { title, body, data = {} }) {
-  const out = { sent: 0, dead: [] };
+  const out = { sent: 0, ok: [], dead: [], failed: [] };
   if (!rows.length || !init()) return out;
   const str = {};
   Object.keys(data).forEach((k) => { if (data[k] !== undefined && data[k] !== null) str[k] = String(data[k]); }); // FCM data values must be strings
@@ -46,17 +48,21 @@ async function send(rows, { title, body, data = {} }) {
       token: r.device_token,
       notification: { title: String(title).slice(0, 120), body: String(body).slice(0, 500) },
       data: str,
-      android: { priority: 'high', ttl: 60 * 60 * 1000, notification: { channelId: CHANNEL_ID, sound: 'default', tag: str.notification_id || undefined } },
+      android: { priority: 'high', ttl: (Number(process.env.PUSH_TTL_HOURS) || 24) * 60 * 60 * 1000, notification: { channelId: CHANNEL_ID, sound: 'default', tag: str.notification_id || undefined } },
     }));
     try {
       const res = await messaging.sendEach(messages);
       res.responses.forEach((x, n) => {
-        if (x.success) { out.sent += 1; return; }
-        const code = x.error && x.error.code;
+        if (x.success) { out.sent += 1; out.ok.push(part[n].id); return; }
+        const code = (x.error && x.error.code) || 'unknown';
         if (DEAD.includes(code)) out.dead.push(part[n].id);
-        else console.error(`FCM send failed (${code || 'unknown'}) for device ${mask(part[n].device_token)}`);
+        else { out.failed.push({ id: part[n].id, code }); console.error(`FCM send failed (${code}) for device ${mask(part[n].device_token)}`); }
       });
-    } catch (e) { console.error(`FCM batch failed: ${e.code || e.message}`); }
+    } catch (e) {
+      const code = e.code || e.message || 'batch-failed';
+      part.forEach((r) => out.failed.push({ id: r.id, code }));
+      console.error(`FCM batch failed: ${code}`);
+    }
   }
   return out;
 }

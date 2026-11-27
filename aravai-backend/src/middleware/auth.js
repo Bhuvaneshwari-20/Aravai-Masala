@@ -1,8 +1,7 @@
 const jwt = require('jsonwebtoken');
 const { pool } = require('../config/db');
 const AppError = require('../utils/AppError');
-const { roleDecision } = require('../utils/roles');
-const menuAccess = require('../utils/userMenuAccess');
+const perms = require('../utils/userPermissions');
 
 // 1) Verify JWT and load the user
 async function authenticate(req, res, next) {
@@ -21,16 +20,13 @@ async function authenticate(req, res, next) {
   } catch (e) { next(e); }
 }
 
-// 2) Module permission check: authorize('indent', 'create')
-const ACTIONS = ['view', 'create', 'edit', 'delete', 'approve'];
+// 2) Module permission check: authorize('filtering', 'start')
+//    actions: view, create, edit, delete, start, stop, history, review, remark, approve
 function authorize(module, action = 'view') {
-  if (!ACTIONS.includes(action)) throw new Error(`Bad action ${action}`);
+  if (!perms.ACTIONS.includes(action)) throw new Error(`Bad action ${action}`);
   return async (req, res, next) => {
     try {
-      const d = roleDecision(req.user.role_name, module, action);   // Super Admin / Admin decided by role
-      if (d === true) return next();
-      if (d === false) throw new AppError('You do not have permission for this action', 403);
-      if (!(await menuAccess.allows(req.user, module, action))) throw new AppError('You do not have permission for this action', 403);
+      if (!(await perms.check(req.user, module, action))) throw new AppError('You do not have permission for this action', 403);
       next();
     } catch (e) { next(e); }
   };

@@ -3,7 +3,8 @@ const jwt = require('jsonwebtoken');
 const { pool } = require('../config/db');
 const AppError = require('../utils/AppError');
 const { audit } = require('../utils/audit');
-const { FULL_ACCESS } = require('../utils/roles');
+const { FULL_ACCESS, SUPER } = require('../utils/roles');
+const userPerms = require('../utils/userPermissions');
 const menuAccess = require('../utils/userMenuAccess');
 const bcrypt = require('bcryptjs');
 
@@ -70,10 +71,25 @@ async function profile(userId) {
     [u.role_id]
   );
 
-   return {
+   const explicit = u.role_name === SUPER
+  ? null
+  : await userPerms.forProfile(u.id);
+
+if (explicit) {
+  return {
     ...u,
-    permissions: FULL_ACCESS.includes(u.role_name) ? 'ALL' : await menuAccess.apply(u.id, perms)
+    explicit: true,
+    permissions: explicit
   };
+}
+
+return {
+  ...u,
+  explicit: false,
+  permissions: FULL_ACCESS.includes(u.role_name)
+    ? 'ALL'
+    : await menuAccess.apply(u.id, perms)
+};
 }
 
 async function createUser(data, actorId, ip) {

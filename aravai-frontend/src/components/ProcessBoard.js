@@ -170,7 +170,7 @@ function BatchHeader({ g, onBack }) {
 }
 
 /* ------------------------------ one material card ------------------------------ */
-function MaterialCard({ card, label, machines, canAct, tick, fetchedAt, draft, setDraft, busy, onStart, onStop, onProceed, err }) {
+function MaterialCard({ card, label, machines, canStart, canStop, tick, fetchedAt, draft, setDraft, busy, onStart, onStop, onProceed, err }) {
   const ses = card.session;
   const running = card.status === 'RUNNING';
   const delta = running ? Math.floor((Date.now() - fetchedAt) / 1000) : 0;
@@ -223,7 +223,7 @@ function MaterialCard({ card, label, machines, canAct, tick, fetchedAt, draft, s
             </View>
           </View>
           {!!(err && err.server) && <Text style={s.err}>{err.server}</Text>}
-          {canAct && (
+            {canStart && (
             <Button mode="contained" icon="play" buttonColor={COLORS.green} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
               loading={busy} disabled={busy || !machines.length} onPress={onStart}>Start</Button>
           )}
@@ -249,7 +249,7 @@ function MaterialCard({ card, label, machines, canAct, tick, fetchedAt, draft, s
             <Stat label="EXPECTED COMPLETION" value={t12(ses.expected_end)} strong color={delayed ? COLORS.danger : undefined} />
           </StatGrid>
           <Text style={s.byLine}>Started by {ses.started_by_name}</Text>
-          {canAct && <Button mode="contained" icon="stop-circle-outline" buttonColor={COLORS.danger} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
+            {canStop &&<Button mode="contained" icon="stop-circle-outline" buttonColor={COLORS.danger} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
             loading={busy} disabled={busy} onPress={onStop}>Stop / Complete</Button>}
         </View>
       )}
@@ -267,7 +267,7 @@ function MaterialCard({ card, label, machines, canAct, tick, fetchedAt, draft, s
         </StatGrid>
       )}
       {card.status === 'COMPLETED' && !ses && <Text style={s.legacy}>Completed earlier (saved with the old form).</Text>}
-      {card.awaiting_proceed && canAct && (
+      {card.awaiting_proceed &&canStart && (
         <View style={s.proceedBox}>
           <Text style={s.proceedText}>Filtering is complete. Proceed to Roasting?</Text>
           <Button mode="contained" icon="fire" buttonColor={COLORS.primary} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
@@ -390,7 +390,9 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
   const { can } = useAuth();
   const { toast } = useUi();
   const label = title;
-  const canAct = can(mod, 'create');
+   const canStart = can(mod, 'start');
+  const canStop = can(mod, 'stop');
+  const canHistory = can(mod, 'history');
   const grid = useCardCols({ min: 320, phoneMin: 280 });
   const [tab, setTab] = useState('queue');
   const [status, setStatus] = useState('ALL');
@@ -520,7 +522,7 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
       <PageToolbar icon={icon} title={title} count={tab === 'queue' ? (detail ? items.length : batchList.length) : undefined} noun={detail ? 'material' : 'batch'}
         search={search} onSearch={setSearch} placeholder="Search batch / product / material" />
       <Container>
-        <FilterChips options={[{ value: 'queue', label: 'Batches' }, { value: 'history', label: 'History' }]} value={tab} onChange={setTab} />
+                <FilterChips options={canHistory ? [{ value: 'queue', label: 'Batches' }, { value: 'history', label: 'History' }] : [{ value: 'queue', label: 'Batches' }]} value={tab} onChange={setTab} />
         {tab === 'queue' && detail && <BatchHeader g={detail} onBack={backToBatches} />}
         {tab === 'queue' && <FilterChips options={chips} value={status} onChange={setStatus} />}
       </Container>
@@ -538,7 +540,7 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
       )}
 
       <Container fill>
-        {tab === 'history' ? <HistoryList type={type} path={path} search={dSearch} label={label} />
+               {tab === 'history' && canHistory ? <HistoryList type={type} path={path} search={dSearch} label={label} />
           : !data && !error ? <LoadingView />
             : error && !data ? <EmptyView error={error} onRetry={() => load(false)} />
               : detail ? (
@@ -550,7 +552,7 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
                     <Text style={s.busyNote}>Busy machines: {data.busy_machines.map((m) => `${m.machine_code} (${m.material_name})`).join(', ')}</Text>
                   ) : null}
                   renderItem={(c) => (
-                    <MaterialCard card={c} label={label} machines={machineOpts} canAct={canAct} fetchedAt={fetchedAt.current}
+                                        <MaterialCard card={c} label={label} machines={machineOpts} canStart={canStart} canStop={canStop} fetchedAt={fetchedAt.current}
                       draft={draftOf(c)} setDraft={setDraft(c)} err={errs[c.key]} busy={busyKey === c.key}
                       onStart={() => start(c)} onStop={() => setStopCard(c)} onProceed={() => setProceedCard(c)} />
                   )} />

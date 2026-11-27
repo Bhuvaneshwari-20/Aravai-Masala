@@ -135,7 +135,10 @@ export default function NotificationCenter({ navRef, route }) {
   };
   const testPush = async () => {
     setPushBusy(true); setPushMsg('');
-    try { await api.post('/notifications/push/test'); } catch (e) { setPushMsg(errMsg(e)); } // success: the phone rings, no message needed
+       try {
+      const d = (await api.post('/notifications/push/test')).data.data;
+      setPushMsg(`Sent to ${d.sent} of ${d.devices} phone(s)${d.failed && d.failed.length ? `. Problem: ${d.failed.map((f) => f.code).join(', ')}` : '. Lock the phone screen to see it.'}`);
+    } catch (e) { setPushMsg(errMsg(e)); }
     setPushBusy(false);
   };
   useEffect(() => { if (open) loadSettings(); }, [open, loadSettings]);

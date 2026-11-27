@@ -87,15 +87,21 @@ async function sendPush(fresh, o, severity, params) {
   if (!tokens.length) return 0;
   let total = 0;
   const dead = [];
+  const dbg = process.env.NOTIFY_DEBUG === '1';
   for (const f of fresh) {
     const mine = tokens.filter((t) => t.user_id === f.uid);
-    if (!mine.length) continue;
-    const r = await push.send(mine, {
-      title: o.title, body: o.message,
-      data: { notification_id: f.id, type: o.type || 'INFO', severity, screen: o.screen || '', params: params || '', process_type: o.processType || '', process_id: o.processId || '', batch_id: o.batchId || '' },
-    });
-    total += r.sent; dead.push(...r.dead);
-    if (r.sent) await pool.query('UPDATE notifications SET push_sent_at = NOW() WHERE id = ?', [f.id]);
+    if (!mine.length) { if (dbg) console.log(`[push] user ${f.uid}: no active phone`); continue; }
+    try {
+      const r = await push.send(mine, {
+        title: o.title, body: o.message,
+        data: { notification_id: f.id, type: o.type || 'INFO', severity, screen: o.screen || '', params: params || '', process_type: o.processType || '', process_id: o.processId || '', batch_id: o.batchId || '' },
+      });
+      total += r.sent; dead.push(...r.dead);
+      if (r.sent) await pool.query('UPDATE notifications SET push_sent_at = NOW() WHERE id = ?', [f.id]);
+      if (r.ok.length) await pool.query('UPDATE device_tokens SET last_error = NULL WHERE id IN (?) AND last_error IS NOT NULL', [r.ok]);
+      for (const x of r.failed) await pool.query('UPDATE device_tokens SET last_error = ? WHERE id = ?', [String(x.code).slice(0, 190), x.id]);
+      if (dbg) console.log(`[push] user ${f.uid}: accepted by FCM ${r.sent}/${mine.length}${r.failed.length ? `, failed: ${r.failed.map((x) => x.code).join(',')}` : ''}`);
+    } catch (e) { console.error(`Mobile push for user ${f.uid}:`, e.message); }   // one user's problem never stops the others
   }
   if (dead.length) await pool.query("UPDATE device_tokens SET is_active = 0, last_error = 'token not registered' WHERE id IN (?)", [dead]); // expired / uninstalled
   return total;
@@ -203,7 +209,7 @@ async function registerDevice(userId, body) {
   await pool.query(
     `INSERT INTO device_tokens (user_id, device_token, token_hash, device_type, device_id, app_version, is_active) VALUES (?,?,?,?,?,?,1)
      ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), device_token = VALUES(device_token), device_type = VALUES(device_type),
-       device_id = VALUES(device_id), app_version = VALUES(app_version), is_active = 1, last_error = NULL`, [userId, token, h, type, deviceId, appVersion]);
+    device_id = VALUES(device_id), app_version = VALUES(app_version), is_active = 1, last_error = NULL, updated_at = NOW()`, [userId, token, h, type, deviceId, appVersion]);
   // token refresh: the old token of the same phone is switched off (by device id, or by the old token the app sends)
   if (body.old_token) await pool.query('UPDATE device_tokens SET is_active = 0 WHERE token_hash = ? AND user_id = ?', [hashOf(String(body.old_token)), userId]);
   if (deviceId) await pool.query('UPDATE device_tokens SET is_active = 0 WHERE user_id = ? AND device_id = ? AND token_hash <> ?', [userId, deviceId, h]);
@@ -225,8 +231,10 @@ async function sendTestPush(userId) {
   if (!rows.length) throw new AppError('No phone is registered for push notifications. Open the mobile app and allow notifications first', 409);
   const r = await push.send(rows, { title: 'Test notification', body: 'Mobile push is working on this phone.', data: { type: 'TEST', screen: '', params: '' } });
   if (r.dead.length) await pool.query("UPDATE device_tokens SET is_active = 0, last_error = 'token not registered' WHERE id IN (?)", [r.dead]);
-  if (!r.sent) throw new AppError('Firebase could not deliver the test message. The phone token may have expired - open the app again', 502);
-  return { sent: r.sent, devices: rows.length };
+  for (const x of r.failed) await pool.query('UPDATE device_tokens SET last_error = ? WHERE id = ?', [String(x.code).slice(0, 190), x.id]);
+  if (r.ok.length) await pool.query('UPDATE device_tokens SET last_error = NULL WHERE id IN (?)', [r.ok]);
+  if (!r.sent) throw new AppError(`Firebase could not deliver the test message${r.failed.length ? ` (${r.failed.map((x) => x.code).join(', ')})` : ''}. The phone token may have expired - open the app again`, 502);
+  return { sent: r.sent, devices: rows.length, failed: r.failed };
 }
 
 /* ------------------------------------------------------------ connect a phone */
@@ -289,4 +297,4 @@ async function cleanup() {
     await pool.query('DELETE FROM device_tokens WHERE is_active = 0 AND updated_at < NOW() - INTERVAL 90 DAY');
 }
 
-module.exports = { AWAY_SECONDS, notify, list,unreadCount, markRead, markAllRead,getSettings, saveSettings, registerDevice, unregisterDevice, sendTestPush, phoneStatus, createLinkCode, disconnectPhone, sendTest, onTelegramMessage, startPhoneLink, cleanup };
+module.exports = { AWAY_SECONDS, notify, list, unreadCount, markRead, markAllRead, remove, clearAll, getSettings, saveSettings, registerDevice, unregisterDevice, sendTestPush, phoneStatus, createLinkCode, disconnectPhone, sendTest, onTelegramMessage, startPhoneLink, cleanup };

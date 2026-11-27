@@ -20,7 +20,7 @@ const DECO = require('../../assets/banner-spices.jpg');
 export default function Sidebar({ navRef, current }) {
   const { user, can, logout } = useAuth();
   const { toast } = useUi();
-  const groups = groupsForRole(user.role_name)
+    const groups = groupsForRole(user.role_name, user.explicit)
     .map((g) => ({ ...g, items: g.modules.map((m) => MENU.find((x) => x.module === m)).filter((m) => m && can(m.module, 'view')) }))
     .filter((g) => g.items.length);
 

@@ -16,7 +16,8 @@ const TYPES = {
   ROASTING: { label: 'Roasting', machine: 'ROASTING', stages: ['FILTERING', 'ROASTING'] },
   GRINDING: { label: 'Grinding', machine: 'GRINDING', stages: ['FILTERING', 'ROASTING', 'GRINDING'] },
 };
-const ALERT_SECONDS = 300; // 5 minutes before the expected completion
+const ALERT_SECONDS = 300; 
+const START_TOLERANCE_MIN = Math.max(Number(process.env.START_TIME_TOLERANCE_MIN) || 10, 0);   // phone clock may be a few minutes ahead of the server// 5 minutes before the expected completion
 const fmtDT = (c) => `DATE_FORMAT(${c}, '%Y-%m-%d %H:%i:%s')`;
 
 const SESSION_SELECT = `
@@ -222,7 +223,7 @@ async function start(type, body, user, ip) {
     // 3) start time chosen by the user (today). It cannot be in the future.
     const [[d]] = await conn.query("SELECT DATE_FORMAT(NOW(), '%Y-%m-%d') AS d");
     const startStr = `${d.d} ${time}:00`;
-    const [[fut]] = await conn.query('SELECT (? > NOW() + INTERVAL 2 MINUTE) AS fut', [startStr]);
+    const [[fut]] = await conn.query('SELECT (? > NOW() + INTERVAL ? MINUTE) AS fut', [startStr, START_TOLERANCE_MIN]);
     if (Number(fut.fut)) throw new AppError('Start time cannot be later than the current time');
 
     let id;

@@ -42,7 +42,7 @@ const Fact = ({ icon, label, value }) => (
   </View>
 );
 
-function AccountCard({ item, index, onEdit, onToggle }) {
+function AccountCard({ item, index, onEdit, onToggle, onDelete, canDelete }) {
   const on = !!item.is_active;
   const c = colorFor(item.full_name);
   const st = on ? { color: COLORS.ok, bg: COLORS.okBg, text: 'Active' } : { color: COLORS.danger, bg: COLORS.dangerBg, text: 'Deactivated' };
@@ -64,7 +64,7 @@ function AccountCard({ item, index, onEdit, onToggle }) {
           </View>
 
           <View style={s.facts}>
-            <Fact icon="shield-account-outline" label="Role" value={item.role_name} />
+            <Fact icon="shield-key-outline" label="Access" value={item.has_explicit ? `${item.access_menus} menus` : 'Role default'} />
             <Fact icon="calendar-outline" label="Created on" value={dmy(item.created_at)} />
           </View>
 
@@ -76,7 +76,10 @@ function AccountCard({ item, index, onEdit, onToggle }) {
                 <Text style={s.switchHint}>{on ? 'Turn off to block' : 'Turn on to allow'}</Text>
               </View>
             </View>
-            <Button mode="contained-tonal" icon="pencil" compact onPress={onEdit} buttonColor={COLORS.primarySoft} textColor={COLORS.primary} style={s.editBtn}>Edit / Password</Button>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              {canDelete && <Button mode="text" icon="delete-outline" compact onPress={onDelete} textColor={COLORS.danger}>Delete</Button>}
+              <Button mode="contained-tonal" icon="pencil" compact onPress={onEdit} buttonColor={COLORS.primarySoft} textColor={COLORS.primary} style={s.editBtn}>Edit Access</Button>
+            </View>
           </View>
         </View>
       </View>
@@ -90,7 +93,7 @@ export default function AccountListScreen() {
   const { toast } = useUi();
   const { listCols } = useLayout();
   const isSuper = user.role_name === 'Super Admin';
-  const noun = isSuper ? 'admin' : 'user';
+  const noun = 'user';
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -101,6 +104,7 @@ export default function AccountListScreen() {
   const [role, setRole] = useState('ALL');
   const [form, setForm] = useState({ open: false, account: null });
   const [confirm, setConfirm] = useState(null);
+  const [delConfirm, setDelConfirm] = useState(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async (mode) => {
@@ -143,11 +147,18 @@ export default function AccountListScreen() {
     setBusy(false);
   };
 
+  const doDelete = async () => {
+    setBusy(true);
+    try { await api.delete(`/accounts/${delConfirm.id}`); toast('User deleted'); setDelConfirm(null); load('silent'); }
+    catch (e) { toast(errMsg(e)); setDelConfirm(null); }
+    setBusy(false);
+  };
+
   return (
     <View style={s.wrap}>
-      <PageToolbar icon="account-key" title={isSuper ? 'Admin Accounts' : 'Staff Accounts'} count={rows.length} noun={noun}
+      <PageToolbar icon="account-key" title={isSuper ? 'User Access & Permission Management' : 'Staff Accounts'} count={rows.length} noun={noun}
         search={search} onSearch={setSearch} placeholder="Search name / username / role"
-        addLabel={`Add ${isSuper ? 'Admin' : 'User'}`} onAdd={() => setForm({ open: true, account: null })} />
+        addLabel="Add User" onAdd={() => setForm({ open: true, account: null })} />
 
       {!loading && rows.length > 0 && (
         <Container>
@@ -180,16 +191,17 @@ export default function AccountListScreen() {
                   <Button mode="outlined" icon="filter-remove-outline" onPress={clearFilters} textColor={COLORS.primary} style={s.noMatchBtn}>Clear filters</Button>
                 </View>
               )
-              : <EmptyView icon="👤" title={`No ${noun} accounts yet`} message={`Tap "Add ${isSuper ? 'Admin' : 'User'}" at the top to create the first one.`} />}
-            renderItem={({ item, index }) => item.pad
+              : <EmptyView icon="👤" title={`No ${noun} accounts yet`} message='Tap "Add User" at the top to create the first one.' />}
+            renderItem={({ item, index }) => (item.pad
               ? <View style={{ flex: 1, marginHorizontal: 12 }} />
-              : <AccountCard item={item} index={index} onEdit={() => setForm({ open: true, account: item })} onToggle={() => setConfirm(item)} />}
+              : <AccountCard item={item} index={index} onEdit={() => setForm({ open: true, account: item })} onToggle={() => setConfirm(item)}
+                onDelete={() => setDelConfirm(item)} canDelete={isSuper} />)}
           />
         )}
       </Container>
 
       <AccountFormModal visible={form.open} account={form.account} onDismiss={() => setForm({ open: false, account: null })}
-        onSaved={(edited) => { setForm({ open: false, account: null }); load('silent'); toast(edited ? 'Account updated' : `${isSuper ? 'Admin' : 'User'} created`); }} />
+        onSaved={(edited) => { setForm({ open: false, account: null }); load('silent'); toast(edited ? 'Account updated' : 'User created'); }} />
 
       <ConfirmDialog visible={!!confirm} busy={busy} onCancel={() => setConfirm(null)} onConfirm={doToggle}
         title={confirm?.is_active ? 'Deactivate account?' : 'Activate account?'}
@@ -197,6 +209,10 @@ export default function AccountListScreen() {
         message={confirm ? (confirm.is_active
           ? `${confirm.full_name} will no longer be able to log in.`
           : `${confirm.full_name} will be able to log in again.`) : ''} />
+
+      <ConfirmDialog visible={!!delConfirm} busy={busy} onCancel={() => setDelConfirm(null)} onConfirm={doDelete}
+        title="Delete user?" confirmText="Delete"
+        message={delConfirm ? `${delConfirm.full_name} (@${delConfirm.username}) will be removed permanently. If this user already has records, the system will refuse and you should deactivate the account instead.` : ''} />
     </View>
   );
 }
