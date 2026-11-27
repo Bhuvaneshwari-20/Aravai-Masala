@@ -6,6 +6,47 @@ const v = require('../utils/validate');
 
 const shape = (r) => ({ ...r, is_active: !!r.is_active });
 
+/*
+ * Processing configuration of a recipe material (set in Recipe Management, read by batches):
+ *   FILTER_ONLY  = Filtering Only
+ *   FILTER_ROAST = Filtering + Roasting
+ *   ROAST_ONLY   = Roasting Only
+ * needs_filtering is kept in sync (true for FILTER_ONLY and FILTER_ROAST) so existing Filtering / New Batch code keeps working.
+ * Old rows without process_type fall back to the old flag.
+ */
+const PROC = ['FILTER_ONLY', 'FILTER_ROAST', 'ROAST_ONLY'];
+const PROC_LABEL = { FILTER_ONLY: 'Filtering Only', FILTER_ROAST: 'Filtering + Roasting', ROAST_ONLY: 'Roasting Only' };
+// Roasting option of a material (independent of Filtering). null = not set (old recipes / Filtering Only): old behaviour.
+const ROAST = ['ROAST_ONLY', 'ROAST_PARTNER'];
+const ROAST_LABEL = { ROAST_ONLY: 'Only Roasting', ROAST_PARTNER: 'Roasting with Partner' };
+const roastFrom = (row) => (ROAST.includes(row.roast_type) ? row.roast_type : null);
+const asFlag = (x) => [true, 'true', 1, '1'].includes(x);
+const procFrom = (row) => (PROC.includes(row.process_type) ? row.process_type : (Number(row.needs_filtering) === 1 ? 'FILTER_ROAST' : 'ROAST_ONLY'));
+const withFlag = (i) => { const p = procFrom(i); return { ...i, process_type: p, needs_filtering: p !== 'ROAST_ONLY', roast_type: p === 'FILTER_ONLY' ? null : roastFrom(i) }; };
+
+// process of one incoming ingredient: process_type, else the old needs_filtering flag, else the old value, else Roasting Only
+function readProc(x, old) {
+  if (x && typeof x === 'object') {
+    if (x.process_type !== undefined && x.process_type !== null && x.process_type !== '') {
+      if (!PROC.includes(x.process_type)) throw new AppError('Invalid processing option. Use FILTER_ONLY, FILTER_ROAST or ROAST_ONLY');
+      return x.process_type;
+    }
+    if (x.needs_filtering !== undefined) return asFlag(x.needs_filtering) ? 'FILTER_ROAST' : 'ROAST_ONLY';
+  }
+  return old ? old.process_type : 'ROAST_ONLY';
+}
+
+// roasting option of one incoming ingredient. Not sent -> keeps the old value. Filtering Only never roasts, so it has none.
+function readRoast(x, old, proc) {
+  if (proc === 'FILTER_ONLY') return null;
+  if (x && typeof x === 'object' && x.roast_type !== undefined) {
+    if (x.roast_type === null || x.roast_type === '') return null;
+    if (!ROAST.includes(x.roast_type)) throw new AppError('Invalid roasting option. Use ROAST_ONLY or ROAST_PARTNER');
+    return x.roast_type;
+  }
+  return old ? roastFrom(old) : null;
+}
+
 async function getById(idRaw, db = pool) {
   const id = v.toId(idRaw, 'recipe id');
   const [rows] = await db.query(
@@ -13,10 +54,10 @@ async function getById(idRaw, db = pool) {
      FROM recipe_master r JOIN product_master p ON p.id = r.product_id LEFT JOIN users u ON u.id = r.created_by WHERE r.id = ?`, [id]);
   if (!rows.length) throw new AppError('Recipe not found', 404);
   const [ing] = await db.query(
-    `SELECT d.id, d.material_id, m.material_code, m.material_name, m.unit, d.quantity_kg, d.percentage,
-            m.current_stock, m.default_filter_stages, m.roast_seconds
+    `SELECT d.id, d.material_id, m.material_code, m.material_name, m.unit, d.quantity_kg, d.percentage, d.needs_filtering, d.process_type, d.roast_type,
+            m.current_stock, m.default_filter_stages
      FROM recipe_details d JOIN materials m ON m.id = d.material_id WHERE d.recipe_id = ? ORDER BY d.id`, [id]);
-  return { ...shape(rows[0]), ingredients: ing };
+  return { ...shape(rows[0]), ingredients: ing.map(withFlag) };
 }
 
 async function list(q) {
@@ -40,8 +81,8 @@ async function list(q) {
 
 /*
  * Recipe versions
- * A recipe is the product + the list of materials used. A recipe row is NEVER edited after it is saved.
- * Every change (material added / removed / quantity changed) saves a NEW row in recipe_master with
+ * A recipe is the product + the list of materials used (+ how each one is processed). A recipe row is NEVER edited after it is saved.
+ * Every change (material added / removed / quantity changed / processing changed) saves a NEW row in recipe_master with
  * version_no + 1 and a full copy of the materials; the older rows stay exactly as they were, switched off.
  * Batches keep the recipe_id they were created with, so an old batch always shows its own recipe version.
  * Who changed it and when = created_by / created_at of that version row. What changed is also written to `remarks`.
@@ -54,14 +95,20 @@ const rootNo = (no) => String(no).replace(/-V\d+$/, '');
 function diffIngredients(before, after) {
   const b = new Map(before.map((i) => [i.material_id, i]));
   const a = new Map(after.map((i) => [i.material_id, i]));
-  const added = []; const removed = []; const qty = [];
+  const added = []; const removed = []; const qty = []; const process = []; const roast = [];
   a.forEach((i, id) => {
     const o = b.get(id);
     if (!o) added.push(i.material_name);
-    else if (Number(o.quantity_kg || 0) !== Number(i.quantity_kg || 0)) qty.push(`${i.material_name} ${Number(o.quantity_kg || 0)} -> ${Number(i.quantity_kg || 0)} kg`);
+    else {
+      if (Number(o.quantity_kg || 0) !== Number(i.quantity_kg || 0)) qty.push(`${i.material_name} ${Number(o.quantity_kg || 0)} -> ${Number(i.quantity_kg || 0)} kg`);
+      const op = procFrom(o); const np = procFrom(i);
+      if (op !== np) process.push(`${i.material_name} ${PROC_LABEL[op]} -> ${PROC_LABEL[np]}`);
+      const orr = roastFrom(o); const nr = roastFrom(i);
+      if (orr !== nr) roast.push(`${i.material_name} ${ROAST_LABEL[orr] || 'None'} -> ${ROAST_LABEL[nr] || 'None'}`);
+    }
   });
   b.forEach((i, id) => { if (!a.has(id)) removed.push(i.material_name); });
-  return { added, removed, qty };
+  return { added, removed, qty, process, roast };
 }
 
 const summary = (d) => {
@@ -69,11 +116,13 @@ const summary = (d) => {
   if (d.added.length) parts.push(`Added: ${d.added.join(', ')}`);
   if (d.removed.length) parts.push(`Removed: ${d.removed.join(', ')}`);
   if (d.qty.length) parts.push(`Qty: ${d.qty.join(', ')}`);
+  if (d.process.length) parts.push(`Processing: ${d.process.join(', ')}`);
+  if (d.roast.length) parts.push(`Roasting: ${d.roast.join(', ')}`);
   const t = parts.join(' | ');
   return t.length > 255 ? `${t.slice(0, 252)}...` : t;
 };
 
-// Saves `ingredients` ([{ material_id, quantity_kg, percentage }]) as the next version of the product.
+// Saves `ingredients` ([{ material_id, quantity_kg, percentage, process_type }]) as the next version of the product.
 // `base` = the version it is made from (full recipe from getById). Runs inside the caller's transaction.
 async function saveNewVersion(conn, base, ingredients, userId, ip, extraRemark) {
   const productId = base.product_id;
@@ -92,8 +141,8 @@ async function saveNewVersion(conn, base, ingredients, userId, ip, extraRemark) 
   const [r] = await conn.query(
     `INSERT INTO recipe_master (recipe_no, product_id, version_no, base_quantity_kg, default_filter_stages, is_active, remarks, created_by)
      VALUES (?,?,?,?,?,1,?,?)`, [recipeNo, productId, versionNo, base.base_quantity_kg || 0, base.default_filter_stages || 0, remarks, userId]);
-  await conn.query('INSERT INTO recipe_details (recipe_id, material_id, quantity_kg, percentage) VALUES ?',
-    [ingredients.map((i) => [r.insertId, i.material_id, i.quantity_kg || 0, i.percentage || 0])]);
+  await conn.query('INSERT INTO recipe_details (recipe_id, material_id, quantity_kg, percentage, needs_filtering, process_type, roast_type) VALUES ?',
+    [ingredients.map((i) => { const p = procFrom(i); return [r.insertId, i.material_id, i.quantity_kg || 0, i.percentage || 0, p !== 'ROAST_ONLY' ? 1 : 0, p, p === 'FILTER_ONLY' ? null : roastFrom(i)]; })]);
   const created = await getById(r.insertId, conn);
   await audit({ userId, action: 'CREATE', table: 'recipe_master', recordId: r.insertId, oldValues: base, newValues: { ...created, changes: d }, ip }, conn);
   return created;
@@ -110,16 +159,19 @@ async function checkMaterials(conn, ids) {
 }
 
 // Product has no recipe yet -> version 1.   Product already has a recipe -> the new materials are added in a NEW version
-// (existing materials and quantities are copied, nothing is removed, the old version is kept).
+// (existing materials, quantities and processing are copied, nothing is removed, the old version is kept).
 async function create(body, userId, ip) {
   const productId = v.toId(body.product_id, 'product');
   const remarks = v.optStr(body.remarks, 'Remarks', 255);
   if (!Array.isArray(body.ingredients) || !body.ingredients.length) throw new AppError('Add at least one material');
   if (body.ingredients.length > 60) throw new AppError('Too many materials');
 
-  // accepts [{ material_id }] (or plain ids)
+  // accepts [{ material_id, process_type? | needs_filtering? }] (or plain ids)
   const ids = body.ingredients.map((i) => v.toId(i && typeof i === 'object' ? i.material_id : i, 'material'));
   if (new Set(ids).size !== ids.length) throw new AppError('A material is added twice in this recipe');
+  // processing per material (defaults to Roasting Only)
+  const procOf = new Map(body.ingredients.map((x, n) => [ids[n], readProc(x, null)]));
+  const roastOf = new Map(body.ingredients.map((x, n) => [ids[n], readRoast(x, null, procOf.get(ids[n]))]));
 
   return withTransaction(async (conn) => {
     const [prod] = await conn.query('SELECT id, is_active FROM product_master WHERE id = ? FOR UPDATE', [productId]);
@@ -135,8 +187,8 @@ async function create(body, userId, ip) {
       const fresh = ids.filter((id) => !have.has(id));
       if (!fresh.length) throw new AppError('These materials are already in this product\'s recipe', 409);
       await checkMaterials(conn, fresh);
-      const next = [...before.ingredients.map((i) => ({ material_id: i.material_id, quantity_kg: i.quantity_kg, percentage: i.percentage })),
-        ...fresh.map((id) => ({ material_id: id, quantity_kg: 0, percentage: 0 }))];
+      const next = [...before.ingredients.map((i) => ({ material_id: i.material_id, quantity_kg: i.quantity_kg, percentage: i.percentage, process_type: i.process_type, roast_type: i.roast_type })),
+        ...fresh.map((id) => ({ material_id: id, quantity_kg: 0, percentage: 0, process_type: procOf.get(id), roast_type: roastOf.get(id) }))];
       return saveNewVersion(conn, before, next, userId, ip, remarks);
     }
 
@@ -146,16 +198,17 @@ async function create(body, userId, ip) {
     const [r] = await conn.query(
       `INSERT INTO recipe_master (recipe_no, product_id, version_no, base_quantity_kg, default_filter_stages, remarks, created_by)
        VALUES (?,?,1,0,0,?,?)`, [no, productId, remarks, userId]);
-    await conn.query('INSERT INTO recipe_details (recipe_id, material_id, quantity_kg, percentage) VALUES ?',
-      [ids.map((id) => [r.insertId, id, 0, 0])]);
+    await conn.query('INSERT INTO recipe_details (recipe_id, material_id, quantity_kg, percentage, needs_filtering, process_type, roast_type) VALUES ?',
+      [ids.map((id) => { const p = procOf.get(id); return [r.insertId, id, 0, 0, p !== 'ROAST_ONLY' ? 1 : 0, p, roastOf.get(id)]; })]);
     const created = await getById(r.insertId, conn);
     await audit({ userId, action: 'CREATE', table: 'recipe_master', recordId: r.insertId, newValues: created, ip }, conn);
     return created;
   });
 }
 
-// Change the materials / quantities of a recipe. Body: { ingredients: [{ material_id, quantity_kg? }], remarks? } = the FULL new list.
-// Only the latest version can be changed; the result is always a new version.
+// Change the materials / quantities / processing of a recipe.
+// Body: { ingredients: [{ material_id, quantity_kg?, process_type? | needs_filtering? }], remarks? } = the FULL new list.
+// A value that is not sent keeps its old value. Only the latest version can be changed; the result is always a new version.
 async function update(idRaw, body, userId, ip) {
   const id = v.toId(idRaw, 'recipe id');
   const remarks = v.optStr(body.remarks, 'Remarks', 255);
@@ -177,10 +230,11 @@ async function update(idRaw, body, userId, ip) {
     const next = body.ingredients.map((i, n) => {
       const o = old.get(ids[n]);
       const q = i && typeof i === 'object' && i.quantity_kg !== undefined && i.quantity_kg !== '' ? v.num(i.quantity_kg, 'Quantity', SCHEMA_QTY) : (o ? o.quantity_kg : 0);
-      return { material_id: ids[n], quantity_kg: q, percentage: o ? o.percentage : 0 };
+      const proc = readProc(i, o);
+      return { material_id: ids[n], quantity_kg: q, percentage: o ? o.percentage : 0, process_type: proc, roast_type: readRoast(i, o, proc) };
     });
     const d = diffIngredients(before.ingredients, next.map((i) => ({ ...i, material_name: '' })));
-    if (!d.added.length && !d.removed.length && !d.qty.length) throw new AppError('No changes to save', 409);
+    if (!d.added.length && !d.removed.length && !d.qty.length && !d.process.length && !d.roast.length) throw new AppError('No changes to save', 409);
     return saveNewVersion(conn, before, next, userId, ip, remarks);
   });
 }
@@ -199,6 +253,7 @@ async function addableMaterials(q) {
 }
 
 // Add ONE existing material to the product's recipe (saved as a new recipe version). The product must already have a recipe.
+// The new material is Roasting Only (change it in Recipe Management).
 async function addMaterial(body, userId, ip) {
   const productId = v.toId(body.product_id, 'product');
   const materialId = v.toId(body.material_id, 'material');
@@ -228,9 +283,9 @@ async function loadIngredients(db, recipeIds) {
   const map = new Map(recipeIds.map((id) => [id, []]));
   if (!recipeIds.length) return map;
   const [rows] = await db.query(
-    `SELECT d.id, d.recipe_id, d.material_id, m.material_code, m.material_name, m.unit, d.quantity_kg, d.percentage, m.roast_seconds
+    `SELECT d.id, d.recipe_id, d.material_id, m.material_code, m.material_name, m.unit, d.quantity_kg, d.percentage, d.needs_filtering, d.process_type, d.roast_type
      FROM recipe_details d JOIN materials m ON m.id = d.material_id WHERE d.recipe_id IN (?) ORDER BY d.id`, [recipeIds]);
-  rows.forEach((r) => map.get(r.recipe_id).push(r));
+  rows.forEach((r) => map.get(r.recipe_id).push(withFlag(r)));
   return map;
 }
 

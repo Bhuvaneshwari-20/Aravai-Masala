@@ -23,10 +23,14 @@ export const ICON = {
     "process_loss": "chart-line-variant",
   "material_overview": "magnify",
   "users": "account-group",
+  "sales_dashboard": "chart-areaspline",
+  "sales_entry": "cart-plus",
+  "sales_history": "history",
+  "sales_return": "keyboard-return",
+  "sales_report": "chart-bar",
   "materials": "package-variant",
   "low": "alert-circle",
-  "vendors": "store",
-    "wastage": "delete-sweep-outline"
+  "vendors": "store"
 };
 
 // darker spice shades for icons on tinted tiles

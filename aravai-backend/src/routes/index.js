@@ -24,4 +24,5 @@ router.use('/notifications', require('./notifications'));
 router.use('/dashboard', require('./dashboard'));
 router.use('/wastage', require('./wastage'));
 router.use('/indents', require('./indents'));
+router.use('/sales', require('./sales'));
 module.exports = router;

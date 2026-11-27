@@ -21,7 +21,7 @@ const START_TOLERANCE_MIN = Math.max(Number(process.env.START_TIME_TOLERANCE_MIN
 const fmtDT = (c) => `DATE_FORMAT(${c}, '%Y-%m-%d %H:%i:%s')`;
 
 const SESSION_SELECT = `
-  SELECT s.id, s.batch_id, s.material_id, s.process_type, s.machine_id, s.input_weight, s.output_weight,
+ SELECT s.id, s.batch_id, s.material_id, s.process_type, s.machine_id, s.input_weight, s.output_weight, s.group_id, s.group_lead,
          ${fmtDT('s.start_time')} AS start_time, s.expected_minutes, ${fmtDT('s.expected_end')} AS expected_end,
          ${fmtDT('s.actual_end')} AS actual_end, s.actual_minutes, s.status, s.alert_sent,
          (s.proceeded_at IS NOT NULL) AS proceeded, ${fmtDT('s.proceeded_at')} AS proceeded_at, s.remarks,
@@ -59,18 +59,24 @@ async function loadContext(db, batchIds) {
        FROM batch_master b JOIN product_master p ON p.id = b.product_id LEFT JOIN recipe_master r ON r.id = b.recipe_id WHERE b.id IN (?)`, [batchIds]);
   bs.forEach((b) => out.set(b.id, { ...b, materials: [] }));
   const [mats] = await db.query(
-       `SELECT bd.batch_id, bd.material_id, m.material_code, m.material_name, SUM(bd.weighed_qty) AS weighed, MAX(bd.needs_filtering) AS needs,
+      `SELECT bd.batch_id, bd.material_id, m.material_code, m.material_name, SUM(bd.weighed_qty) AS weighed, MAX(bd.needs_filtering) AS needs, MIN(bd.process_type) AS ptype
                         MAX(bd.roast_seconds) AS batch_roast_sec, MAX(m.roast_seconds) AS mat_roast_sec,
             MAX(m.filter_seconds) AS mat_filter_sec, MAX(m.grind_seconds) AS mat_grind_sec
        FROM batching_details bd JOIN materials m ON m.id = bd.material_id WHERE bd.batch_id IN (?)
       GROUP BY bd.batch_id, bd.material_id, m.material_code, m.material_name ORDER BY MIN(bd.id)`, [batchIds]);
+        // Roasting option (Only Roasting / Roasting with Partner) of each material, from the recipe version the batch was made with.
+  // Materials that are not in the recipe (extra materials) or old recipes have none (null): old behaviour.
+  const roastOpt = new Map();
+  try {
+    const [ro] = await db.query(
+      `SELECT b.id AS batch_id, d.material_id, d.roast_type FROM batch_master b JOIN recipe_details d ON d.recipe_id = b.recipe_id WHERE b.id IN (?)`, [batchIds]);
+    ro.forEach((x) => roastOpt.set(`${x.batch_id}:${x.material_id}`, x.roast_type || null));
+  } catch (e) { if (e.code !== 'ER_BAD_FIELD_ERROR') throw e; } // roast_type column not created yet
+
   const byKey = new Map();
   mats.forEach((x) => {
-       const m = { material_id: x.material_id, material_code: x.material_code, material_name: x.material_name, weighed: Number(x.weighed), needs: Number(x.needs) === 1, s: {},
-      // roasting time: the one used in this batch, else the one set in Material Master
-            roast_seconds: Number(x.batch_roast_sec) > 0 ? Number(x.batch_roast_sec) : (Number(x.mat_roast_sec) > 0 ? Number(x.mat_roast_sec) : null),
-      filter_seconds: Number(x.mat_filter_sec) > 0 ? Number(x.mat_filter_sec) : null,
-      grind_seconds: Number(x.mat_grind_sec) > 0 ? Number(x.mat_grind_sec) : null };
+       const m = { material_id: x.material_id, material_code: x.material_code, material_name: x.material_name, weighed: Number(x.weighed), needs: Number(x.needs) === 1, roast: x.ptype !== 'FILTER_ONLY', roast_type: roastOpt.get(`${x.batch_id}:${x.material_id}`) || null, s: {} };
+
     byKey.set(`${x.batch_id}:${x.material_id}`, m);
     if (out.has(x.batch_id)) out.get(x.batch_id).materials.push(m);
   });
@@ -90,8 +96,13 @@ async function loadContext(db, batchIds) {
 }
 
 const done = (m, t) => !!(m.s[t] && m.s[t].status === 'COMPLETED');
-// configured duration (seconds) of this material for the process, or null when none is set
-const plannedFor = (m, type) => (type === 'ROASTING' ? m.roast_seconds : type === 'FILTERING' ? m.filter_seconds : m.grind_seconds) || null;
+// Roasting with Partner: other materials of the batch that this material could still be roasted together with.
+// (they roast, are not "Only Roasting", and have not started / finished Roasting yet)
+const partnersLeft = (b, m) => b.materials.filter((x) => x.material_id !== m.material_id && x.roast && x.roast_type !== 'ROAST_ONLY'
+  && !(x.s.ROASTING && ['RUNNING', 'COMPLETED'].includes(x.s.ROASTING.status)));
+// true = this material must be roasted WITH a partner (it cannot start alone while a partner is still possible)
+const partnerRequired = (b, m) => m.roast_type === 'ROAST_PARTNER' && partnersLeft(b, m).length > 0;
+
 // What a material's card for `type` looks like right now.
 //   SEQUENTIAL   (Filtering first): Roasting of EVERY material (filtered or direct) starts only after Filtering is completed for the whole batch.
 //   SIMULTANEOUS : Filtering (materials ticked "Filter") and Roasting (direct materials) run at the same time. A filtered material joins
@@ -102,11 +113,13 @@ function evalCard(b, m, type) {
   const s = m.s[type];
   const fs = m.s.FILTERING; const rs = m.s.ROASTING;
   const filterPending = b.materials.some((x) => x.needs && !done(x, 'FILTERING'));                          // a Filtering is still to be completed
-  const upstreamPending = b.materials.some((x) => !done(x, 'ROASTING') || (x.needs && !done(x, 'FILTERING'))); // any Filtering or Roasting still pending
+  const upstreamPending = b.materials.some((x) => (x.roast && !done(x, 'ROASTING')) || (x.needs && !done(x, 'FILTERING'))); // any Filtering or Roasting still pending
+
   let input = m.weighed;
   if (type === 'ROASTING' && m.needs && done(m, 'FILTERING')) input = Number(fs.output_weight);           // roast what Filtering handed over
-  if (type === 'GRINDING') input = done(m, 'ROASTING') ? Number(rs.output_weight) : null;
-  if (type === 'FILTERING' && !m.needs) return null;                                                      // only materials ticked "Filter" get a Filtering card
+ if (type === 'GRINDING') input = done(m, 'ROASTING') ? Number(rs.output_weight) : (!m.roast && done(m, 'FILTERING') ? Number(fs.output_weight) : null); // Filtering Only: grind what Filtering gave
+  if (type === 'FILTERING' && !m.needs) return null;  
+    if (type === 'ROASTING' && !m.roast) return null;                                                     // only materials ticked "Filter" get a Filtering card
 
   if (s && s.status === 'RUNNING') return { status: 'RUNNING', input, session: s };
   if (s && s.status === 'COMPLETED') {
@@ -136,9 +149,12 @@ function toCard(b, m, type, ev) {
     batch_id: b.id, batch_no: b.batch_no, product_name: b.product_name, process_mode: b.process_mode === 'SIMULTANEOUS' ? 'SIMULTANEOUS' : 'SEQUENTIAL',
     material_id: m.material_id, material_code: m.material_code, material_name: m.material_name,
     quantity: ev.input == null ? null : r3(ev.input), status: ev.status, reason: ev.reason || '', awaiting_proceed: !!ev.awaiting_proceed,
+     roast_type: type === 'ROASTING' ? (m.roast_type || null) : null, partner_required: type === 'ROASTING' && partnerRequired(b, m),
         delayed: ev.status === 'RUNNING' && s.remaining_sec < 0, batch_status: b.status,
         planned_seconds: plannedFor(m, type),   // configured duration (null = not configured: the user enters minutes)
     session: s ? { id: s.id, machine_id: s.machine_id, machine_code: s.machine_code, machine_name: s.machine_name, start_time: s.start_time, expected_minutes: s.expected_minutes,
+       group_id: s.group_id || null, expected_end: s.expected_end, actual_end: s.actual_end, actual_minutes: s.actual_minutes, elapsed_sec: s.elapsed_sec, remaining_sec: s.remaining_sec,
+
            expected_end: s.expected_end, actual_end: s.actual_end, actual_minutes: s.actual_minutes, elapsed_sec: s.elapsed_sec, remaining_sec: s.remaining_sec, planned_sec: s.planned_sec,
       alert_sent: s.alert_sent, output_weight: s.output_weight, started_by_name: s.started_by_name, completed_by_name: s.completed_by_name } : null,
   };
@@ -172,6 +188,11 @@ async function queue(type, q) {
     const here = cfg.stages.includes(b.current_stage); // batch already moved on -> only its COMPLETED cards are shown
     b.materials.forEach((m) => { const ev = evalCard(b, m, type); if (ev && (here || ev.status === 'COMPLETED')) items.push(toCard(b, m, type, ev)); });
   });
+   // materials roasted together on one machine: every card lists the others of its group
+  const grp = new Map();
+  items.forEach((i) => { const g = i.session && i.session.group_id; if (g) { if (!grp.has(g)) grp.set(g, []); grp.get(g).push(i.material_name); } });
+  items.forEach((i) => { const g = i.session && i.session.group_id; if (g) i.group_names = grp.get(g).filter((n) => n !== i.material_name); });
+
   items.sort((a, c) => (ORDER[a.status] - ORDER[c.status]) || (c.batch_id - a.batch_id));
   const counts = { ALL: items.length, PENDING: 0, WAITING: 0, RUNNING: 0, COMPLETED: 0, DELAYED: 0 };
   items.forEach((i) => { counts[i.status] += 1; if (i.delayed) counts.DELAYED += 1; });
@@ -230,6 +251,8 @@ async function start(type, body, user, ip) {
     if (ev.status !== 'PENDING') throw new AppError(ev.reason || `${m.material_name} is not ready yet`, 409);
     if (!(ev.input > 0)) throw new AppError('There is no quantity to process for this material');
 
+      if (type === 'ROASTING' && partnerRequired(b, m)) throw new AppError(`${m.material_name} is set to Roasting with Partner. Use "Select Partner" to roast it together with its partner materials`, 409);
+
        // 3) duration: the configured one (Roasting time of the material / batch). Otherwise the minutes the user entered.
         const cfgSec = plannedFor(m, type);
     const plannedSec = cfgSec > 0 ? cfgSec : (manualMinutes ? manualMinutes * 60 : 0);
@@ -263,15 +286,16 @@ async function start(type, body, user, ip) {
 }
 
 /* ---------- Stop / Complete ---------- */
-async function stop(type, body, user, ip) {
+async function stop(type, body, user, ip, conn0 = null) {
   const cfg = TYPES[type];
   if (!body.session_id) throw new AppError('Processing record is required');
   const sessionId = v.toId(body.session_id, 'processing record');
   const out = Number(body.output_weight);
   if (!(out > 0)) throw new AppError('Enter the O/P weight (kg)');
   const remarks = body.remarks ? String(body.remarks).trim().slice(0, 255) : null;
+  
 
-  return withTransaction(async (conn) => {
+  const run = async (conn) => {
     const [[row]] = await conn.query('SELECT * FROM process_sessions WHERE id = ? FOR UPDATE', [sessionId]);
     if (!row || row.process_type !== type) throw new AppError('Processing record not found', 404);
     if (row.status !== 'RUNNING') throw new AppError('This process is already completed', 409);
@@ -341,8 +365,10 @@ async function stop(type, body, user, ip) {
     await audit({ userId: user.id, action: 'UPDATE', table: 'process_sessions', recordId: sessionId,
       oldValues: { status: 'RUNNING' }, newValues: { status: 'COMPLETED', process: type, output_weight: output, actual_end: s.actual_end, batch_moved: moved }, ip }, conn);
     return { ...s, batch_moved: moved };
-  });
+  };
+  return conn0 ? run(conn0) : withTransaction(run);
 }
+
 
 // The batch follows its materials: Filtering done -> Roasting, all roasted -> Grinding, all ground -> Blending.
 async function advanceBatch(conn, batchId, user, ip) {
@@ -355,8 +381,9 @@ async function advanceBatch(conn, batchId, user, ip) {
     stage = 'ROASTING'; moved = { to: 'ROASTING' };
   }
   const sumOut = (t) => r3(mats.reduce((a, m) => a + (done(m, t) ? Number(m.s[t].output_weight) : 0), 0));
-  if (['FILTERING', 'ROASTING'].includes(stage) && mats.every((m) => done(m, 'ROASTING') && (!m.needs || done(m, 'FILTERING')))) {
-    const held = Number(b.current_output_kg); const outKg = sumOut('ROASTING'); const loss = Math.max(r3(held - outKg), 0);
+  if (['FILTERING', 'ROASTING'].includes(stage) && mats.every((m) => (!m.roast || done(m, 'ROASTING')) && (!m.needs || done(m, 'FILTERING')))) {
+    const held = Number(b.current_output_kg); const outKg = r3(mats.reduce((a, m) => a + (m.roast ? Number(m.s.ROASTING.output_weight) : Number(m.s.FILTERING.output_weight)), 0)); const loss = Math.max(r3(held - outKg), 0);
+
     await conn.query("UPDATE batch_master SET current_stage = 'GRINDING', current_output_kg = ?, total_wastage_kg = total_wastage_kg + ? WHERE id = ?", [outKg, loss, batchId]);
     await audit({ userId: user.id, action: 'UPDATE', table: 'batch_master', recordId: batchId, oldValues: { current_stage: stage, current_output_kg: held },
       newValues: { current_stage: 'GRINDING', current_output_kg: outKg }, ip }, conn);
@@ -393,6 +420,101 @@ async function proceed(body, user, ip) {
   });
 }
 
+
+/* ---------- Combined Roasting: several READY materials of one batch roast together on ONE machine ----------
+ * Every material keeps its own process_sessions row (own I/P and own O/P, so Grinding and the batch tracking stay material-wise).
+ * The first row is the lead (group_lead = 1) and holds the machine; the others (group_lead = 0) share its group_id.
+ * A material can only join when its own card is PENDING (= its required Filtering is completed and confirmed, or it is Roasting Only).
+ * Materials that still wait for Filtering (WAITING) or are Filtering Only (no Roasting card) are refused here, whatever the screen sends. */
+async function startGroup(body, user, ip) {
+  const type = 'ROASTING'; const cfg = TYPES[type];
+  if (!body.batch_id) throw new AppError('Batch is required');
+  if (!Array.isArray(body.material_ids)) throw new AppError('Select the materials to roast together');
+  if (!body.machine_id) throw new AppError('Select a machine');
+  const batchId = v.toId(body.batch_id, 'batch');
+  const ids = [...new Set(body.material_ids.map((x) => v.toId(x, 'material')))];
+  if (ids.length < 2) throw new AppError('Select at least two materials to combine. To roast one material, choose Roast Individually');
+  if (ids.length > 30) throw new AppError('Too many materials');
+  const machineId = v.toId(body.machine_id, 'machine');
+  const time = reqTime(body.start_time, 'Start time');
+  const minutes = Number(body.expected_minutes);
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) throw new AppError('Expected duration must be a whole number of minutes between 1 and 1440');
+
+  return withTransaction(async (conn) => {
+    const [[mc]] = await conn.query('SELECT id, machine_name, machine_type, status FROM machine_master WHERE id = ? FOR UPDATE', [machineId]);
+    if (!mc) throw new AppError('Selected machine does not exist', 404);
+    if (mc.machine_type !== cfg.machine) throw new AppError(`${mc.machine_name} is not a ${cfg.label.toLowerCase()} machine`);
+    if (!['ACTIVE', 'IDLE'].includes(mc.status)) throw new AppError(`${mc.machine_name} is ${mc.status.replace(/_/g, ' ').toLowerCase()} and cannot be used`);
+    const [busy] = await conn.query(
+      `SELECT b.batch_no, mt.material_name FROM process_sessions s JOIN batch_master b ON b.id = s.batch_id JOIN materials mt ON mt.id = s.material_id
+        WHERE s.machine_id = ? AND s.status = 'RUNNING' LIMIT 1`, [machineId]);
+    if (busy.length) throw new AppError(`${mc.machine_name} is busy: ${busy[0].material_name} (${busy[0].batch_no}) is running on it. Choose another machine`, 409);
+
+    const [[bm]] = await conn.query('SELECT id, status, current_stage, batch_no FROM batch_master WHERE id = ? FOR UPDATE', [batchId]);
+    if (!bm) throw new AppError('Batch not found', 404);
+    if (bm.status !== 'IN_PROGRESS') throw new AppError(`Batch ${bm.batch_no} is ${String(bm.status).toLowerCase().replace('_', ' ')}`, 409);
+    if (!cfg.stages.includes(bm.current_stage)) throw new AppError(`Batch ${bm.batch_no} is at the ${bm.current_stage} stage`, 409);
+    const b = (await loadContext(conn, [batchId])).get(batchId);
+    const picked = ids.map((id) => {
+      const m = b.materials.find((x) => x.material_id === id);
+      if (!m) throw new AppError('One of the materials is not part of this batch', 404);
+      const ev = evalCard(b, m, type);
+      if (!ev) throw new AppError(`${m.material_name} is Filtering Only and is not roasted`, 409);
+      if (m.roast_type === 'ROAST_ONLY') throw new AppError(`${m.material_name} is set to Only Roasting and cannot be roasted together with other materials`, 409);
+      if (ev.status !== 'PENDING') throw new AppError(`${m.material_name} is not ready for Roasting yet${ev.reason ? `: ${ev.reason}` : ''}`, 409);
+      if (!(ev.input > 0)) throw new AppError(`There is no quantity to roast for ${m.material_name}`);
+      return { m, input: ev.input };
+    });
+
+    const [[d]] = await conn.query("SELECT DATE_FORMAT(NOW(), '%Y-%m-%d') AS d");
+    const startStr = `${d.d} ${time}:00`;
+    const [[fut]] = await conn.query('SELECT (? > NOW() + INTERVAL 2 MINUTE) AS fut', [startStr]);
+    if (Number(fut.fut)) throw new AppError('Start time cannot be later than the current time');
+
+    const ins = `INSERT INTO process_sessions (batch_id, material_id, process_type, machine_id, input_weight, start_time, expected_minutes, expected_end, status, started_by, group_lead, alert_sent)
+                 VALUES (?,?,?,?,?,?,?,DATE_ADD(?, INTERVAL ? MINUTE),'RUNNING',?,?,?)`;
+    let leadId = null; const created = [];
+    try {
+      for (const [n, x] of picked.entries()) {
+        const [r] = await conn.query(ins, [batchId, x.m.material_id, type, machineId, x.input, startStr, minutes, startStr, minutes, user.id, n === 0 ? 1 : 0, n === 0 ? 0 : 1]);
+        if (n === 0) { leadId = r.insertId; await conn.query('UPDATE process_sessions SET group_id = ? WHERE id = ?', [leadId, leadId]); }
+        else await conn.query('UPDATE process_sessions SET group_id = ? WHERE id = ?', [leadId, r.insertId]);
+        created.push(r.insertId);
+      }
+    } catch (e) {
+      if (e.code === 'ER_DUP_ENTRY') throw new AppError('This machine or one of the materials was just started by someone else. Reload and try again', 409);
+      throw e;
+    }
+    await audit({ userId: user.id, action: 'CREATE', table: 'process_sessions', recordId: leadId,
+      newValues: { process: type, combined: true, group_id: leadId, batch_id: batchId, machine_id: machineId, start_time: startStr, expected_minutes: minutes,
+        materials: picked.map((x) => ({ material_id: x.m.material_id, input_weight: x.input })) }, ip }, conn);
+    return { group_id: leadId, sessions: created.length, materials: picked.map((x) => x.m.material_name) };
+  });
+}
+
+// Stop / Complete a combined roast: every material of the group needs its own O/P weight. One transaction, all or nothing.
+async function stopGroup(body, user, ip) {
+  const gid = v.toId(body.group_id, 'group');
+  if (!Array.isArray(body.outputs) || !body.outputs.length) throw new AppError('Enter the O/P weight of every material');
+  const want = new Map(body.outputs.map((o) => [Number(o.session_id), o.output_weight]));
+  return withTransaction(async (conn) => {
+    const [rows] = await conn.query(
+      `SELECT s.id, mt.material_name FROM process_sessions s JOIN materials mt ON mt.id = s.material_id
+        WHERE s.group_id = ? AND s.process_type = 'ROASTING' AND s.status = 'RUNNING' ORDER BY s.id FOR UPDATE`, [gid]);
+    if (!rows.length) throw new AppError('This combined roasting is already completed', 409);
+    const miss = rows.filter((r) => !(Number(want.get(r.id)) > 0));
+    if (miss.length) throw new AppError(`Enter the O/P weight for: ${miss.map((r) => r.material_name).join(', ')}`);
+    const note = `Combined roast: ${rows.map((r) => r.material_name).join(' + ')}`;
+    const remarks = [note, body.remarks ? String(body.remarks).trim() : ''].filter(Boolean).join(' - ').slice(0, 255);
+    let last = null;
+    for (const r of rows) {
+      last = await stop('ROASTING', { session_id: r.id, output_weight: want.get(r.id), remarks, temp_before: body.temp_before, std_temp: body.std_temp, temp_after: body.temp_after }, user, ip, conn);
+    }
+    return { group_id: gid, count: rows.length, batch_moved: last ? last.batch_moved : null };
+  });
+}
+
+
 /* ---------- 5-minute alert: fires once per processing session ---------- */
 async function alertDue(type, body) {
   const id = v.toId(body.session_id, 'processing record');
@@ -400,10 +522,11 @@ async function alertDue(type, body) {
     `UPDATE process_sessions SET alert_sent = 1, alert_sent_at = NOW()
       WHERE id = ? AND process_type = ? AND status = 'RUNNING' AND alert_sent = 0 AND TIMESTAMPDIFF(SECOND, NOW(), expected_end) <= ?`, [id, type, ALERT_SECONDS]);
   if (!r.affectedRows) return { fired: false };
-  const s = await getSession(pool, id);
-  const late = s.remaining_sec <= 0;
-  return { fired: true, session_id: id, message: `${TYPES[type].label} Alert: ${s.material_name} on ${s.machine_name} ${late ? 'has reached its expected completion time. Please stop it when it is done.' : 'is expected to complete in 5 minutes.'}` };
+  let names = s.material_name;
+  if (s.group_id) { const [g] = await pool.query("SELECT mt.material_name FROM process_sessions x JOIN materials mt ON mt.id = x.material_id WHERE x.group_id = ? AND x.status = 'RUNNING' ORDER BY x.id", [s.group_id]); if (g.length) names = g.map((x) => x.material_name).join(' + '); }
+  return { fired: true, session_id: id, message: `${TYPES[type].label} Alert: ${names} on ${s.machine_name} ${late ? 'has reached its expected completion time. Please stop it when it is done.' : 'is expected to complete in 5 minutes.'}` };
 }
+
 
 /* ---------- history: every saved session, never overwritten ---------- */
 async function history(type, q) {
@@ -451,4 +574,4 @@ async function detail(type, idRaw) {
   }
 }
 
-module.exports = { TYPES, queue, start, stop, proceed, alertDue, history,detail };
+module.exports = { TYPES, queue, start, startGroup, stop, stopGroup, proceed, alertDue, history };

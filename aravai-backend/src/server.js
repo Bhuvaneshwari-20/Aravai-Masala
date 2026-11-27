@@ -23,6 +23,9 @@ const port = process.env.PORT || 4000;
   catch (e) { console.error(`WARNING: user menu table could not be created: ${e.message}`); }
 try { await require('./utils/userPermissions').ensure(); } // creates user_permissions (per-user menus + permissions) if missing
 catch (e) { console.error(`WARNING: user permissions table could not be created: ${e.message}`); }
+ try { await require('./utils/ensureSales')(pool); } // creates the Sales module tables + number series if missing
+  catch (e) { console.error(`WARNING: sales tables could not be created: ${e.message}`); }
+
   app.listen(port, () => {
     console.log(`Aravai API running on :${port}`);
     try { require('./jobs/processAlerts').start(); } // Filtering / Roasting / Grinding "5 minutes to go" alerts (server side)

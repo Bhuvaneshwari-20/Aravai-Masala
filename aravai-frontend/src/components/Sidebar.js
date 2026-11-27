@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, ScrollView, Pressable, StyleSheet, Image } from 'react-native';
 import { Text } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -16,11 +16,12 @@ const DECO = require('../../assets/banner-spices.jpg');
 
 // Persistent left navigation (web / wide screens): maroon gradient, gold section labels with a rule,
 // solid gold pill for the active page, chilli / spice decoration at the bottom.
+// Click a section label (MASTERS, PRODUCTION ...) to hide / open its menu items.
 // Role levels: Super Admin = all sections, Admin = Masters + Stock & Reports, User = Production only.
 export default function Sidebar({ navRef, current }) {
   const { user, can, logout } = useAuth();
   const { toast } = useUi();
-    const groups = groupsForRole(user.role_name, user.explicit)
+  const groups = groupsForRole(user.role_name)
     .map((g) => ({ ...g, items: g.modules.map((m) => MENU.find((x) => x.module === m)).filter((m) => m && can(m.module, 'view')) }))
     .filter((g) => g.items.length);
 
@@ -31,6 +32,11 @@ export default function Sidebar({ navRef, current }) {
   // Products & Recipes is one page now, so the old Recipe screens also light up this entry
   const isActive = (item) => !!item.screen && current.startsWith(item.screen.replace('List', ''));
   const homeOn = current === 'Home';
+
+  // dropdown sections: until a label is clicked, only the section that holds the current page is open
+  const [open, setOpen] = useState({});
+  const isOpen = (g) => (open[g.title] === undefined ? g.items.some(isActive) : open[g.title]);
+  const toggle = (g) => setOpen((p) => ({ ...p, [g.title]: !isOpen(g) }));
 
   // gold = solid gold pill (Dashboard), otherwise a soft highlight with a gold marker
   const Row = ({ on, gold, icon, label, soon, onPress, chevron }) => (
@@ -62,17 +68,22 @@ export default function Sidebar({ navRef, current }) {
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12 }} showsVerticalScrollIndicator={false}>
         <Row on={homeOn} gold icon="view-dashboard" label="Dashboard" onPress={() => navRef.isReady() && navRef.navigate('Home')} />
-        {groups.map((g) => (
-          <View key={g.title} style={{ marginTop: 18 }}>
-            <View style={s.labelRow}>
-              <Text style={s.label}>{g.title.toUpperCase()}</Text>
-              <View style={s.labelLine} />
+        {groups.map((g) => {
+          const expanded = isOpen(g);
+          return (
+            <View key={g.title} style={{ marginTop: 18 }}>
+              <Pressable onPress={() => toggle(g)} accessibilityRole="button" accessibilityState={{ expanded }} accessibilityLabel={g.title}
+                style={({ hovered }) => [s.labelRow, hovered && { opacity: 0.8 }]}>
+                <Text style={s.label}>{g.title.toUpperCase()}</Text>
+                <View style={s.labelLine} />
+                <MCI name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={GOLD} style={{ marginLeft: 6 }} />
+              </Pressable>
+              {expanded && g.items.map((item) => (
+                <Row key={item.module} on={isActive(item)} icon={ICON[item.module]} label={item.label} soon={!item.screen} onPress={() => go(item)} />
+              ))}
             </View>
-            {g.items.map((item) => (
-              <Row key={item.module} on={isActive(item)} icon={ICON[item.module]} label={item.label} soon={!item.screen} onPress={() => go(item)} />
-            ))}
-          </View>
-        ))}
+          );
+        })}
       </ScrollView>
 
       <View style={s.footer}>
@@ -96,7 +107,7 @@ const s = StyleSheet.create({
   brandLogo: { width: 44, height: 44, borderRadius: 13, backgroundColor: '#FFF4E0', alignItems: 'center', justifyContent: 'center', marginRight: 11 },
   brandName: { color: '#fff', fontWeight: '900', fontSize: 14.5, letterSpacing: 1.3 },
   brandSub: { color: 'rgba(255,255,255,0.8)', fontSize: 11, fontWeight: '600', marginTop: 2 },
-  labelRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6, marginLeft: 12, marginRight: 6 },
+  labelRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6, marginLeft: 12, marginRight: 6, paddingVertical: 4 },
   label: { color: GOLD, fontSize: 11.5, fontWeight: '900', letterSpacing: 1.1 },
   labelLine: { flex: 1, height: 1, backgroundColor: 'rgba(242,169,0,0.55)', marginLeft: 10 },
   iconBox: { width: 24, alignItems: 'center', justifyContent: 'center' },
