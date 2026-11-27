@@ -1,4 +1,5 @@
-// Try the weighing-display OCR on a photo from disk, exactly as the batching screen does (same ocr.js, same compare()).
+// Try the weighing-display reader on a photo from disk, exactly as the batching screen does (same Python service, same compare()).
+//   The Python service must be running first:  cd ocr_service  &&  python -m uvicorn app:app --host 127.0.0.1 --port 8002
 //   node src/scripts/test-ocr.js <photo.jpg> [entered_weight_kg]
 //   e.g. node src/scripts/test-ocr.js D:\photos\scale-112.jpg 112.2   ->  MATCH
 // The photo is only read; nothing is saved, no database row is written, the file is never changed.
@@ -7,6 +8,7 @@ require('dotenv').config();
 const fs = require('fs');
 const sharp = require('sharp');
 const ocr = require('../utils/ocr');
+const { readQr } = require('../utils/qrReader');
 
 (async () => {
   const file = process.argv[2];
@@ -16,6 +18,8 @@ const ocr = require('../utils/ocr');
   const jpeg = await sharp(fs.readFileSync(file)).rotate().resize({ width: 2400, height: 2400, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 92 }).toBuffer();
   const res = await ocr.readWeight(jpeg);
   console.log('\nOCR result :', JSON.stringify(res));
+  const qr = await readQr(jpeg).catch((e) => ({ found: false, value: null, error: e.message }));
+  console.log('QR result  :', JSON.stringify(qr));
   if (entered !== null && Number.isFinite(entered)) {
     const svc = require('../services/batchWeightImageService'); // same compare() as the batching screen
     const d = svc.compare(entered, res, svc.config(), 0);

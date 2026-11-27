@@ -62,7 +62,7 @@ async function buildPlan(db, b) {
   const [recipeRows] = await db.query(
     `SELECT d.material_id, m.material_code, m.material_name, m.unit, d.quantity_kg AS recipe_qty_kg, m.current_stock,
             m.default_filter_stages, bd.id AS batching_id, bd.entry_date, bd.no_of_bags, bd.weight_per_bag, bd.required_qty,
-            bd.weighed_qty, bd.needs_filtering AS material_needs_filtering, bd.weighing_machine_id, wm.machine_name AS weighing_machine_name, bd.done_by, du.full_name AS done_by_name, bd.checked_by, cu.full_name AS checked_by_name, bd.stock_txn_id
+            bd.weighed_qty, bd.needs_filtering AS material_needs_filtering, bd.process_type AS material_process_type, bd.weighing_machine_id, wm.machine_name AS weighing_machine_name, bd.done_by, du.full_name AS done_by_name, bd.checked_by, cu.full_name AS checked_by_name, bd.stock_txn_id
      FROM recipe_details d
      JOIN materials m ON m.id = d.material_id
      LEFT JOIN batching_details bd ON bd.batch_id = ? AND bd.material_id = d.material_id
@@ -75,7 +75,7 @@ async function buildPlan(db, b) {
   const [extraRows] = await db.query(
     `SELECT bd.material_id, m.material_code, m.material_name, m.unit, 0 AS recipe_qty_kg, m.current_stock,
             m.default_filter_stages, bd.id AS batching_id, bd.entry_date, bd.no_of_bags, bd.weight_per_bag, bd.required_qty,
-            bd.weighed_qty, bd.needs_filtering AS material_needs_filtering, bd.weighing_machine_id, wm.machine_name AS weighing_machine_name,
+            bd.weighed_qty, bd.needs_filtering AS material_needs_filtering, bd.process_type AS material_process_type, bd.weighing_machine_id, wm.machine_name AS weighing_machine_name,
             bd.done_by, du.full_name AS done_by_name, bd.checked_by, cu.full_name AS checked_by_name
      FROM batching_details bd
      JOIN materials m ON m.id = bd.material_id
@@ -112,6 +112,7 @@ async function buildPlan(db, b) {
     return {
       ...r,
       needs_filtering: done && Number(r.material_needs_filtering) === 1,
+      process_type: done ? (r.material_process_type || (Number(r.material_needs_filtering) === 1 ? 'FILTER_ROAST' : 'ROAST_ONLY')) : null,
       stage: stt ? stt.stage : undefined,
       filtered: !!(stt && stt.filtered),
       filtered_qty: stt ? stt.filtered_qty : null,
@@ -160,6 +161,7 @@ async function list(q) {
   const where = [];
   const args = [];
   if (q.status) { where.push('b.status = ?'); args.push(String(q.status).toUpperCase()); }
+  else where.push("b.status <> 'CANCELLED'"); // deleted batches are hidden unless asked for with ?status=CANCELLED
   const search = v.clean(q.search);
   if (search) { where.push('(b.batch_no LIKE ? OR p.product_name LIKE ?)'); args.push(`%${search}%`, `%${search}%`); }
   const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -187,7 +189,9 @@ async function weighingMachines() {
 
 /* ---------- start a batch: follows the "ARAVAI BATCHING PROCESS PLAN" sheet ---------- */
 // One row per material: no of bags, weight (per bag), weighed qty. Done by / Checked by apply to the whole sheet.
-// Saving weighs every material in (stock goes down), closes BATCHING and moves the batch to ROASTING (IN_PROGRESS).
+// Saving weighs every material in (stock goes down), closes BATCHING and moves the batch to FILTERING or ROASTING (IN_PROGRESS).
+// Which materials need Filtering is read from the RECIPE (recipe_details.needs_filtering, set in Recipe Management);
+// nothing about Filtering is taken from the client.
 // No active_lock is taken, so the next batch can be added straight away.
 async function start(body, userId, ip) {
   const productId = v.toId(body.product_id, 'product');
@@ -200,16 +204,15 @@ async function start(body, userId, ip) {
   if (checkedBy && doneBy === checkedBy) throw new AppError('Checked by must be a different person from Done by');
   const machineId = body.weighing_machine_id ? v.toId(body.weighing_machine_id, 'weighing machine') : null;
 
-  // "Filter" checkbox on each material row of the batching form. If any weighed material is ticked the batch goes to
-  // FILTERING first, otherwise straight to ROASTING.  (Old clients send one batch-level needs_filtering flag and no
-  // per-material flags -> that flag then applies to every material.)
-  const isTrue = (x) => [true, 'true', 1, '1'].includes(x);
-  const batchFlag = isTrue(body.needs_filtering);
-  const hasPerMaterial = body.ingredients.some((i) => i && i.needs_filtering !== undefined);
-  // New clients send roasting_mode (DIRECT | AFTER_FILTERING | PARALLEL). They also send every material completely filled,
-  // so for them every material must have bags, weight per bag and weighed qty. Old clients keep the old (lenient) behaviour.
+  // Filtering per material comes from the recipe (recipe rows are never edited after they are saved, so reading them here is safe).
+  const [recFlags] = await pool.query('SELECT material_id, needs_filtering, process_type FROM recipe_details WHERE recipe_id = ?', [recipeId]);
+  // processing of each material (Filtering Only / Filtering + Roasting / Roasting Only) is read from the recipe; needs_filtering follows it
+  const recipeProc = new Map(recFlags.map((r) => [r.material_id, r.process_type || (Number(r.needs_filtering) === 1 ? 'FILTER_ROAST' : 'ROAST_ONLY')]));
+  const recipeFilter = new Map([...recipeProc].map(([k, p]) => [k, p !== 'ROAST_ONLY']));
+
+  // New clients send roasting_mode and every material completely filled, so for them every material must have
+  // bags, weight per bag and weighed qty. Old clients keep the old (lenient) behaviour.
   const strict = body.roasting_mode !== undefined && body.roasting_mode !== null;
-  const modeIn = String(body.roasting_mode || '').toUpperCase();
 
   const blank = (x) => x === undefined || x === null || String(x).trim() === '';
   if (strict && body.ingredients.some((i) => !i || blank(i.weighed_qty ?? i.quantity_kg) || Number(i.weighed_qty ?? i.quantity_kg) === 0))
@@ -236,32 +239,20 @@ async function start(body, userId, ip) {
       if (strict && !lines && (blank(i.no_of_bags) || blank(i.weight_per_bag))) throw new AppError('Enter number of bags and weight per bag for every material');
       const bags = lines ? lines.reduce((a, l) => a + l.bags, 0) : (blank(i.no_of_bags) ? 1 : v.intRange(i.no_of_bags, 'No of bags', 1, 100000));
       const perBag = lines ? r3(weighed / bags) : (blank(i.weight_per_bag) ? r3(weighed / bags) : v.positive(i.weight_per_bag, 'Weight per bag (kg)', { max: 100000 }));
-      return { material_id: v.toId(i.material_id, 'material'), bags, perBag, lines, quantity_kg: weighed, filter: hasPerMaterial ? isTrue(i.needs_filtering) : batchFlag,
+      const mid = v.toId(i.material_id, 'material');
+      return { material_id: mid, bags, perBag, lines, quantity_kg: weighed, filter: !!recipeFilter.get(mid), ptype: recipeProc.get(mid) || 'ROAST_ONLY',
         image_id: i.weight_image_id ? v.toId(i.weight_image_id, 'weight photo') : null };
     });
   if (!items.length) throw new AppError('Enter the quantity for at least one material');
   if (new Set(items.map((i) => i.material_id)).size !== items.length) throw new AppError('A material is added twice');
   const total = r3(items.reduce((a, i) => a + i.quantity_kg, 0));
   const needsFiltering = items.some((i) => i.filter);
-  // How the batch continues:
-  //  DIRECT          nothing ticked -> Roasting
-  //  AFTER_FILTERING everything ticked, or the operator chose to wait -> Filtering first, Roasting after it (old behaviour)
-  //  PARALLEL        some ticked, some not, operator chose to start Roasting now -> unfiltered materials roast while the others are filtered
-  const nFilter = items.filter((i) => i.filter).length;
-  const mixed = nFilter > 0 && nFilter < items.length;
-  // New clients send process_mode:
-  //  SEQUENTIAL    each filtered material: Filtering -> "Proceed to Roasting?" -> Roasting (unfiltered materials roast straight away)
-  //  SIMULTANEOUS  Filtering and Roasting of a material run independently, Grinding after both are done
-  const pmIn = String(body.process_mode || '').toUpperCase();
-  const processMode = pmIn === 'SIMULTANEOUS' ? 'SIMULTANEOUS' : 'SEQUENTIAL';
-  let roastingMode = 'DIRECT';
-  if (needsFiltering) {
-    if (['SEQUENTIAL', 'SIMULTANEOUS'].includes(pmIn)) roastingMode = pmIn === 'SIMULTANEOUS' ? 'PARALLEL' : 'AFTER_FILTERING';
-    else if (!mixed) roastingMode = 'AFTER_FILTERING';
-    else if (modeIn === 'PARALLEL' || modeIn === 'AFTER_FILTERING') roastingMode = modeIn;
-    else if (strict) throw new AppError('Choose the processing condition: Sequential or Simultaneous');
-    else roastingMode = 'AFTER_FILTERING';
-  }
+  // Always material-wise (SEQUENTIAL): a filtered material goes Filtering -> "Proceed to Roasting?" -> Roasting,
+  // a material that needs no filtering goes straight to Roasting.
+  //  DIRECT          no material of the recipe needs filtering -> Roasting
+  //  AFTER_FILTERING at least one material needs filtering -> the batch waits at FILTERING for those materials
+  const processMode = 'SEQUENTIAL';
+  const roastingMode = needsFiltering ? 'AFTER_FILTERING' : 'DIRECT';
   // the stage the batch waits at (the Filtering / Roasting cards decide what each material can do)
   const nextStage = roastingMode === 'AFTER_FILTERING' ? 'FILTERING' : 'ROASTING';
 
@@ -302,7 +293,7 @@ async function start(body, userId, ip) {
     }
 
     const batchNo = await nextNumber(conn, 'BATCH');
-    // Batching is finished -> the batch is IN_PROGRESS at the next process (ROASTING), not COMPLETED.
+    // Batching is finished -> the batch is IN_PROGRESS at the next process (FILTERING / ROASTING), not COMPLETED.
     const [r] = await conn.query(
       `INSERT INTO batch_master (batch_no, production_date, product_id, recipe_id, planned_qty_kg, current_stage, needs_filtering, roasting_mode, process_mode, status, current_output_kg,
          created_by, batching_completed_at, active_lock, weighing_machine_id, machine_locked_at)
@@ -320,8 +311,8 @@ async function start(body, userId, ip) {
       });
       if (st.low_stock_alert) alerts.push(st.low_stock_alert);
       const [bd] = await conn.query(
-        `INSERT INTO batching_details (batch_id, entry_date, material_id, no_of_bags, weight_per_bag, weighed_qty, weighing_machine_id, stock_txn_id, done_by, checked_by, needs_filtering, status)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,'COMPLETED')`, [id, date, i.material_id, i.bags, i.perBag, i.quantity_kg, machineId, st.txn_id, doneBy, checkedBy, i.filter ? 1 : 0]);
+        `INSERT INTO batching_details (batch_id, entry_date, material_id, no_of_bags, weight_per_bag, weighed_qty, weighing_machine_id, stock_txn_id, done_by, checked_by, needs_filtering, process_type, status)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'COMPLETED')`, [id, date, i.material_id, i.bags, i.perBag, i.quantity_kg, machineId, st.txn_id, doneBy, checkedBy, i.filter ? 1 : 0, i.ptype]);
       if (i.lines) {
         await conn.query('INSERT INTO batching_detail_bags (batching_detail_id, bags, weight_per_bag, qty_kg, sort_order) VALUES ?',
           [i.lines.map((l, n) => [bd.insertId, l.bags, l.perBag, l.qty, n])]);
@@ -585,7 +576,7 @@ async function updateMaterial(batchIdRaw, materialIdRaw, body, user, ip) {
 
     const sets = []; const args = [];
     if (qtyGiven) { sets.push('no_of_bags = ?', 'weight_per_bag = ?', 'weighed_qty = ?'); args.push(bags, perBag, weighed); }
-    if (flagGiven) { sets.push('needs_filtering = ?'); args.push(flag ? 1 : 0); }
+    if (flagGiven) { sets.push('needs_filtering = ?', 'process_type = ?'); args.push(flag ? 1 : 0, flag ? (bd.process_type === 'FILTER_ONLY' ? 'FILTER_ONLY' : 'FILTER_ROAST') : 'ROAST_ONLY'); }
     await conn.query(`UPDATE batching_details SET ${sets.join(', ')} WHERE id = ?`, [...args, bd.id]);
 
     const moved = await ms.syncBatchStage(conn, batchId); // the batch stage follows its materials
@@ -627,6 +618,43 @@ async function removeMaterial(batchIdRaw, materialIdRaw, user, ip) {
   });
 }
 
+/* ---------- Delete a whole batch (soft delete: stock goes back, batch becomes CANCELLED) ---------- */
+// Allowed only while no material has been filtered or roasted (same rule as removing one material).
+// The ledger lines of the batch stay (the Material Stock Card still balances); the batch is just hidden from the list.
+async function removeBatch(batchIdRaw, user, ip) {
+  const batchId = v.toId(batchIdRaw, 'batch id');
+  return withTransaction(async (conn) => {
+    const b = await loadBatch(conn, batchId, true);
+    if (b.status === 'CANCELLED') throw new AppError(`Batch ${b.batch_no} is already deleted`, 409);
+    if (b.status === 'COMPLETED') throw new AppError(`Batch ${b.batch_no} is completed. It can no longer be deleted`, 409);
+    if (!['BATCHING', 'FILTERING', 'ROASTING'].includes(b.current_stage)) throw new AppError(`Batch ${b.batch_no} is at ${b.current_stage}. It can no longer be deleted`, 409);
+
+    // nothing may have consumed the weight yet: no material filtered / being roasted / roasted
+    const states = await ms.materialStateMap(conn, b);
+    for (const [, st] of states) {
+      if (st && st.stage && !['FILTERING', 'READY_FOR_ROASTING'].includes(st.stage)) throw new AppError(`Batch ${b.batch_no} has already been filtered / roasted. It can no longer be deleted`, 409);
+    }
+    const [started] = await conn.query('SELECT id FROM roasting_details WHERE batch_id = ? LIMIT 1', [batchId]);
+    if (started.length) throw new AppError(`Roasting has already started for batch ${b.batch_no}. It can no longer be deleted`, 409);
+
+    // every weighed material goes back to stock (one ledger line each)
+    const [rows] = await conn.query(
+      `SELECT bd.id, bd.material_id, bd.weighed_qty, m.material_name FROM batching_details bd
+       JOIN materials m ON m.id = bd.material_id WHERE bd.batch_id = ? FOR UPDATE`, [batchId]);
+    for (const bd of rows) {
+      await stock.postTxn(conn, {
+        material_id: bd.material_id, direction: 'IN', txn_type: 'ADJUSTMENT_IN', qty: await stockQtyOf(conn, bd.material_id, Number(bd.weighed_qty)), txn_date: v.date(),
+        purpose: `Batch ${b.batch_no} - ${bd.material_name} returned to stock (batch deleted)`, reference_type: 'BATCH', reference_no: b.batch_no,
+        batch_id: batchId, entered_by: user.id,
+      });
+    }
+    await conn.query("UPDATE batch_master SET status = 'CANCELLED', hold_reason = NULL, active_lock = NULL WHERE id = ?", [batchId]);
+    await audit({ userId: user.id, action: 'STATUS_CHANGE', table: 'batch_master', recordId: batchId,
+      oldValues: { status: b.status, current_stage: b.current_stage }, newValues: { status: 'CANCELLED', deleted: true, returned_materials: rows.length }, ip }, conn);
+    return { id: batchId, batch_no: b.batch_no, status: 'CANCELLED' };
+  });
+}
+
 /* ---------- hold / resume (the lock is NOT released on hold) ---------- */
 async function hold(batchIdRaw, body, userId, ip) {
   const batchId = v.toId(batchIdRaw, 'batch id');
@@ -653,4 +681,4 @@ async function resume(batchIdRaw, userId, ip) {
   });
 }
 
-module.exports = { list, active, getById, staff, weighingMachines, verifyMachine, start, addBatching, addExtraMaterial, updateMaterial, removeMaterial, completeBatching, hold, resume };
+module.exports = { list, active, getById, staff, weighingMachines, verifyMachine, start, addBatching, addExtraMaterial, updateMaterial, removeMaterial, removeBatch, completeBatching, hold, resume };

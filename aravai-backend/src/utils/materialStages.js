@@ -28,6 +28,7 @@ async function pendingFilterMaterials(db, batchId) {
 
 function deriveStage(batchStage, s) {
   if (batchStage === 'BATCHING') return null;                       // still weighing: no process has started
+  if (s.filterOnly) return s.filtered || !['FILTERING', 'ROASTING'].includes(batchStage) ? 'FILTERED' : 'FILTERING'; // Filtering Only: ends at FILTERED, never roasted
   if (!['FILTERING', 'ROASTING'].includes(batchStage)) return 'ROASTED'; // the batch is past Roasting
   if (s.roastRows > 0) {
     const basis = s.filteredQty !== null ? s.filteredQty : s.weighed;
@@ -40,7 +41,7 @@ function deriveStage(batchStage, s) {
 // material_id -> { stage, needs_filtering, filtered, filtered_qty, weighed_qty, roasted_qty }
 async function materialStateMap(db, b) {
   const [bd] = await db.query(
-    'SELECT material_id, SUM(weighed_qty) AS weighed, MAX(needs_filtering) AS needs FROM batching_details WHERE batch_id = ? GROUP BY material_id', [b.id]);
+    'SELECT material_id, SUM(weighed_qty) AS weighed, MAX(needs_filtering) AS needs, MIN(process_type) AS ptype FROM batching_details WHERE batch_id = ? GROUP BY material_id', [b.id]);
   const [rs] = await db.query(
     `SELECT material_id, COUNT(*) AS n, COALESCE(SUM(input_weight), 0) AS in_kg, COALESCE(SUM(status = 'IN_PROGRESS'), 0) AS open_n
        FROM roasting_details WHERE batch_id = ? AND status <> 'REJECTED' GROUP BY material_id`, [b.id]);
@@ -56,7 +57,7 @@ async function materialStateMap(db, b) {
     const r = roast.get(x.material_id);
     const needsFiltering = Number(x.needs) === 1;
     const s = {
-      weighed: Number(x.weighed), needsFiltering, filtered: needsFiltering && fil.outputs.has(x.material_id),
+      weighed: Number(x.weighed), needsFiltering, filterOnly: x.ptype === 'FILTER_ONLY', filtered: needsFiltering && fil.outputs.has(x.material_id),
       filteredQty: fil.outputs.has(x.material_id) ? fil.outputs.get(x.material_id) : null,
       roastRows: r ? Number(r.n) : 0, openRows: r ? Number(r.open_n) : 0, roastedQty: r ? Number(r.in_kg) : 0,
     };

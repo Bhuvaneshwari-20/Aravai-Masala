@@ -34,8 +34,8 @@ if (Platform.OS === 'web' && typeof document !== 'undefined' && !document.getEle
   l.href = 'https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap';
   document.head.appendChild(l);
 }
-const HEAD = ['#7F1212', '#B01E1E', '#D1451F'];   // dark red -> red -> orange-red
-const ACCENT = '#B01E1E';
+const HEAD = ['#0B1B2E', '#10253D', '#17406B'];   // navy (same family as the sidebar)
+const ACCENT = '#0E7A3E';
 const TABS = [
   { value: 'materials', label: 'Materials' },
   { value: 'overview', label: 'Overview' },
@@ -338,7 +338,7 @@ function MovementChart({ rows, unit }) {
 
 /* ---- tabs above the table + generic paged table (Stock In / Out / History) ---- */
 const VIEWS = [
-  { value: 'overview', label: 'Material Overview', icon: 'view-grid-outline', color: '#B01E1E' },
+  { value: 'overview', label: 'Material Overview', icon: 'view-grid-outline', color: '#0E7A3E' },
   { value: 'in', label: 'Stock In', icon: 'tray-arrow-down', color: '#2563EB' },
   { value: 'out', label: 'Stock Out', icon: 'logout', color: '#DC2626' },
   { value: 'inhist', label: 'Stock In History', icon: 'file-document-outline', color: '#16A34A' },
@@ -723,11 +723,12 @@ function OverviewPane({ search, navigation }) {
           </>)}
 
           {/* OTHER TABS */}
-                    {view === 'in' && <DataTable columns={COLS_IN} rows={inRows} empty="No stock in for this period" />}
+                            {view === 'in' && <DataTable columns={COLS_IN} rows={inRows} empty="No stock in for this period" />}
           {view === 'out' && <DataTable columns={COLS_OUT} rows={outRows} empty="No stock out for this period" />}
           {view === 'inhist' && <DataTable columns={COLS_INHIST} rows={histRows} loading={hist.loading} empty="No stock in entries" />}
-          {view === 'outhist' && <DataTable columns={COLS_OUTHIST} rows={histRows} loading={hist.loading} empty="No stock out entries" />}        </View>
-        </ScrollView>
+          {view === 'outhist' && <DataTable columns={COLS_OUTHIST} rows={histRows} loading={hist.loading} empty="No stock out entries" />}
+        </View>
+      </ScrollView>
       <MaterialTraceModal visible={!!traceId} id={traceId} onDismiss={() => setTraceId(null)} />
       <ModalShell visible={alertOpen} onDismiss={() => setAlertOpen(false)} title="Stock alerts" subtitle={`${lowItems.length + warnItems.length} materials need attention`}
         icon="alert-circle" color="#DC2626" maxWidth={760} noPad>

@@ -1,9 +1,9 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { View, FlatList, Pressable, RefreshControl, StyleSheet } from 'react-native';
+import { View, FlatList, Pressable, RefreshControl, StyleSheet, Alert, Platform } from 'react-native';
 import { Text, ActivityIndicator } from 'react-native-paper';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import api from '../../api';
+import api, { errMsg } from '../../api';
 import { useAuth } from '../../AuthContext';
 import { useUi } from '../../ui';
 import StartBatchModal from '../../components/StartBatchModal';
@@ -46,10 +46,19 @@ const PILL = { IN_PROGRESS: ['warn', 'In Progress'], COMPLETED: ['ok', 'Complete
 
 const count = (params) => api.get('/batches', { params: { ...params, limit: 1 } }).then((r) => r.data.data.total);
 
-// ---------- desktop table ----------
-const COL = { idx: { width: 60 }, no: { flex: 1.4 }, product: { flex: 1.6 }, qty: { flex: 1 }, stage: { flex: 1.4 }, status: { flex: 1.2 }, view: { width: 70, alignItems: 'flex-end' } };
+// Yes / No confirmation that works on web (window.confirm) and on phones (Alert)
+const confirmDelete = (message) => new Promise((resolve) => {
+  if (Platform.OS === 'web') { resolve(window.confirm(message)); return; }
+  Alert.alert('Delete batch', message, [
+    { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+    { text: 'Delete', style: 'destructive', onPress: () => resolve(true) },
+  ], { cancelable: true, onDismiss: () => resolve(false) });
+});
 
-function TableHead() {
+// ---------- desktop table ----------
+const COL = { idx: { width: 60 }, no: { flex: 1.4 }, product: { flex: 1.6 }, qty: { flex: 1 }, stage: { flex: 1.4 }, status: { flex: 1.2 }, view: { width: 100, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end' } };
+
+function TableHead({ showActions }) {
   return (
     <View style={[t.row, t.head]}>
       <Text style={[t.th, COL.idx]}>S.No</Text>
@@ -58,12 +67,12 @@ function TableHead() {
       <Text style={[t.th, COL.qty]}>Qty</Text>
       <Text style={[t.th, COL.stage]}>Current Stage</Text>
       <Text style={[t.th, COL.status]}>Status</Text>
-      <Text style={[t.th, { width: 70, textAlign: 'right', paddingRight: 0 }]}>View</Text>
+      <Text style={[t.th, { width: 100, textAlign: 'right', paddingRight: 0 }]}>{showActions ? 'View / Del' : 'View'}</Text>
     </View>
   );
 }
 
-function TableRow({ item, index, onOpen }) {
+function TableRow({ item, index, onOpen, onDelete }) {
   const running = item.status === 'IN_PROGRESS' || item.status === 'ON_HOLD';
   const [tone, label] = PILL[item.status] || PILL.OPEN;
   return (
@@ -76,6 +85,11 @@ function TableRow({ item, index, onOpen }) {
       <View style={COL.status}><Badge tone={tone} text={label} /></View>
       <View style={COL.view}>
         <View style={t.eye}><MCI name="eye-outline" size={18} color={COLORS.primary} /></View>
+        {!!onDelete && (
+          <Pressable onPress={onDelete} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Delete batch ${item.batch_no}`} style={t.del}>
+            <MCI name="trash-can-outline" size={18} color={COLORS.danger} />
+          </Pressable>
+        )}
       </View>
     </Pressable>
   );
@@ -92,6 +106,7 @@ export default function BatchListScreen({ navigation }) {
   const [counts, setCounts] = useState({});
   const dSearch = useDebounce(search, 400);
   const list = usePagedList('/batches', { search: dSearch || undefined });
+  const canDelete = can('batching', 'delete');
 
   const loadActive = useCallback(async () => {
     try { setActive((await api.get('/batches/active')).data.data); } catch (e) { /* banner is optional */ }
@@ -111,6 +126,21 @@ export default function BatchListScreen({ navigation }) {
   }, [list.silentReload, loadActive, loadCounts]));
 
   const open = (item) => navigation.navigate('BatchDetail', { id: item.id });
+
+  // delete a batch after confirmation, then refresh list / banner / counts
+  const deletingRef = useRef(false);
+  const remove = async (item) => {
+    if (deletingRef.current) return;
+    if (!(await confirmDelete(`Delete batch ${item.batch_no}? Its materials go back to stock. This cannot be undone.`))) return;
+    deletingRef.current = true;
+    try {
+      await api.delete(`/batches/${item.id}`);
+      toast(`Batch ${item.batch_no} deleted`);
+      list.reload(); loadActive(); loadCounts();
+    } catch (e) { toast(errMsg(e)); }
+    deletingRef.current = false;
+  };
+
   const empty = <EmptyView icon="⚖️" message="No batches yet" />;
   const footer = list.loadingMore ? <ActivityIndicator style={{ margin: 16 }} color={COLORS.primary} /> : null;
 
@@ -144,7 +174,7 @@ export default function BatchListScreen({ navigation }) {
       <Container fill>
         {list.loading ? <LoadingView /> : list.error && !list.items.length ? <EmptyView error={list.error} onRetry={list.reload} /> : isWide ? (
           <View style={[s.table, SHADOW.sm, { marginHorizontal: pad }]}>
-            <TableHead />
+            <TableHead showActions={canDelete} />
             <FlatList
               data={list.items}
               keyExtractor={(i) => String(i.id)}
@@ -152,7 +182,7 @@ export default function BatchListScreen({ navigation }) {
               onEndReached={list.loadMore} onEndReachedThreshold={0.4}
               ListEmptyComponent={empty}
               ListFooterComponent={footer}
-              renderItem={({ item, index }) => <TableRow item={item} index={index} onOpen={() => open(item)} />}
+              renderItem={({ item, index }) => <TableRow item={item} index={index} onOpen={() => open(item)} onDelete={canDelete ? () => remove(item) : null} />}
             />
           </View>
         ) : (
@@ -202,4 +232,5 @@ const t = StyleSheet.create({
   no: { fontSize: 14.5, fontWeight: '800', color: COLORS.text },
   cell: { fontSize: 14, fontWeight: '600', color: COLORS.textSoft },
   eye: { width: 34, height: 34, borderRadius: 17, backgroundColor: COLORS.primarySoft, alignItems: 'center', justifyContent: 'center' },
+  del: { width: 34, height: 34, borderRadius: 17, backgroundColor: COLORS.dangerBg, alignItems: 'center', justifyContent: 'center', marginLeft: 8 },
 });

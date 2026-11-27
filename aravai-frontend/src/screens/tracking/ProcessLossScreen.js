@@ -13,7 +13,7 @@ import LoadingView from '../../components/LoadingView';
 import EmptyView from '../../components/EmptyView';
 import { COLORS, fmt } from '../../theme';
 
-const HEAD = ['#7F1212', '#B01E1E', '#D1451F'];
+const HEAD = ['#0B1B2E', '#10253D', '#17406B'];
 const PROCESSES = [
   { value: 'ALL', label: 'All' }, { value: 'BATCHING', label: 'Batching' }, { value: 'FILTERING', label: 'Filtering' },
   { value: 'ROASTING', label: 'Roasting' }, { value: 'GRINDING', label: 'Grinding' }, { value: 'BLENDING', label: 'Blending' },
@@ -43,7 +43,7 @@ const when = (v) => {
   return `${date}, ${String(h).padStart(2, '0')}:${tm.slice(3)} ${ap}`;
 };
 
-const ACCENT = '#B01E1E';
+const ACCENT = '#0E7A3E';
 
 const FONT = 'Plus Jakarta Sans, Inter, system-ui, sans-serif';
 if (Platform.OS === 'web' && typeof document !== 'undefined' && !document.getElementById('pjs-font')) {

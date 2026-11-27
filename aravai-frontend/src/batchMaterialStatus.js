@@ -23,13 +23,13 @@ export function materialStage(i) {
   if (i.roasted || i.roasting_done) return 'ROASTED';
   if (i.roasting_started) return 'ROASTING';
   if (i.needs_filtering && !(i.filtered || i.filtering_done)) return 'FILTERING';
-  if (i.needs_filtering) return 'FILTERED';
+  if (i.needs_filtering) return 'FILTERED'; // Filtering Only materials stay FILTERED (the server sends `stage` and decides)
   return 'READY_FOR_ROASTING';
 }
 export const materialBadge = (i) => MAT_STAGE[materialStage(i)];
 
 // A material can only be roasted when it does not need filtering, or its filtering is completed.
-export const canRoastMaterial = (i) => !['FILTERING'].includes(materialStage(i));
+export const canRoastMaterial = (i) => i.process_type !== 'FILTER_ONLY' && !['FILTERING'].includes(materialStage(i));
 
 // Edit / delete of one material is only possible before that material has started its next process.
 // The server decides (can_edit / can_delete) and checks again; this is the fallback for old responses.

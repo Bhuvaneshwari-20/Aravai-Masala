@@ -14,6 +14,7 @@ router.get('/weighing-machines', authorize('batching', 'view'), c.weighingMachin
 router.post('/verify-machine', authorize('batching', 'create'), c.verifyMachine); // scanned machine QR -> machine id / name / tare
 router.post('/', authorize('batching', 'create'), c.start);
 router.get('/:id', authorize('batching', 'view'), c.get);
+router.delete('/:id', authorize('batching', 'delete'), c.removeBatch);   // delete a whole batch (stock goes back, batch becomes CANCELLED)
 router.post('/:id/batching', authorize('batching', 'create'), c.addBatching);
 router.post('/:id/extra-material', authorize('batching', 'edit'), c.addExtraMaterial);
 router.put('/:id/materials/:materialId', authorize('batching', 'edit'), c.updateMaterial);       // edit one weighed material (bags, weight, qty, Filter tick)

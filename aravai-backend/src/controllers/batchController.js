@@ -12,6 +12,7 @@ exports.addBatching = wrap((req) => svc.addBatching(req.params.id, req.body, req
 exports.addExtraMaterial = wrap((req) => svc.addExtraMaterial(req.params.id, req.body, req.user, req.ip), 201);
 exports.updateMaterial = wrap((req) => svc.updateMaterial(req.params.id, req.params.materialId, req.body, req.user, req.ip));
 exports.removeMaterial = wrap((req) => svc.removeMaterial(req.params.id, req.params.materialId, req.user, req.ip));
+exports.removeBatch = wrap((req) => svc.removeBatch(req.params.id, req.user, req.ip));
 exports.completeBatching = wrap((req) => svc.completeBatching(req.params.id, req.user.id, req.ip));
 exports.hold = wrap((req) => svc.hold(req.params.id, req.body, req.user.id, req.ip));
 exports.resume = wrap((req) => svc.resume(req.params.id, req.user.id, req.ip));
