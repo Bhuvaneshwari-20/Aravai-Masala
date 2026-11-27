@@ -1,6 +1,7 @@
 // Role names. Super Admin always passes; Admin is limited by ADMIN_ACCESS below.
 const SUPER = 'Super Admin';
 const ADMIN = 'Admin';
+const MANAGER = 'Manager';
 const FULL_ACCESS = [SUPER, ADMIN]; // still used by login/profile ('ALL') and account management
 
 // Admin: only Masters + Stock & Reports modules (mirrors menu.js).
@@ -19,7 +20,12 @@ const ADMIN_ACCESS = {
   reports: '*',
   batching: ['view'],
   weighing_review: ['view'],
+  purchase: ['view', 'create', 'edit'],   // Admin raises purchase requests; only Manager / Super Admin approve
 };
+
+// Manager: purchase requests only (view + approve / reject).
+const MANAGER_ACCESS = { purchase: ['view', 'approve'] };
+const managerAllows = (module, action) => Array.isArray(MANAGER_ACCESS[module]) && MANAGER_ACCESS[module].includes(action);
 
 const adminAllows = (module, action) => {
   const a = ADMIN_ACCESS[module];
@@ -31,7 +37,8 @@ const adminAllows = (module, action) => {
 const roleDecision = (roleName, module, action) => {
   if (roleName === SUPER) return true;
   if (roleName === ADMIN) return adminAllows(module, action);
+  if (roleName === MANAGER) return managerAllows(module, action);
   return null;
 };
 
-module.exports = { SUPER, ADMIN, FULL_ACCESS, ADMIN_ACCESS, adminAllows, roleDecision };
+module.exports = { SUPER, ADMIN, MANAGER, FULL_ACCESS, ADMIN_ACCESS, adminAllows, roleDecision };

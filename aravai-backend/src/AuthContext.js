@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import api, { setToken } from './api';
 import { storage } from './storage';
+import { roleCanSee } from './menu';
+import { unregisterPush } from './pushNotifications';
 
 const Ctx = createContext(null);
 export const useAuth = () => useContext(Ctx);
@@ -33,6 +35,7 @@ export function AuthProvider({ children }) {
   };
 
   const logout = async () => {
+     await unregisterPush();
     await storage.del('token');
     setToken(null);
     setUser(null);
@@ -40,10 +43,17 @@ export function AuthProvider({ children }) {
 
   const can = (module, action = 'view') => {
     if (!user) return false;
+    // Role level first: Super Admin = all, Admin = Masters + Stock & Reports, User level = Production only
+    if (!roleCanSee(user.role_name, module)) return false;
+    if (user.role_name === 'Manager') return module === 'purchase' && (action === 'view' || action === 'approve'); // fixed rights, same as the backend
+    if (module === 'purchase' && user.role_name === 'Admin') return action !== 'approve' && action !== 'delete'; // Admin raises requests, Manager approves
     if (user.permissions === 'ALL') return true;
-    const p = user.permissions.find((x) => x.module === module);
+    // Read-only screens that follow an existing permission (no extra permission row needed)
+    const FOLLOWS = { tracking: 'batching',process_loss: 'batching',material_overview: 'material', ingredient: 'material' };
+    const mod = FOLLOWS[module] || module;
+    const p = user.permissions.find((x) => x.module === mod);
     return !!(p && p[`can_${action}`]);
   };
 
   return <Ctx.Provider value={{ user, loading, login, logout, can }}>{children}</Ctx.Provider>;
-}
+} 

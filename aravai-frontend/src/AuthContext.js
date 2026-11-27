@@ -23,7 +23,7 @@ const canFor = (roleName, permissions, module, action = 'view', explicit = false
     const p = (permissions || []).find((x) => x.module === module);
     return !!(p && p[`can_${action}`]);
   }
-  if (!roleCanSee(roleName, module)) return false;
+    if (roleName === 'Manager') return module === 'purchase' && (action === 'view' || action === 'approve');
   if (permissions === 'ALL') return true;
   const a = LEGACY[action] || action;
   const list = permissions || [];

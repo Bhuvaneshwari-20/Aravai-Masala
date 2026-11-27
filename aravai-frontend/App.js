@@ -16,6 +16,7 @@ import MaterialListScreen from './src/screens/material/MaterialListScreen';
 import MaterialDetailScreen from './src/screens/material/MaterialDetailScreen';
 import VendorListScreen from './src/screens/vendor/VendorListScreen';
 import VendorDetailScreen from './src/screens/vendor/VendorDetailScreen';
+import IndentScreen from './src/screens/purchase/IndentScreen';
 import AccountListScreen from './src/screens/users/AccountListScreen';
 import StockListScreen from './src/screens/stock/StockListScreen';
 import ProductListScreen from './src/screens/product/ProductListScreen';
@@ -38,8 +39,7 @@ import MeshListScreen from './src/screens/mesh/MeshListScreen';
 import NotificationCenter from './src/components/NotificationCenter';
 import ProcessLossScreen from './src/screens/tracking/ProcessLossScreen';
 import { usePushNotifications } from './src/pushNotifications';
-import { Platform } from 'react-native';
-import WastageScreen from './src/screens/wastage/WastageScreen';
+
 import MachineQrScreen from './src/screens/machine/MachineQrScreen';
 import { linking } from './src/linking';    
 
@@ -68,12 +68,12 @@ function Root() {
   }
   if (!user) return <LoginScreen />;
   return (
-       <View style={[{ flex: 1, flexDirection: 'row', backgroundColor: COLORS.bg }, Platform.OS === 'web' && { height: '100vh', overflow: 'hidden' }]}>
+    <View style={{ flex: 1, flexDirection: 'row', backgroundColor: COLORS.bg }}>
           <StatusBar style="dark" />
       <NotificationCenter navRef={navRef} route={route} />
       <StatusBar style="dark" />
       {width >= 900 && <Sidebar navRef={navRef} current={route} />}
-      <View style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+      <View style={{ flex: 1, minWidth: 0 }}>
     <View style={{ flex: 1 }}>
       <NavigationContainer ref={navRef} linking={linking} onStateChange={() => setRoute(navRef.getCurrentRoute()?.name || 'Home')}>
 
@@ -82,6 +82,7 @@ function Root() {
         <Stack.Screen name="MaterialList" component={MaterialListScreen} options={{ title: 'Material Master' }} />
         <Stack.Screen name="MaterialDetail" component={MaterialDetailScreen} options={{ title: 'Material Details' }} />
         <Stack.Screen name="VendorList" component={VendorListScreen} options={{ title: 'Vendor Master' }} />
+        <Stack.Screen name="PurchaseList" component={IndentScreen} options={{ title: 'Indent' }} />
         <Stack.Screen name="VendorDetail" component={VendorDetailScreen} options={{ title: 'Vendor Details' }} />
         <Stack.Screen name="StockList" component={StockListScreen} options={{ title: 'Material Stock' }} />
         <Stack.Screen name="ProductList" component={ProductListScreen} options={{ title: 'Products & MRP' }} />
@@ -104,7 +105,7 @@ function Root() {
    <Stack.Screen name="OverviewBatch" component={OverviewBatchScreen} options={{ title: 'Batch Materials' }} />
    <Stack.Screen name="MachineQr" component={MachineQrScreen} options={{ title: 'Machine' }} />
    <Stack.Screen name="ProcessLossList" component={ProcessLossScreen} options={{ title: 'Process Yield & Loss' }} />   
-        <Stack.Screen name="WastageList" component={WastageScreen} options={{ title: 'Wastage & Fill Report' }} /> 
+      
       </Stack.Navigator>
     </NavigationContainer>
     </View>

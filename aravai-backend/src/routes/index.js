@@ -23,4 +23,5 @@ router.use('/mesh', require('./mesh'));
 router.use('/notifications', require('./notifications'));
 router.use('/dashboard', require('./dashboard'));
 router.use('/wastage', require('./wastage'));
+router.use('/indents', require('./indents'));
 module.exports = router;
