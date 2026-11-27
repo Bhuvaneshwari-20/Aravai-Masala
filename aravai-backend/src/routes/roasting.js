@@ -19,4 +19,5 @@ router.get('/', authorize('roasting', 'view'), c.list);
 router.post('/finish', authorize('roasting', 'create'), c.finishBatch);
 router.post('/', authorize('roasting', 'create'), c.create);
 router.put('/:id', authorize('roasting', 'edit'), c.update);
+router.get('/session/:id', authorize('roasting', 'view'), c.detail);
 module.exports = router;

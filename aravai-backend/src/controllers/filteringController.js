@@ -13,3 +13,4 @@ exports.start = wrap((req) => ps.start(T, req.body, req.user, req.ip), 201);
 exports.stop = wrap((req) => ps.stop(T, req.body, req.user, req.ip));
 exports.proceed = wrap((req) => ps.proceed(req.body, req.user, req.ip));
 exports.alert = wrap((req) => ps.alertDue(T, req.body));
+exports.detail = wrap((req) => ps.detail(T, req.params.id));

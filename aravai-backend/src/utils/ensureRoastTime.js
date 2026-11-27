@@ -8,5 +8,13 @@ async function addCol(pool, table, col, ddl, log) {
 }
 module.exports = async function ensureRoastTime(pool, log = console) {
   await addCol(pool, 'materials', 'roast_seconds', 'INT NULL', log);
-  await addCol(pool, 'batching_details', 'roast_seconds', 'INT NULL', log);
+    await addCol(pool, 'batching_details', 'roast_seconds', 'INT NULL', log);
+  await addCol(pool, 'materials', 'filter_seconds', 'INT NULL', log);   // Filtering time set in Material Master
+  await addCol(pool, 'materials', 'grind_seconds', 'INT NULL', log);    // Grinding time set in Material Master
+    await addCol(pool, 'materials', 'blending_seconds', 'INT NULL', log);            // Blending time set in Material Master
+  await addCol(pool, 'blending_sessions', 'configured_seconds', 'INT NULL', log);   // snapshot of Material Master at Start
+  await addCol(pool, 'blending_sessions', 'selected_seconds', 'INT NULL', log);     // what the worker chose at Start
+  await addCol(pool, 'blending_sessions', 'duration_reason', 'VARCHAR(255) NULL', log);
+  await addCol(pool, 'blending_sessions', 'actual_seconds', 'INT NULL', log);       // used in B2
+  await addCol(pool, 'blending_sessions', 'duration_diff_seconds', 'INT NULL', log); // used in B2
 };

@@ -14,4 +14,5 @@ router.post('/alert', authorize('filtering', 'view'), c.alert);
 // old register (kept)
 router.get('/', authorize('filtering', 'view'), c.list);          // ?tab=pending | done
 router.post('/', authorize('filtering', 'create'), c.create);
+router.get('/session/:id', authorize('filtering', 'view'), c.detail);
 module.exports = router;

@@ -26,7 +26,8 @@ const SESSION_SELECT = `
          ${fmtDT('s.actual_end')} AS actual_end, s.actual_minutes, s.status, s.alert_sent,
          (s.proceeded_at IS NOT NULL) AS proceeded, ${fmtDT('s.proceeded_at')} AS proceeded_at, s.remarks,
          TIMESTAMPDIFF(SECOND, s.start_time, NOW()) AS elapsed_sec,
-         TIMESTAMPDIFF(SECOND, NOW(), s.expected_end) AS remaining_sec,
+          TIMESTAMPDIFF(SECOND, NOW(), s.expected_end) AS remaining_sec,
+         TIMESTAMPDIFF(SECOND, s.start_time, s.expected_end) AS planned_sec,
          m.machine_code, m.machine_name, su.full_name AS started_by_name, cu.full_name AS completed_by_name,
          b.batch_no, p.product_name, mt.material_code, mt.material_name
     FROM process_sessions s
@@ -40,7 +41,7 @@ const SESSION_SELECT = `
 const shapeSession = (s) => (s ? {
   ...s, input_weight: Number(s.input_weight), output_weight: s.output_weight == null ? null : Number(s.output_weight),
   actual_minutes: s.actual_minutes == null ? null : Number(s.actual_minutes), alert_sent: !!s.alert_sent, proceeded: !!s.proceeded,
-  elapsed_sec: Number(s.elapsed_sec), remaining_sec: Number(s.remaining_sec),
+    elapsed_sec: Number(s.elapsed_sec), remaining_sec: Number(s.remaining_sec), planned_sec: Number(s.planned_sec),
 } : null);
 
 async function getSession(db, id) {
@@ -58,12 +59,18 @@ async function loadContext(db, batchIds) {
        FROM batch_master b JOIN product_master p ON p.id = b.product_id LEFT JOIN recipe_master r ON r.id = b.recipe_id WHERE b.id IN (?)`, [batchIds]);
   bs.forEach((b) => out.set(b.id, { ...b, materials: [] }));
   const [mats] = await db.query(
-    `SELECT bd.batch_id, bd.material_id, m.material_code, m.material_name, SUM(bd.weighed_qty) AS weighed, MAX(bd.needs_filtering) AS needs
+       `SELECT bd.batch_id, bd.material_id, m.material_code, m.material_name, SUM(bd.weighed_qty) AS weighed, MAX(bd.needs_filtering) AS needs,
+                        MAX(bd.roast_seconds) AS batch_roast_sec, MAX(m.roast_seconds) AS mat_roast_sec,
+            MAX(m.filter_seconds) AS mat_filter_sec, MAX(m.grind_seconds) AS mat_grind_sec
        FROM batching_details bd JOIN materials m ON m.id = bd.material_id WHERE bd.batch_id IN (?)
       GROUP BY bd.batch_id, bd.material_id, m.material_code, m.material_name ORDER BY MIN(bd.id)`, [batchIds]);
   const byKey = new Map();
   mats.forEach((x) => {
-    const m = { material_id: x.material_id, material_code: x.material_code, material_name: x.material_name, weighed: Number(x.weighed), needs: Number(x.needs) === 1, s: {} };
+       const m = { material_id: x.material_id, material_code: x.material_code, material_name: x.material_name, weighed: Number(x.weighed), needs: Number(x.needs) === 1, s: {},
+      // roasting time: the one used in this batch, else the one set in Material Master
+            roast_seconds: Number(x.batch_roast_sec) > 0 ? Number(x.batch_roast_sec) : (Number(x.mat_roast_sec) > 0 ? Number(x.mat_roast_sec) : null),
+      filter_seconds: Number(x.mat_filter_sec) > 0 ? Number(x.mat_filter_sec) : null,
+      grind_seconds: Number(x.mat_grind_sec) > 0 ? Number(x.mat_grind_sec) : null };
     byKey.set(`${x.batch_id}:${x.material_id}`, m);
     if (out.has(x.batch_id)) out.get(x.batch_id).materials.push(m);
   });
@@ -83,7 +90,8 @@ async function loadContext(db, batchIds) {
 }
 
 const done = (m, t) => !!(m.s[t] && m.s[t].status === 'COMPLETED');
-
+// configured duration (seconds) of this material for the process, or null when none is set
+const plannedFor = (m, type) => (type === 'ROASTING' ? m.roast_seconds : type === 'FILTERING' ? m.filter_seconds : m.grind_seconds) || null;
 // What a material's card for `type` looks like right now.
 //   SEQUENTIAL   (Filtering first): Roasting of EVERY material (filtered or direct) starts only after Filtering is completed for the whole batch.
 //   SIMULTANEOUS : Filtering (materials ticked "Filter") and Roasting (direct materials) run at the same time. A filtered material joins
@@ -128,9 +136,10 @@ function toCard(b, m, type, ev) {
     batch_id: b.id, batch_no: b.batch_no, product_name: b.product_name, process_mode: b.process_mode === 'SIMULTANEOUS' ? 'SIMULTANEOUS' : 'SEQUENTIAL',
     material_id: m.material_id, material_code: m.material_code, material_name: m.material_name,
     quantity: ev.input == null ? null : r3(ev.input), status: ev.status, reason: ev.reason || '', awaiting_proceed: !!ev.awaiting_proceed,
-    delayed: ev.status === 'RUNNING' && s.remaining_sec < 0, batch_status: b.status,
+        delayed: ev.status === 'RUNNING' && s.remaining_sec < 0, batch_status: b.status,
+        planned_seconds: plannedFor(m, type),   // configured duration (null = not configured: the user enters minutes)
     session: s ? { id: s.id, machine_id: s.machine_id, machine_code: s.machine_code, machine_name: s.machine_name, start_time: s.start_time, expected_minutes: s.expected_minutes,
-      expected_end: s.expected_end, actual_end: s.actual_end, actual_minutes: s.actual_minutes, elapsed_sec: s.elapsed_sec, remaining_sec: s.remaining_sec,
+           expected_end: s.expected_end, actual_end: s.actual_end, actual_minutes: s.actual_minutes, elapsed_sec: s.elapsed_sec, remaining_sec: s.remaining_sec, planned_sec: s.planned_sec,
       alert_sent: s.alert_sent, output_weight: s.output_weight, started_by_name: s.started_by_name, completed_by_name: s.completed_by_name } : null,
   };
 }
@@ -188,9 +197,10 @@ async function start(type, body, user, ip) {
   const batchId = v.toId(body.batch_id, 'batch');
   const materialId = v.toId(body.material_id, 'material');
   const machineId = v.toId(body.machine_id, 'machine');
-  const time = reqTime(body.start_time, 'Start time');
-  const minutes = Number(body.expected_minutes);
-  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) throw new AppError('Expected duration must be a whole number of minutes between 1 and 1440');
+   // Start time = the database clock at the moment Start is pressed (a time sent by an older client is still accepted)
+  const time = body.start_time ? reqTime(body.start_time, 'Start time') : null;
+  const manualMinutes = body.expected_minutes === undefined || body.expected_minutes === null || body.expected_minutes === '' ? null : Number(body.expected_minutes);
+  if (manualMinutes !== null && (!Number.isInteger(manualMinutes) || manualMinutes < 1 || manualMinutes > 1440)) throw new AppError('Expected duration must be a whole number of minutes between 1 and 1440');
 
   return withTransaction(async (conn) => {
     // 1) the machine row is locked first, so two users cannot take the same machine at the same moment
@@ -220,25 +230,34 @@ async function start(type, body, user, ip) {
     if (ev.status !== 'PENDING') throw new AppError(ev.reason || `${m.material_name} is not ready yet`, 409);
     if (!(ev.input > 0)) throw new AppError('There is no quantity to process for this material');
 
-    // 3) start time chosen by the user (today). It cannot be in the future.
-    const [[d]] = await conn.query("SELECT DATE_FORMAT(NOW(), '%Y-%m-%d') AS d");
-    const startStr = `${d.d} ${time}:00`;
-    const [[fut]] = await conn.query('SELECT (? > NOW() + INTERVAL ? MINUTE) AS fut', [startStr, START_TOLERANCE_MIN]);
-    if (Number(fut.fut)) throw new AppError('Start time cannot be later than the current time');
+       // 3) duration: the configured one (Roasting time of the material / batch). Otherwise the minutes the user entered.
+        const cfgSec = plannedFor(m, type);
+    const plannedSec = cfgSec > 0 ? cfgSec : (manualMinutes ? manualMinutes * 60 : 0);
+    if (!(plannedSec > 0)) throw new AppError(`No ${cfg.label.toLowerCase()} time is configured for ${m.material_name}. Enter the duration in minutes`);
+    if (plannedSec > 86400) throw new AppError('Duration cannot be more than 24 hours');
+    const minutes = Math.max(Math.ceil(plannedSec / 60), 1);
+
+    // 4) start time = the DATABASE time now (the exact second), never the phone's clock
+    const [[n]] = await conn.query("SELECT DATE_FORMAT(NOW(), '%Y-%m-%d') AS d, DATE_FORMAT(NOW(), '%H:%i') AS hm, DATE_FORMAT(NOW(), '%Y-%m-%d %H:%i:%s') AS full");
+    const startStr = !time || time === n.hm ? n.full : `${n.d} ${time}:00`;
+    if (time) {
+      const [[fut]] = await conn.query('SELECT (? > NOW() + INTERVAL ? MINUTE) AS fut', [startStr, START_TOLERANCE_MIN]);
+      if (Number(fut.fut)) throw new AppError('Start time cannot be later than the current time');
+    }
 
     let id;
     try {
       const [r] = await conn.query(
         `INSERT INTO process_sessions (batch_id, material_id, process_type, machine_id, input_weight, start_time, expected_minutes, expected_end, status, started_by)
-         VALUES (?,?,?,?,?,?,?,DATE_ADD(?, INTERVAL ? MINUTE),'RUNNING',?)`,
-        [batchId, materialId, type, machineId, ev.input, startStr, minutes, startStr, minutes, user.id]);
+               VALUES (?,?,?,?,?,?,?,DATE_ADD(?, INTERVAL ? SECOND),'RUNNING',?)`,
+        [batchId, materialId, type, machineId, ev.input, startStr, minutes, startStr, plannedSec, user.id]);
       id = r.insertId;
     } catch (e) {
       if (e.code === 'ER_DUP_ENTRY') throw new AppError('This machine or this material was just started by someone else. Reload and try again', 409);
       throw e;
     }
     await audit({ userId: user.id, action: 'CREATE', table: 'process_sessions', recordId: id,
-      newValues: { process: type, batch_id: batchId, material_id: materialId, machine_id: machineId, start_time: startStr, expected_minutes: minutes, input_weight: ev.input }, ip }, conn);
+         newValues: { process: type, batch_id: batchId, material_id: materialId, machine_id: machineId, start_time: startStr, expected_minutes: minutes, planned_seconds: plannedSec, input_weight: ev.input }, ip }, conn);
     return getSession(conn, id);
   });
 }
@@ -398,5 +417,38 @@ async function history(type, q) {
   const [rows] = await pool.query(`${SESSION_SELECT} ${w.replace(/\bs\.process_type/g, 's.process_type')} ORDER BY s.id DESC LIMIT ? OFFSET ?`, [...args, limit, offset]);
   return { items: rows.map(shapeSession), page, limit, total, total_pages: Math.max(Math.ceil(total / limit), 1) };
 }
+async function detail(type, idRaw) {
+  try {
+    const id = v.toId(idRaw, 'processing record');
+    const [rows] = await pool.query(`${SESSION_SELECT} WHERE s.id = ? AND s.process_type = ?`, [id, type]);
+    if (!rows.length) throw new AppError('Processing record not found', 404);
+    const s = shapeSession(rows[0]);
 
-module.exports = { TYPES, queue, start, stop, proceed, alertDue, history };
+    const [[mat]] = await pool.query('SELECT roast_seconds, filter_seconds, grind_seconds FROM materials WHERE id = ?', [s.material_id]);
+    const configured = mat ? (type === 'ROASTING' ? mat.roast_seconds : type === 'FILTERING' ? mat.filter_seconds : mat.grind_seconds) : null;
+
+    const input = Number(s.input_weight);
+    const output = s.output_weight == null ? null : Number(s.output_weight);
+    const wastage = output == null ? null : r3(Math.max(input - output, 0));
+    const loss = output == null || !(input > 0) ? null : r2((wastage / input) * 100);
+
+    let extra = {};
+    if (type === 'ROASTING') {
+      const [r] = await pool.query(
+        'SELECT code_no, temp_before, std_temp, temp_after FROM roasting_details WHERE batch_id = ? AND material_id = ? AND machine_id = ? ORDER BY id DESC LIMIT 1',
+        [s.batch_id, s.material_id, s.machine_id]);
+      if (r.length) extra = { code_no: r[0].code_no, temp_before: r[0].temp_before, std_temp: r[0].std_temp, temp_after: r[0].temp_after };
+    } else if (type === 'GRINDING') {
+      const [r] = await pool.query(
+        'SELECT mesh_size, siever FROM grinding_details WHERE batch_id = ? AND machine_id = ? AND input_time = (SELECT start_time FROM process_sessions WHERE id = ?) ORDER BY id DESC LIMIT 1',
+        [s.batch_id, s.machine_id, id]);
+      if (r.length) extra = { mesh_size: r[0].mesh_size, sieved: r[0].siever };
+    }
+    return { ...s, configured_seconds: Number(configured) > 0 ? Number(configured) : null, wastage_weight: wastage, loss_percent: loss, ...extra };
+  } catch (e) {
+    console.error('DETAIL ERROR:', e);
+    throw e;
+  }
+}
+
+module.exports = { TYPES, queue, start, stop, proceed, alertDue, history,detail };

@@ -22,7 +22,8 @@ import SelectField from '../../components/SelectField';
 import TimeField from '../../components/TimeField';
 import { ErrorBox, ModalFooter } from '../../components/FormBits';
 import { COLORS, fmt } from '../../theme';
-
+import ConfirmDialog from '../../components/ConfirmDialog';
+import { fmtDuration } from '../../components/DurationField';
 // Blending, shown exactly like Grinding:  batch cards  ->  open a batch  ->  START BLENDING (machine, start time, duration)  ->  timer  ->  Stop / Complete.
 // All times and the running timer come from the database (elapsed_sec / remaining_sec), so a refresh never loses the timer.
 const ALERT_SECONDS = 300;
@@ -47,7 +48,7 @@ const previewEnd = (start, mins) => {
   const day = Math.floor(tot / 1440);
   return `${to12(Math.floor((tot % 1440) / 60), tot % 60)}${day ? ` (+${day} day)` : ''}`;
 };
-
+  
 function Chip({ st, text }) {
   return (
     <View style={[s.chip, { backgroundColor: st.bg }]}>
@@ -188,7 +189,10 @@ function BlendCard({ g, machines, canAct, fetchedAt, draft, setDraft, busy, err,
       {/* ----- not started: machine, start time, duration ----- */}
       {pending && (
         <View>
-          <StatGrid><Stat label="QUANTITY" value={`${fmt(g.quantity)} kg`} strong wide /></StatGrid>
+                  <StatGrid>
+            <Stat label="QUANTITY" value={`${fmt(g.quantity)} kg`} strong wide={!(g.planned_seconds > 0)} />
+            {g.planned_seconds > 0 && <Stat label="CONFIGURED DURATION" value={fmtDuration(g.planned_seconds)} strong />}
+          </StatGrid>
           <IngredientList items={g.ingredients} total={g.quantity} />
           <View style={s.formBox}>
             <SectionLabel>START BLENDING</SectionLabel>
@@ -198,6 +202,9 @@ function BlendCard({ g, machines, canAct, fetchedAt, draft, setDraft, busy, err,
               <TimeField label="Start time *" value={d.start_time || ''} onChangeText={(t) => setDraft({ start_time: t })} error={err && err.start} />
               <FormField label="Duration (min) *" digits value={d.minutes || ''} onChangeText={(t) => setDraft({ minutes: t.replace(/[^0-9]/g, '') })} error={err && err.minutes} />
             </FormRow>
+                        {g.planned_seconds > 0 && Number(d.minutes) !== Math.ceil(g.planned_seconds / 60) && (
+              <FormField label="Reason for changing the duration *" value={d.reason || ''} onChangeText={(t) => setDraft({ reason: t })} maxLength={255} error={err && err.reason} />
+            )}
             <View style={s.endPill}>
               <MCI name="flag-checkered" size={17} color={COLORS.green} />
               <Text style={s.endLabel}>Expected completion</Text>
@@ -357,6 +364,7 @@ export default function BlendingListScreen() {
   const [errs, setErrs] = useState({});
   const [busyKey, setBusyKey] = useState(null);
   const [stopFor, setStopFor] = useState(null);
+  const [overrideFor, setOverrideFor] = useState(null);
   const [selBatch, setSelBatch] = useState(null);     // batch opened (null = list of batches)
   const [detailId, setDetailId] = useState(null);
   const [, setTick] = useState(0);
@@ -385,27 +393,32 @@ export default function BlendingListScreen() {
 
   const draftOf = (g) => {
     const d = drafts[g.batch_id] || {};
-    return { machine_id: d.machine_id, start_time: d.start_time !== undefined ? d.start_time : nowHHMM(), minutes: d.minutes !== undefined ? d.minutes : '' };
+    const def = Number(g.planned_seconds) > 0 ? String(Math.ceil(g.planned_seconds / 60)) : '';
+    return { machine_id: d.machine_id, start_time: d.start_time !== undefined ? d.start_time : nowHHMM(), minutes: d.minutes !== undefined ? d.minutes : def, reason: d.reason || '' };
   };
   const setDraft = (g) => (patch) => { setDrafts((p) => ({ ...p, [g.batch_id]: { ...draftOf(g), ...patch } })); setErrs((p) => ({ ...p, [g.batch_id]: undefined })); };
 
-  const start = async (g) => {
+   const start = async (g, confirmed) => {
     const d = draftOf(g);
     const e = {};
+    const cfgMin = Number(g.planned_seconds) > 0 ? Math.ceil(g.planned_seconds / 60) : 0;
+    const changed = cfgMin > 0 && Number(d.minutes) !== cfgMin;
     if (!d.machine_id) e.machine = 'Select a machine';
     if (!TIME_RE.test(d.start_time || '')) e.start = 'Select the start time';
     if (!(Number(d.minutes) >= 1)) e.minutes = 'Enter duration in minutes';
+    if (changed && !String(d.reason).trim()) e.reason = 'Enter the reason for changing the duration';
     if (Object.keys(e).length) { setErrs((p) => ({ ...p, [g.batch_id]: e })); return; }
+    if (changed && !confirmed) { setOverrideFor(g); return; }
+    setOverrideFor(null);
     setBusyKey(g.batch_id);
     try {
-      await api.post('/blending/start', { batch_id: g.batch_id, machine_id: d.machine_id, start_time: d.start_time, expected_minutes: Number(d.minutes) });
+      await api.post('/blending/start', { batch_id: g.batch_id, machine_id: d.machine_id, start_time: d.start_time, expected_minutes: Number(d.minutes), duration_reason: changed ? d.reason.trim() : undefined });
       setDrafts((p) => ({ ...p, [g.batch_id]: undefined }));
       toast(`${g.batch_no} blending started`);
       await load(true);
     } catch (x) { setErrs((p) => ({ ...p, [g.batch_id]: { server: errMsg(x) } })); await load(true); }
     setBusyKey(null);
   };
-
   const onStopped = () => {
     const g = stopFor; setStopFor(null);
     toast(`${g.batch_no} blending completed - batch moved to Packing`);
@@ -452,7 +465,11 @@ export default function BlendingListScreen() {
               )}
       </Container>
 
-      <StopModal g={stopFor} toast={toast} onDismiss={() => setStopFor(null)} onDone={onStopped} />
+            <StopModal g={stopFor} toast={toast} onDismiss={() => setStopFor(null)} onDone={onStopped} />
+      <ConfirmDialog visible={!!overrideFor} busy={busyKey !== null} title="Change blending duration?"
+        message={overrideFor ? `Configured duration is ${fmtDuration(overrideFor.planned_seconds)}, but you entered ${draftOf(overrideFor).minutes} min. Start with the new duration? The reason will be saved.` : ''}
+        confirmText="Yes, start" onCancel={() => setOverrideFor(null)} onConfirm={() => overrideFor && start(overrideFor, true)} />
+      
       <BlendingDetailModal visible={detailId !== null} id={detailId} onDismiss={() => setDetailId(null)} />
     </View>
   );

@@ -222,3 +222,69 @@ export function downloadBlendingPdf(d) {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
   return true;
 }
+export function processPdfBytes(d, label) {
+  const p = new Pdf();
+  p.text(M, p.y - 14, 'ARAVAI MASALA', { size: 18, bold: true, color: MAROON });
+  p.text(M, p.y - 28, 'Manufacturing', { size: 9, color: GREY });
+  p.text(360, p.y - 12, `${label.toUpperCase()} RECORD`, { size: 14, bold: true });
+  p.text(360, p.y - 26, `Batch ${d.batch_no}`, { size: 9, color: GREY });
+  p.text(360, p.y - 38, `Printed ${new Date().toLocaleString('en-IN')}`, { size: 9, color: GREY });
+  p.line(M, p.y - 46, W - M, p.y - 46, MAROON, 2.5);
+  p.y -= 58;
+
+  const section = (title, rows) => {
+    p.ensure(22 + 16 * 2);
+    p.text(M, p.y - 10, title.toUpperCase(), { size: 8.5, bold: true, color: GREY });
+    p.y -= 16;
+    rows.forEach(([lbl, value, o = {}]) => {
+      p.ensure(16);
+      const top = p.y; const rowH = 16;
+      if (o.hl) { p.rect(M, top - rowH, W - 2 * M, rowH, o.hl); p.rect(M, top - rowH, 3.5, rowH, o.bar || MAROON); }
+      p.line(M, top - rowH, W - M, top - rowH, [0.85, 0.8, 0.75], 0.4);
+      p.text(M + 10, top - 11.5, lbl, { size: 9.5, bold: !!o.hl, color: o.hl ? INK : GREY });
+      p.text(VAL_X, top - 11.5, value, { size: o.hl ? 11 : 10, bold: true, color: o.color || INK });
+      p.y -= rowH;
+    });
+    p.y -= 6;
+  };
+  const mins = (v) => (v === null || v === undefined || v === '' ? '—' : `${num(v)} min`);
+  const temp = (v) => (v === null || v === undefined || v === '' ? '—' : `${num(v)} °C`);
+
+  section(`${label} run`, [
+    ['Batch', d.batch_no], ['Product', d.product_name, { hl: AMBER_BG, bar: MAROON, color: MAROON }],
+    ['Material', d.material_name], ['Machine', `${d.machine_code} · ${d.machine_name}`],
+    ['Started', whenT(d.start_time)], ['Expected completion', whenT(d.expected_end)], ['Ended', whenT(d.actual_end)],
+    ['Expected duration', mins(d.expected_minutes)], ['Actual duration', mins(d.actual_minutes)],
+    ['Status', cap(d.status)],
+  ]);
+  section('Weight', [
+    ['I/P weight', kg(d.input_weight)], ['O/P weight', kg(d.output_weight), { color: GREEN }],
+    ['Wastage', d.wastage_weight == null ? '—' : `${kg(d.wastage_weight)} (${Number(d.loss_percent).toFixed(2)}%)`,
+      { color: Number(d.loss_percent) > 12 ? ORANGE : INK }],
+  ]);
+  if (d.process_type === 'ROASTING') section('Temperature', [['Temp before', temp(d.temp_before)], ['STD temp', temp(d.std_temp)], ['Temp after', temp(d.temp_after)]]);
+  if (d.process_type === 'GRINDING') section('Grinding', [['Mesh size', String(d.mesh_size ?? '—')], ['Sieved', d.sieved || '—']]);
+  section('Done by', [['Started by', d.started_by_name || '—'], ['Completed by', d.completed_by_name || '—']]);
+  if (d.remarks) section('Remarks', [['Note', String(d.remarks)]]);
+
+  p.ensure(54);
+  p.y -= 26;
+  [['Started by', d.started_by_name], ['Completed by', d.completed_by_name], ['Production in-charge', '']].forEach(([role, who], i) => {
+    const x = M + i * 175;
+    p.line(x, p.y, x + 150, p.y, INK, 0.6);
+    p.text(x, p.y + 4, who || '', { size: 9.5, bold: true });
+    p.text(x, p.y - 12, role, { size: 8.5, color: GREY });
+  });
+  return p.build();
+}
+
+export function downloadProcessPdf(d, label) {
+  if (typeof document === 'undefined') return false;
+  const blob = new Blob([processPdfBytes(d, label)], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${label}-${d.batch_no}-${d.material_name}.pdf`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  return true;
+}

@@ -18,3 +18,4 @@ exports.history = wrap((req) => ps.history(T, req.query));
 exports.start = wrap((req) => ps.start(T, req.body, req.user, req.ip), 201);
 exports.stop = wrap((req) => ps.stop(T, req.body, req.user, req.ip));
 exports.alert = wrap((req) => ps.alertDue(T, req.body));
+exports.detail = wrap((req) => ps.detail(T, req.params.id));

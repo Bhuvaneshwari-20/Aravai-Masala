@@ -16,4 +16,5 @@ router.get('/machines', authorize('grinding', 'view'), c.machines);
 router.get('/meshes', authorize('grinding', 'view'), c.meshes);
 router.post('/meshes', authorize('grinding', 'create'), c.createMesh);
 router.post('/', authorize('grinding', 'create'), c.create);
+router.get('/session/:id', authorize('grinding', 'view'), c.detail);
 module.exports = router;

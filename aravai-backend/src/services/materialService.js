@@ -101,6 +101,9 @@ function cleanInput(body) {
     default_filter_stages: v.intRange(body.default_filter_stages, 'Filtering stages', 0, 5),
     // roasting time in seconds (hours / minutes / seconds picker). undefined = not sent (keep), null = cleared
     roast_seconds: body.roast_seconds === undefined ? undefined : (sent(body.roast_seconds) ? v.intRange(body.roast_seconds, 'Roasting time', 1, 86400) : null),
+        filter_seconds: body.filter_seconds === undefined ? undefined : (sent(body.filter_seconds) ? v.intRange(body.filter_seconds, 'Filtering time', 1, 86400) : null),
+    grind_seconds: body.grind_seconds === undefined ? undefined : (sent(body.grind_seconds) ? v.intRange(body.grind_seconds, 'Grinding time', 1, 86400) : null),
+        blending_seconds: body.blending_seconds === undefined ? undefined : (sent(body.blending_seconds) ? v.intRange(body.blending_seconds, 'Blending time', 1, 86400) : null),
   };
   // unit may be empty: it is chosen when the first stock is received (Material Receipt). '' = not chosen yet.
   d.specifications = cleanSpecs(body.specifications);
@@ -174,9 +177,9 @@ async function create(body, userId, ip) {
     const code = d.sku ? d.sku : await nextNumber(conn, 'MATERIAL');
     const [r] = await conn.query(
       `INSERT INTO materials (material_code, material_name, sku, place, category_id, unit, opening_stock,
-         minimum_stock, default_filter_stages, purchase_rate, current_stock, is_active, created_by, roast_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                 minimum_stock, default_filter_stages, purchase_rate, current_stock, is_active, created_by, roast_seconds, filter_seconds, grind_seconds, blending_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?.?)`,
       [code, d.material_name, d.sku ?? null, d.place ?? null, categoryId, d.unit, opening, d.minimum_stock ?? 0, d.default_filter_stages ?? 0,
-        d.purchase_rate ?? 0, opening, d.is_active === undefined ? 1 : d.is_active, userId, d.roast_seconds ?? null]);
+        d.purchase_rate ?? 0, opening, d.is_active === undefined ? 1 : d.is_active, userId, d.roast_seconds ?? null, d.filter_seconds ?? null, d.grind_seconds ?? null, d.blending_seconds ?? null]);
     await saveSpecs(conn, r.insertId, d.specifications);
 
     if (opening > 0) {
@@ -207,11 +210,13 @@ async function update(idRaw, body, userId, ip) {
     else if (d.sku === null && before.sku) newCode = await nextNumber(conn, 'MATERIAL');
     await conn.query(
       `UPDATE materials SET material_code=?, material_name=?, sku=?, place=?, category_id=?, unit=?, minimum_stock=?, default_filter_stages=?,
-         purchase_rate=?, is_active=?, roast_seconds=? WHERE id=?`,
+                 purchase_rate=?, is_active=?, roast_seconds=?, filter_seconds=?, grind_seconds=?,blending_seconds=?, WHERE id=?`,
       [newCode, d.material_name, d.sku !== undefined ? d.sku : before.sku, d.place !== undefined ? d.place : before.place,
         d.category_id ?? before.category_id, d.unit || before.unit, d.minimum_stock ?? before.minimum_stock,
         d.default_filter_stages ?? before.default_filter_stages, d.purchase_rate ?? before.purchase_rate, d.is_active === undefined ? before.is_active : d.is_active,
-        d.roast_seconds === undefined ? before.roast_seconds : d.roast_seconds, id]);
+               d.roast_seconds === undefined ? before.roast_seconds : d.roast_seconds,
+        d.filter_seconds === undefined ? before.filter_seconds : d.filter_seconds,
+        d.grind_seconds === undefined ? before.grind_seconds : d.grind_seconds,         d.blending_seconds === undefined ? before.blending_seconds : d.blending_seconds, id]);
     await saveSpecs(conn, id, d.specifications);
     const after = await getById(id, conn);
     await audit({ userId, action: 'UPDATE', table: 'materials', recordId: id, oldValues: before, newValues: after, ip }, conn);

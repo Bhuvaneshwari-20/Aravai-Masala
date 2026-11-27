@@ -233,5 +233,41 @@ async function create(body, user, ip) {
       pending_materials: pending.map((m) => m.material_name) };
   });
 }
+/* ---------- one saved session, for the "View details" popup ---------- */
+async function detail(type, idRaw) {
+  try{
+  const id = v.toId(idRaw, 'processing record');
+  const [rows] = await pool.query(`${SESSION_SELECT} WHERE s.id = ? AND s.process_type = ?`, [id, type]);
+  if (!rows.length) throw new AppError('Processing record not found', 404);
+  const s = shapeSession(rows[0]);
 
-module.exports = { list, staff, create };
+  const [[mat]] = await pool.query('SELECT roast_seconds, filter_seconds, grind_seconds FROM materials WHERE id = ?', [s.material_id]);
+  const configured = mat ? (type === 'ROASTING' ? mat.roast_seconds : type === 'FILTERING' ? mat.filter_seconds : mat.grind_seconds) : null;
+
+  const input = Number(s.input_weight);
+  const output = s.output_weight == null ? null : Number(s.output_weight);
+  const wastage = output == null ? null : r3(Math.max(input - output, 0));
+  const loss = output == null || !(input > 0) ? null : r2((wastage / input) * 100);
+
+  let extra = {};
+  if (type === 'ROASTING') {
+    const [r] = await pool.query(
+      'SELECT code_no, temp_before, std_temp, temp_after FROM roasting_details WHERE batch_id = ? AND material_id = ? AND machine_id = ? ORDER BY id DESC LIMIT 1',
+      [s.batch_id, s.material_id, s.machine_id]);
+    if (r.length) extra = { code_no: r[0].code_no, temp_before: r[0].temp_before, std_temp: r[0].std_temp, temp_after: r[0].temp_after };
+  } else if (type === 'GRINDING') {
+    const [r] = await pool.query(
+      'SELECT mesh_size, siever FROM grinding_details WHERE batch_id = ? AND machine_id = ? AND input_time = (SELECT start_time FROM process_sessions WHERE id = ?) ORDER BY id DESC LIMIT 1',
+      [s.batch_id, s.machine_id, id]);
+    if (r.length) extra = { mesh_size: r[0].mesh_size, sieved: r[0].siever };
+  }
+  return { ...s, configured_seconds: Number(configured) > 0 ? Number(configured) : null, wastage_weight: wastage, loss_percent: loss, ...extra };
+}
+catch (e) {
+    console.error('DETAIL ERROR:', e);
+    throw e;
+  }
+}
+
+
+module.exports = { list, staff, create,detail };

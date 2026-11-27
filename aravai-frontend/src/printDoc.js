@@ -123,4 +123,32 @@ export function printHtml(title, bodyHtml) {
 }
 
 export const printBlending = (d) => printHtml(`Blending-${d.batch_no}`, blendingHtml(d));
+export function processHtml(d, label) {
+  const mins = (v) => (v === null || v === undefined || v === '' ? '—' : `${n(v)} min`);
+  const temp = (v) => (v === null || v === undefined || v === '' ? '—' : `${n(v)} °C`);
+  const extra = d.process_type === 'ROASTING'
+    ? `<h3>Temperature</h3>${grid([['Temp before', temp(d.temp_before)], ['STD temp', temp(d.std_temp)], ['Temp after', temp(d.temp_after)], ['Code no', esc(d.code_no || '—')]])}`
+    : d.process_type === 'GRINDING'
+      ? `<h3>Grinding</h3>${grid([['Mesh size', esc(d.mesh_size ?? '—')], ['Sieved', esc(d.sieved || '—')]])}`
+      : '';
+  return `${header(`${label.toUpperCase()} RECORD`, d.batch_no)}
+    <h3>${esc(label)} run</h3>
+    ${grid([
+      ['Batch', esc(d.batch_no)], ['Product', esc(d.product_name)],
+      ['Material', esc(d.material_name)], ['Machine', esc(`${d.machine_code} · ${d.machine_name}`)],
+      ['Started', when(d.start_time)], ['Expected completion', when(d.expected_end)],
+      ['Ended', when(d.actual_end)], ['Status', status(d.status)],
+      ['Expected duration', mins(d.expected_minutes)], ['Actual duration', mins(d.actual_minutes)],
+    ])}
+    <h3>Weight</h3>
+    ${grid([
+      ['I/P weight', kg(d.input_weight)], ['O/P weight', `<span class="ok">${kg(d.output_weight)}</span>`],
+      ['Wastage', d.wastage_weight == null ? '—' : `<span class="warn">${kg(d.wastage_weight)} (${Number(d.loss_percent).toFixed(2)}%)</span>`], ['', ''],
+    ])}
+    ${extra}
+    ${remarks(d.remarks)}
+    ${sign([['Started by', d.started_by_name], ['Completed by', d.completed_by_name], ['Production in-charge', '']])}
+    <div class="foot">Computer generated record</div>`;
+}
+export const printProcess = (d, label) => printHtml(`${label}-${d.batch_no}-${d.material_name}`, processHtml(d, label));
 export const printPacking = (d) => printHtml(`Packing-${d.batch_no}-${d.sku_code}`, packingHtml(d));

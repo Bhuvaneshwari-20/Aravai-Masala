@@ -21,9 +21,10 @@ import FormRow from './FormRow';
 import SelectField from './SelectField';
 import MeshSelectField from './MeshSelectField';
 import TimeField from './TimeField';
+import { fmtDuration } from './DurationField';
 import { ErrorBox, ModalFooter } from './FormBits';
 import { COLORS, fmt } from '../theme';
-
+import ProcessDetailModal from './ProcessDetailModal';
 // Material-wise cards for Filtering / Roasting / Grinding.
 //   <ProcessBoard type="FILTERING" path="filtering" module="filtering" title="Filtering" icon="filter-variant" />
 // All times and the running timer come from the database (elapsed_sec / remaining_sec), so a page refresh never loses the timer.
@@ -170,18 +171,19 @@ function BatchHeader({ g, onBack }) {
 }
 
 /* ------------------------------ one material card ------------------------------ */
-function MaterialCard({ card, label, machines, canStart, canStop, tick, fetchedAt, draft, setDraft, busy, onStart, onStop, onProceed, err }) {
+function MaterialCard({ card, label, machines, canStart, canStop, tick, fetchedAt, draft, setDraft, busy, onStart, onStop, onProceed, onView, err }) {
   const ses = card.session;
   const running = card.status === 'RUNNING';
   const delta = running ? Math.floor((Date.now() - fetchedAt) / 1000) : 0;
   const elapsed = running ? ses.elapsed_sec + delta : 0;
   const remaining = running ? ses.remaining_sec - delta : 0;
-  const delayed = running && remaining < 0;
+    const delayed = running && remaining <= 0;   // 00:00 reached: warning, then the overdue time counts upwards
+  const planned = Number(card.planned_seconds) > 0;   // duration configured in Material Master / the batch
   const st = delayed ? STATUS.DELAYED : STATUS[card.status];
   const soon = running && !delayed && remaining <= ALERT_SECONDS;
   const d = draft || {};
   const pending = card.status === 'PENDING';
-  const total = running ? Math.max(ses.expected_minutes * 60, 1) : 1;
+    const total = running ? Math.max(Number(ses.planned_sec) || ses.expected_minutes * 60, 1) : 1;
   const pct = running ? Math.min((elapsed / total) * 100, 100) : 0;
 
   return (
@@ -205,25 +207,26 @@ function MaterialCard({ card, label, machines, canStart, canStop, tick, fetchedA
       )}
 
       {/* ----- not started: machine, start time, duration ----- */}
-      {pending && (
+       {pending && (
         <View>
-          <StatGrid><Stat label="QUANTITY" value={card.quantity == null ? '–' : `${fmt(card.quantity)} kg`} strong wide /></StatGrid>
+          <StatGrid>
+            <Stat label="QUANTITY" value={card.quantity == null ? '–' : `${fmt(card.quantity)} kg`} strong wide={!planned} />
+            {planned && <Stat label="CONFIGURED DURATION" value={fmtDuration(card.planned_seconds)} strong />}
+          </StatGrid>
           <View style={s.formBox}>
             <SectionLabel>START {label.toUpperCase()}</SectionLabel>
             <SelectField label={`${label} machine *`} value={d.machine_id || null} options={machines} onChange={(v) => setDraft({ machine_id: v })} error={err && err.machine} />
             {!machines.length && <Text style={s.noMachine}>No {label.toLowerCase()} machine is available right now.</Text>}
-            <FormRow>
-              <TimeField label="Start time *" value={d.start_time || ''} onChangeText={(t) => setDraft({ start_time: t })} error={err && err.start} />
-              <FormField label="Duration (min) *" digits value={d.minutes || ''} onChangeText={(t) => setDraft({ minutes: t.replace(/[^0-9]/g, '') })} error={err && err.minutes} />
-            </FormRow>
+            {!planned && <FormField label="Duration (min) *" digits value={d.minutes || ''} onChangeText={(t) => setDraft({ minutes: t.replace(/[^0-9]/g, '') })} error={err && err.minutes} />}
             <View style={s.endPill}>
               <MCI name="flag-checkered" size={17} color={COLORS.green} />
-              <Text style={s.endLabel}>Expected completion</Text>
-              <Text style={s.endValue}>{previewEnd(d.start_time, d.minutes)}</Text>
+              <Text style={s.endLabel}>Expected completion (if started now)</Text>
+              <Text style={s.endValue}>{previewEnd(nowHHMM(), planned ? Math.ceil(card.planned_seconds / 60) : d.minutes)}</Text>
             </View>
+            <Text style={s.hintLine}>The timer starts only when you press Start. The start time is taken from the server clock.</Text>
           </View>
           {!!(err && err.server) && <Text style={s.err}>{err.server}</Text>}
-            {canStart && (
+          {canStart && (
             <Button mode="contained" icon="play" buttonColor={COLORS.green} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
               loading={busy} disabled={busy || !machines.length} onPress={onStart}>Start</Button>
           )}
@@ -234,28 +237,30 @@ function MaterialCard({ card, label, machines, canStart, canStop, tick, fetchedA
       {card.status === 'WAITING' && <StatGrid><Stat label="QUANTITY" value={card.quantity == null ? '–' : `${fmt(card.quantity)} kg`} strong wide /></StatGrid>}
 
       {/* ----- running: live timer ----- */}
-      {running && (
+            {running && (
         <View>
           <View style={[s.timer, { backgroundColor: st.bg }]}>
-            <Text style={[s.timerLabel, { color: st.color }]}>{delayed ? 'OVER EXPECTED TIME' : soon ? 'COMPLETING SOON' : 'RUNNING FOR'}</Text>
-            <Text style={[s.timerVal, { color: st.color }]}>{delayed ? `+${clock(remaining)}` : clock(elapsed)}</Text>
+            <Text style={[s.timerLabel, { color: st.color }]}>{delayed ? 'TIME IS UP - OVERDUE' : soon ? 'COMPLETING SOON' : 'TIME REMAINING'}</Text>
+            <Text style={[s.timerVal, { color: st.color }]}>{delayed ? `+${clock(remaining)}` : clock(remaining)}</Text>
             <View style={s.timerTrack}><View style={[s.timerFill, { width: `${pct}%`, backgroundColor: st.color }]} /></View>
-            <Text style={s.timerSub}>{delayed ? `Elapsed ${clock(elapsed)} · the machine keeps running until you press Stop` : `Time left ${clock(remaining)}  ·  ${ses.expected_minutes} min planned`}</Text>
+            <Text style={s.timerSub}>{delayed ? `Planned ${fmtDuration(total)} · the machine keeps running until you press Stop` : `Elapsed ${clock(elapsed)}  ·  Planned ${fmtDuration(total)}`}</Text>
           </View>
           <StatGrid>
             <Stat label="QUANTITY" value={`${fmt(card.quantity)} kg`} strong />
             <Stat label="MACHINE" value={`${ses.machine_code} · ${ses.machine_name}`} />
             <Stat label="START TIME" value={t12(ses.start_time)} />
             <Stat label="EXPECTED COMPLETION" value={t12(ses.expected_end)} strong color={delayed ? COLORS.danger : undefined} />
+            <Stat label="CONFIGURED DURATION" value={fmtDuration(total)} wide />
           </StatGrid>
           <Text style={s.byLine}>Started by {ses.started_by_name}</Text>
-            {canStop &&<Button mode="contained" icon="stop-circle-outline" buttonColor={COLORS.danger} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
+          {canStop && <Button mode="contained" icon="stop-circle-outline" buttonColor={COLORS.danger} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
             loading={busy} disabled={busy} onPress={onStop}>Stop / Complete</Button>}
         </View>
       )}
 
       {/* ----- completed ----- */}
       {card.status === 'COMPLETED' && ses && (
+         <View>
         <StatGrid>
           <Stat label="MACHINE" value={`${ses.machine_code} · ${ses.machine_name}`} wide />
           <Stat label="START TIME" value={t12(ses.start_time)} />
@@ -265,7 +270,13 @@ function MaterialCard({ card, label, machines, canStart, canStop, tick, fetchedA
           <Stat label="I/P → O/P" value={`${fmt(card.quantity)} → ${fmt(ses.output_weight)} kg`} />
           <LossRow ip={card.quantity} op={ses.output_weight} />
         </StatGrid>
-      )}
+          <Pressable onPress={onView} style={s.viewLink}>
+      <Text style={s.viewText}>View full details</Text>
+      <MCI name="chevron-right" size={18} color={COLORS.primary} />
+    </Pressable>
+  </View>
+)}
+      
       {card.status === 'COMPLETED' && !ses && <Text style={s.legacy}>Completed earlier (saved with the old form).</Text>}
       {card.awaiting_proceed &&canStart && (
         <View style={s.proceedBox}>
@@ -346,7 +357,7 @@ function StopModal({ type, card, label, canAddMesh, toast, onDismiss, onDone }) 
 }
 
 /* ------------------------------ history tab ------------------------------ */
-function HistoryList({ type, path, search, label }) {
+function HistoryList({ type, path, search, label, onOpen }) {
   const grid = useCardCols({ min: 300, phoneMin: 280 });
   const list = usePagedList(`/${path}/history`, { search: search || undefined });
   if (list.loading) return <LoadingView />;
@@ -360,7 +371,7 @@ function HistoryList({ type, path, search, label }) {
       renderItem={(i) => {
         const late = i.actual_end && i.expected_end && i.actual_end > i.expected_end;
         return (
-          <View style={[s.card, { borderLeftWidth: 5, borderLeftColor: COLORS.ok }]}>
+         <Pressable onPress={() => onOpen(i.id)} style={[s.card,{ borderLeftWidth: 5, borderLeftColor: COLORS.ok }]}>
             <View style={[s.head, { marginBottom: 6 }]}>
               <View style={[s.mIcon, { backgroundColor: COLORS.okBg }]}><MCI name="check-circle-outline" size={22} color={COLORS.ok} /></View>
               <View style={{ flex: 1, minWidth: 0 }}>
@@ -379,7 +390,7 @@ function HistoryList({ type, path, search, label }) {
               <LossRow ip={i.input_weight} op={i.output_weight} />
             </StatGrid>
             <Text style={s.byLine}>Started by {i.started_by_name}  ·  Completed by {i.completed_by_name || '–'}</Text>
-          </View>
+       </Pressable>
         );
       }} />
   );
@@ -406,6 +417,7 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
   const [busyKey, setBusyKey] = useState('');
   const [stopCard, setStopCard] = useState(null);
   const [proceedCard, setProceedCard] = useState(null);
+  const [detailId, setDetailId] = useState(null);
   const [selBatch, setSelBatch] = useState(null);   // batch whose materials are open (null = list of batches)
   const [alerts, setAlerts] = useState([]);
   const [, setTick] = useState(0);
@@ -442,7 +454,7 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
 
   const draftOf = (c) => {
     const d = drafts[c.key] || {};
-    return { machine_id: d.machine_id, start_time: d.start_time !== undefined ? d.start_time : nowHHMM(), minutes: d.minutes !== undefined ? d.minutes : '' };
+        return { machine_id: d.machine_id, minutes: d.minutes !== undefined ? d.minutes : '' };
   };
   const setDraft = (c) => (patch) => { setDrafts((p) => ({ ...p, [c.key]: { ...draftOf(c), ...patch } })); setErrs((p) => ({ ...p, [c.key]: undefined })); };
 
@@ -452,12 +464,12 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
     const d = draftOf(c);
     const e = {};
     if (!d.machine_id) e.machine = 'Select a machine';
-    if (!TIME_RE.test(d.start_time || '')) e.start = 'Select the start time';
-    if (!(Number(d.minutes) >= 1)) e.minutes = 'Enter duration in minutes';
+       const planned = Number(c.planned_seconds) > 0;   // configured duration: nothing to enter
+    if (!planned && !(Number(d.minutes) >= 1)) e.minutes = 'Enter duration in minutes';
     if (Object.keys(e).length) { setErrs((p) => ({ ...p, [c.key]: e })); return; }
     setBusyKey(c.key);
     try {
-      await api.post(`/${path}/start`, { batch_id: c.batch_id, material_id: c.material_id, machine_id: d.machine_id, start_time: d.start_time, expected_minutes: Number(d.minutes) });
+            await api.post(`/${path}/start`, { batch_id: c.batch_id, material_id: c.material_id, machine_id: d.machine_id, ...(planned ? {} : { expected_minutes: Number(d.minutes) }) });
       setDrafts((p) => ({ ...p, [c.key]: undefined }));
       toast(`${c.material_name} started`);
       await load(true);
@@ -483,7 +495,7 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
   };
 
   // ----- batch-wise view: one group per batch, with its material cards -----
-  const cardStatus = (c) => (c.status === 'RUNNING' && (c.session.remaining_sec - Math.floor((Date.now() - fetchedAt.current) / 1000)) < 0 ? 'DELAYED' : c.status);
+   const cardStatus = (c) => (c.status === 'RUNNING' && (c.session.remaining_sec - Math.floor((Date.now() - fetchedAt.current) / 1000)) <= 0 ? 'DELAYED' : c.status);
   const groups = useMemo(() => {
     if (!data) return [];
     const m = new Map();
@@ -540,7 +552,7 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
       )}
 
       <Container fill>
-               {tab === 'history' && canHistory ? <HistoryList type={type} path={path} search={dSearch} label={label} />
+               {tab === 'history' && canHistory ? <HistoryList type={type} path={path} search={dSearch} label={label} onOpen={setDetailId} />
           : !data && !error ? <LoadingView />
             : error && !data ? <EmptyView error={error} onRetry={() => load(false)} />
               : detail ? (
@@ -554,7 +566,8 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
                   renderItem={(c) => (
                                         <MaterialCard card={c} label={label} machines={machineOpts} canStart={canStart} canStop={canStop} fetchedAt={fetchedAt.current}
                       draft={draftOf(c)} setDraft={setDraft(c)} err={errs[c.key]} busy={busyKey === c.key}
-                      onStart={() => start(c)} onStop={() => setStopCard(c)} onProceed={() => setProceedCard(c)} />
+                      onStart={() => start(c)} onStop={() => setStopCard(c)} onProceed={() => setProceedCard(c)}onView={() => setDetailId(c.session.id)} /> 
+                      
                   )} />
               ) : (
                 // ----- batch-wise: one card per batch -----
@@ -574,6 +587,7 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
       <ConfirmDialog visible={!!proceedCard} busy={!!busyKey} title="Proceed to Roasting?"
         message={proceedCard ? `${proceedCard.material_name} (${proceedCard.batch_no}) has finished Filtering. Move it to the Roasting queue now? If you choose "Not now" it stays waiting.` : ''}
         confirmText="Yes, proceed" onCancel={() => setProceedCard(null)} onConfirm={() => proceedCard && proceed(proceedCard)} />
+        <ProcessDetailModal visible={detailId !== null} id={detailId} path={path} label={label} icon={icon} onDismiss={() => setDetailId(null)} />
     </View>
   );
 }
@@ -612,6 +626,7 @@ const s = StyleSheet.create({
   endLabel: { flex: 1, marginLeft: 8, fontSize: 12.5, fontWeight: '700', color: COLORS.green },
   endValue: { fontSize: 15, fontWeight: '900', color: COLORS.green },
   byLine: { fontSize: 11.5, fontWeight: '600', color: COLORS.grey, marginTop: 8, marginLeft: 2 },
+    hintLine: { fontSize: 11.5, fontWeight: '600', color: COLORS.grey, marginTop: 8 },
   timerTrack: { alignSelf: 'stretch', height: 6, borderRadius: 3, backgroundColor: 'rgba(0,0,0,0.08)', overflow: 'hidden', marginTop: 8, marginBottom: 6 },
   timerFill: { height: 6, borderRadius: 3 },
   timer: { borderRadius: 14, padding: 14, alignItems: 'center', marginTop: 4 },
@@ -639,4 +654,6 @@ const s = StyleSheet.create({
     padding: 14, marginHorizontal: 12, marginTop: 4, marginBottom: 6 },
   bhBack: { width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.bg, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: COLORS.border },
   bhNo: { fontSize: 22, fontWeight: '900', color: COLORS.text },
+  viewLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 8 },
+viewText: { color: COLORS.primary, fontWeight: '800', fontSize: 13 },
 });
