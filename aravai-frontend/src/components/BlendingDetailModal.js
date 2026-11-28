@@ -7,6 +7,7 @@ import { printBlending } from '../printDoc';
 import { COLORS, fmt } from '../theme';
 import { downloadBlendingPdf } from '../pdfDoc';
 import { MaterialCommunityIcons as MCI } from '@expo/vector-icons';
+import { durationRows } from '../durationInfo';
 const cap = (s) => { const t = String(s || '').replace('_', ' ').toLowerCase(); return t.charAt(0).toUpperCase() + t.slice(1); };
 
 const dash = (v, unit = '') => (v === null || v === undefined || v === '' ? '—' : `${fmt(v)}${unit}`);
@@ -96,9 +97,15 @@ const batchDone = !!d && (d.batch_stage === 'COMPLETED' || d.batch_status === 'C
               <Row label="Ended" value={when(d.end_time)} />
               <Row label="Mixing duration" value={dash(d.mixing_duration_min, ' min')} />
               <Row label="Operator" value={d.operator_name} />
+                            <Row label="Started by" value={d.started_by_name || '—'} />
               <Row label="Status" value={String(d.status).replace('_', ' ')} color={d.status === 'COMPLETED' ? COLORS.ok : undefined} last />
             </Section>
-
+                      <Section title="DURATION">
+              {durationRows(d).map(([k, v], i, a) => (
+                <Row key={k} label={k} value={v} last={i === a.length - 1} bold={k === 'Actual duration'}
+                  color={k === 'Duration source' && d.manual_seconds ? COLORS.warn : undefined} />
+              ))}
+            </Section>
 
             <Section title="WEIGHT">
               <Row label="input weight" value={dash(d.total_input_weight, ' kg')} />

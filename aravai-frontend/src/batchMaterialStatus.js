@@ -49,6 +49,11 @@ export function stageSummary(ingredients) {
   return parts.join('  •  ');
 }
 
+export const PROCESS_MODE_TEXT = {
+  SEQUENTIAL: 'Sequential: Roasting starts only after all Filtering of the batch is completed.',
+  SIMULTANEOUS: 'Simultaneous: each roasting pair starts as soon as its own Filtering is completed.',
+};
+ 
 export const ROAST_MODE_TEXT = {
   PARALLEL: 'Roasting starts now for unfiltered materials; filtered ones join after Filtering.',
   AFTER_FILTERING: 'Roasting starts only after Filtering is completed.',

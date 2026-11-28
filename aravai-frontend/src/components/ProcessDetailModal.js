@@ -6,7 +6,7 @@ import ModalShell from './ModalShell';
 import { printProcess } from '../printDoc';
 import { downloadProcessPdf } from '../pdfDoc';
 import { COLORS, fmt } from '../theme';
-
+import { durationRows } from '../durationInfo';
 const dash = (v, unit = '') => (v === null || v === undefined || v === '' ? '—' : `${fmt(v)}${unit}`);
 const when = (t) => (t ? String(t).slice(0, 16) : '—');
 
@@ -71,11 +71,15 @@ export default function ProcessDetailModal({ visible, id, path, label, icon = 'f
               <Row label="Started" value={when(d.start_time)} />
               <Row label="Expected completion" value={when(d.expected_end)} />
               <Row label="Ended" value={when(d.actual_end)} />
-              <Row label="Expected duration" value={dash(d.expected_minutes, ' min')} />
-              <Row label="Actual duration" value={dash(d.actual_minutes, ' min')} bold />
+             
               <Row label="Status" value={String(d.status).replace('_', ' ')} color={d.status === 'COMPLETED' ? COLORS.ok : undefined} last />
             </Section>
-
+                        <Section title="DURATION">
+              {durationRows(d).map(([k, v], i, a) => (
+                <Row key={k} label={k} value={v} last={i === a.length - 1} bold={k === 'Actual duration'}
+                  color={k === 'Duration source' && d.manual_seconds ? COLORS.warn : undefined} />
+              ))}
+            </Section>
             <Section title="WEIGHT">
               <Row label="I/P weight" value={dash(d.input_weight, ' kg')} />
               <Row label="O/P weight" value={dash(d.output_weight, ' kg')} color={COLORS.ok} bold />

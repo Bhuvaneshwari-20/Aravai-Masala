@@ -7,7 +7,7 @@ import { useAuth } from '../../AuthContext';
 import { useUi } from '../../ui';
 import BatchingEntryModal from '../../components/BatchingEntryModal';
 import BatchMaterialEditModal from '../../components/BatchMaterialEditModal';
-import { materialBadge, materialStage, canEditMaterial, canDeleteMaterial, stageSummary, ROAST_MODE_TEXT } from '../../batchMaterialStatus';
+import { materialBadge, materialStage, canEditMaterial, canDeleteMaterial, stageSummary, ROAST_MODE_TEXT, PROCESS_MODE_TEXT } from '../../batchMaterialStatus';
 import WeightImageViewer from '../../components/WeightImageViewer';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import Container from '../../components/Container';
@@ -79,6 +79,7 @@ export default function BatchDetailScreen({ route }) {
   const canEdit = can('batching', 'edit') && b.status === 'IN_PROGRESS' && ['BATCHING', 'FILTERING', 'ROASTING'].includes(b.current_stage);
   const doneMats = plan ? plan.ingredients.filter((i) => i.is_done) : [];
   const summary = stageSummary(doneMats);
+  const pairNames = [...new Set(doneMats.filter((i) => i.roast_partner_id && i.roast_partner_name).map((i) => [i.material_name, i.roast_partner_name].sort().join(' + ')))];
 
   const machineName = plan && (plan.ingredients.find((i) => i.weighing_machine_name) || {}).weighing_machine_name;
   const doneRows = plan ? plan.ingredients.filter((i) => i.is_done) : [];
@@ -101,6 +102,7 @@ export default function BatchDetailScreen({ route }) {
             <MetaChip icon="calendar-month-outline" text={String(b.production_date).slice(0, 10)} />
             <MetaChip icon="scale-balance" text={`Total ${fmt(b.planned_qty_kg)} kg`} />
             {!!machineName && <MetaChip icon="scale" text={machineName} />}
+            <MetaChip icon={b.process_mode === 'SIMULTANEOUS' ? 'call-split' : 'arrow-right-bold-outline'} text={b.process_mode === 'SIMULTANEOUS' ? 'Simultaneous' : 'Sequential'} />
             {b.status !== 'COMPLETED' && b.status !== 'CANCELLED' && <MetaChip icon="progress-clock" text={`Now: ${stageLabel(b.current_stage)}`} />}
           </View>
           {b.status === 'ON_HOLD' && <Text style={s.hold}>On hold: {b.hold_reason}</Text>}
@@ -127,7 +129,9 @@ export default function BatchDetailScreen({ route }) {
                 <MCI name="information-outline" size={18} color={COLORS.green} style={{ marginTop: 1 }} />
                 <View style={{ flex: 1, marginLeft: 8 }}>
                   {!!summary && <Text style={s.noteTitle}>{summary}</Text>}
-                  {!!b.roasting_mode && !!ROAST_MODE_TEXT[b.roasting_mode] && <Text style={s.noteText}>{ROAST_MODE_TEXT[b.roasting_mode]}</Text>}
+                  {!!PROCESS_MODE_TEXT[b.process_mode] && <Text style={s.noteText}>{PROCESS_MODE_TEXT[b.process_mode]}</Text>}
+                  {pairNames.length > 0 && <Text style={s.noteText}>{`Roasting pairs: ${pairNames.join('  |  ')}`}</Text>}
+                  {!PROCESS_MODE_TEXT[b.process_mode] && !!b.roasting_mode && !!ROAST_MODE_TEXT[b.roasting_mode] && <Text style={s.noteText}>{ROAST_MODE_TEXT[b.roasting_mode]}</Text>}
                   {doneMats.some((i) => materialStage(i) === 'FILTERING') && <Text style={s.noteText}>Materials waiting for filtering go to roasting only after their filtering is completed.</Text>}
                 </View>
               </View>

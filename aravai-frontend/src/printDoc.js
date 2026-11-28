@@ -1,4 +1,5 @@
 // Print pages for the Blending and Packing records (web). Builds a clean A4 page and prints it from a hidden frame.
+import { durationRows } from './durationInfo';
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const n = (v) => (v === null || v === undefined || v === '' ? '—' : Number(v).toLocaleString('en-IN', { maximumFractionDigits: 3 }));
 const kg = (v) => (v === null || v === undefined || v === '' ? '—' : `${n(v)} kg`);
@@ -58,6 +59,8 @@ export function blendingHtml(d) {
       ['Started', when(d.start_time)], ['Ended', when(d.end_time)],
       ['Mixing duration', d.mixing_duration_min ? `${n(d.mixing_duration_min)} min` : '—'], ['Status', status(d.status)],
     ])}
+        <h3>Duration</h3>
+    ${grid(durationRows(d).map(([k, v]) => [k, esc(v)]))}
     <h3>Ingredients (mixing %)</h3>
     <table><tr><th style="width:30px">#</th><th>Material</th><th class="r" style="width:110px">Weight</th><th class="r" style="width:80px">Mix %</th></tr>
     ${lines}
@@ -138,8 +141,10 @@ export function processHtml(d, label) {
       ['Material', esc(d.material_name)], ['Machine', esc(`${d.machine_code} · ${d.machine_name}`)],
       ['Started', when(d.start_time)], ['Expected completion', when(d.expected_end)],
       ['Ended', when(d.actual_end)], ['Status', status(d.status)],
-      ['Expected duration', mins(d.expected_minutes)], ['Actual duration', mins(d.actual_minutes)],
+    
     ])}
+        <h3>Duration</h3>
+    ${grid(durationRows(d).map(([k, v]) => [k, esc(v)]))}
     <h3>Weight</h3>
     ${grid([
       ['I/P weight', kg(d.input_weight)], ['O/P weight', `<span class="ok">${kg(d.output_weight)}</span>`],

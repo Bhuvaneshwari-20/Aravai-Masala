@@ -20,11 +20,13 @@ import FormField from '../../components/FormField';
 import FormRow from '../../components/FormRow';
 import SelectField from '../../components/SelectField';
 import TimeField from '../../components/TimeField';
-import { ErrorBox, ModalFooter } from '../../components/FormBits';
-import { COLORS, fmt } from '../../theme';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { fmtDuration } from '../../components/DurationField';
-// Blending, shown exactly like Grinding:  batch cards  ->  open a batch  ->  START BLENDING (machine, start time, duration)  ->  timer  ->  Stop / Complete.
+import DurationFields, { checkDuration, overrideMessage, durText } from '../../components/DurationFields';
+import { ErrorBox, ModalFooter } from '../../components/FormBits';
+import { COLORS, fmt } from '../../theme';
+
+// Blending: batch cards -> open a batch -> START BLENDING (machine, start time, configured / manual duration) -> timer -> Stop / Complete.
 // All times and the running timer come from the database (elapsed_sec / remaining_sec), so a refresh never loses the timer.
 const ALERT_SECONDS = 300;
 const STATUS = {
@@ -48,7 +50,7 @@ const previewEnd = (start, mins) => {
   const day = Math.floor(tot / 1440);
   return `${to12(Math.floor((tot % 1440) / 60), tot % 60)}${day ? ` (+${day} day)` : ''}`;
 };
-  
+
 function Chip({ st, text }) {
   return (
     <View style={[s.chip, { backgroundColor: st.bg }]}>
@@ -167,7 +169,8 @@ function BlendCard({ g, machines, canAct, fetchedAt, draft, setDraft, busy, err,
   const soon = running && !delayed && remaining <= ALERT_SECONDS;
   const pending = g.status === 'PENDING';
   const d = draft || {};
-  const total = running ? Math.max(ses.expected_minutes * 60, 1) : 1;
+  // effective duration = what the timer counts down from
+  const total = running ? Math.max(Number(ses.effective_seconds) || ses.expected_minutes * 60, 1) : 1;
   const pct = running ? Math.min((elapsed / total) * 100, 100) : 0;
   const loss = g.status === 'COMPLETED' && g.quantity > 0 ? Math.round((Number(g.wastage_weight) / g.quantity) * 10000) / 100 : null;
 
@@ -186,29 +189,21 @@ function BlendCard({ g, machines, canAct, fetchedAt, draft, setDraft, busy, err,
         <View style={s.waitBox}><MCI name="clock-outline" size={17} color={COLORS.warn} /><Text style={s.waitText}>{g.reason}</Text></View>
       )}
 
-      {/* ----- not started: machine, start time, duration ----- */}
+      {/* ----- not started: machine, start time, configured (read-only) + manual override + reason ----- */}
       {pending && (
         <View>
-                  <StatGrid>
-            <Stat label="QUANTITY" value={`${fmt(g.quantity)} kg`} strong wide={!(g.planned_seconds > 0)} />
-            {g.planned_seconds > 0 && <Stat label="CONFIGURED DURATION" value={fmtDuration(g.planned_seconds)} strong />}
-          </StatGrid>
+          <StatGrid><Stat label="QUANTITY" value={`${fmt(g.quantity)} kg`} strong wide /></StatGrid>
           <IngredientList items={g.ingredients} total={g.quantity} />
           <View style={s.formBox}>
             <SectionLabel>START BLENDING</SectionLabel>
             <SelectField label="Blending machine *" value={d.machine_id || null} options={machines} onChange={(v) => setDraft({ machine_id: v })} error={err && err.machine} />
             {!machines.length && <Text style={s.noMachine}>No blending machine is available right now.</Text>}
-            <FormRow>
-              <TimeField label="Start time *" value={d.start_time || ''} onChangeText={(t) => setDraft({ start_time: t })} error={err && err.start} />
-              <FormField label="Duration (min) *" digits value={d.minutes || ''} onChangeText={(t) => setDraft({ minutes: t.replace(/[^0-9]/g, '') })} error={err && err.minutes} />
-            </FormRow>
-                        {g.planned_seconds > 0 && Number(d.minutes) !== Math.ceil(g.planned_seconds / 60) && (
-              <FormField label="Reason for changing the duration *" value={d.reason || ''} onChangeText={(t) => setDraft({ reason: t })} maxLength={255} error={err && err.reason} />
-            )}
+            <TimeField label="Start time *" value={d.start_time || ''} onChangeText={(t) => setDraft({ start_time: t })} error={err && err.start} />
+            <DurationFields configuredSec={g.planned_seconds} manual={d.manual} reason={d.reason} onChange={setDraft} err={err} />
             <View style={s.endPill}>
               <MCI name="flag-checkered" size={17} color={COLORS.green} />
               <Text style={s.endLabel}>Expected completion</Text>
-              <Text style={s.endValue}>{previewEnd(d.start_time, d.minutes)}</Text>
+              <Text style={s.endValue}>{previewEnd(d.start_time, checkDuration(g.planned_seconds, d.manual, d.reason).effMin)}</Text>
             </View>
           </View>
           {!!(err && err.server) && <Text style={s.err}>{err.server}</Text>}
@@ -228,15 +223,18 @@ function BlendCard({ g, machines, canAct, fetchedAt, draft, setDraft, busy, err,
             <Text style={[s.timerLabel, { color: st.color }]}>{delayed ? 'OVER EXPECTED TIME' : soon ? 'COMPLETING SOON' : 'RUNNING FOR'}</Text>
             <Text style={[s.timerVal, { color: st.color }]}>{delayed ? `+${clock(remaining)}` : clock(elapsed)}</Text>
             <View style={s.timerTrack}><View style={[s.timerFill, { width: `${pct}%`, backgroundColor: st.color }]} /></View>
-            <Text style={s.timerSub}>{delayed ? `Elapsed ${clock(elapsed)} · the machine keeps running until you press Stop` : `Time left ${clock(remaining)}  ·  ${ses.expected_minutes} min planned`}</Text>
+            <Text style={s.timerSub}>{delayed ? `Elapsed ${clock(elapsed)} · the machine keeps running until you press Stop` : `Time left ${clock(remaining)}  ·  Effective ${fmtDuration(total)}`}</Text>
           </View>
           <StatGrid>
             <Stat label="QUANTITY" value={`${fmt(g.quantity)} kg`} strong />
             <Stat label="MACHINE" value={`${ses.machine_code} · ${ses.machine_name}`} />
             <Stat label="START TIME" value={t12(ses.start_time)} />
             <Stat label="EXPECTED COMPLETION" value={t12(ses.expected_end)} strong color={delayed ? COLORS.danger : undefined} />
+            <Stat label="CONFIGURED" value={durText(ses.configured_seconds)} />
+            <Stat label="MANUAL" value={durText(ses.manual_seconds)} color={ses.manual_seconds ? COLORS.warn : undefined} />
           </StatGrid>
           <IngredientList items={g.ingredients} total={g.quantity} />
+          {!!ses.duration_change_reason && <Text style={s.byLine}>Duration changed: {ses.duration_change_reason}</Text>}
           <Text style={s.byLine}>Started by {ses.started_by_name}</Text>
           {canAct && <Button mode="contained" icon="stop-circle-outline" buttonColor={COLORS.danger} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
             loading={busy} disabled={busy} onPress={onStop}>Stop / Complete</Button>}
@@ -262,7 +260,7 @@ function BlendCard({ g, machines, canAct, fetchedAt, draft, setDraft, busy, err,
 }
 
 /* ------------------------------ stop / complete dialog ------------------------------ */
-function StopModal({ g, toast, onDismiss, onDone }) {
+function StopModal({ g, onDismiss, onDone }) {
   const [out, setOut] = useState('');
   const [remarks, setRemarks] = useState('');
   const [eOut, setEOut] = useState('');
@@ -337,9 +335,15 @@ function HistoryList({ search }) {
               <Stat label="MACHINE" value={i.machine_name || '–'} wide />
               <Stat label="START" value={`${t12(i.start_time)}  ${dmy(i.start_time)}`} />
               <Stat label="MIXING DURATION" value={i.mixing_duration_min ? `${i.mixing_duration_min} min` : '–'} />
+              <Stat label="CONFIGURED" value={durText(i.configured_seconds)} />
+              <Stat label="MANUAL" value={durText(i.manual_seconds)} />
+              <Stat label="EFFECTIVE" value={durText(i.effective_seconds)} />
+              <Stat label="ACTUAL" value={durText(i.actual_seconds)} strong />
+              <Stat label="DURATION SOURCE" value={i.manual_seconds ? 'Manually changed' : 'Default (configured)'} color={i.manual_seconds ? COLORS.warn : COLORS.ok} wide />
               <Stat label="I/P → O/P" value={`${fmt(i.total_input_weight)} → ${fmt(i.output_weight)} kg`} />
               <Stat label="WASTAGE" value={`${fmt(i.wastage_weight)} kg`} />
             </StatGrid>
+            {!!i.duration_change_reason && <Text style={s.byLine}>Reason: {i.duration_change_reason}</Text>}
           </Pressable>
         )} />
       <BlendingDetailModal visible={detailId !== null} id={detailId} onDismiss={() => setDetailId(null)} />
@@ -379,13 +383,13 @@ export default function BlendingListScreen() {
   }, [dSearch]);
   useEffect(() => { setData(null); load(false); }, [load]);
   useFocusEffect(useCallback(() => { load(true); }, [load]));
-  useEffect(() => { const t = setInterval(() => load(true), 20000); return () => clearInterval(t); }, [load]);   // other users' changes + machine availability
-  useEffect(() => { const t = setInterval(() => setTick((n) => n + 1), 1000); return () => clearInterval(t); }, []); // live timers
+  useEffect(() => { const t = setInterval(() => load(true), 20000); return () => clearInterval(t); }, [load]);
+  useEffect(() => { const t = setInterval(() => setTick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
 
   const machineOpts = useMemo(() => (data ? data.machines.map((m) => ({ value: m.id, label: `${m.machine_code} - ${m.machine_name}` })) : []), [data]);
   const kOf = (g) => statusOf(g, fetchedAt.current);
   const detail = selBatch && data ? data.items.find((g) => g.batch_id === selBatch) || null : null;
-  useEffect(() => { if (selBatch && data && !data.items.some((g) => g.batch_id === selBatch)) setSelBatch(null); });   // batch moved on: back to the list
+  useEffect(() => { if (selBatch && data && !data.items.some((g) => g.batch_id === selBatch)) setSelBatch(null); });
   const batchList = data ? data.items.filter((g) => status === 'ALL' || kOf(g) === status) : [];
   const countOf = (k) => (data ? data.items.filter((g) => kOf(g) === k).length : 0);
   const chips = [{ value: 'ALL', label: `All${data ? ` (${data.items.length})` : ''}` }].concat(
@@ -393,26 +397,22 @@ export default function BlendingListScreen() {
 
   const draftOf = (g) => {
     const d = drafts[g.batch_id] || {};
-    const def = Number(g.planned_seconds) > 0 ? String(Math.ceil(g.planned_seconds / 60)) : '';
-    return { machine_id: d.machine_id, start_time: d.start_time !== undefined ? d.start_time : nowHHMM(), minutes: d.minutes !== undefined ? d.minutes : def, reason: d.reason || '' };
+    return { machine_id: d.machine_id, start_time: d.start_time !== undefined ? d.start_time : nowHHMM(), manual: d.manual !== undefined ? d.manual : '', reason: d.reason || '' };
   };
   const setDraft = (g) => (patch) => { setDrafts((p) => ({ ...p, [g.batch_id]: { ...draftOf(g), ...patch } })); setErrs((p) => ({ ...p, [g.batch_id]: undefined })); };
 
-   const start = async (g, confirmed) => {
+  const start = async (g, confirmed) => {
     const d = draftOf(g);
-    const e = {};
-    const cfgMin = Number(g.planned_seconds) > 0 ? Math.ceil(g.planned_seconds / 60) : 0;
-    const changed = cfgMin > 0 && Number(d.minutes) !== cfgMin;
+    const { e, changed } = checkDuration(g.planned_seconds, d.manual, d.reason);
     if (!d.machine_id) e.machine = 'Select a machine';
     if (!TIME_RE.test(d.start_time || '')) e.start = 'Select the start time';
-    if (!(Number(d.minutes) >= 1)) e.minutes = 'Enter duration in minutes';
-    if (changed && !String(d.reason).trim()) e.reason = 'Enter the reason for changing the duration';
     if (Object.keys(e).length) { setErrs((p) => ({ ...p, [g.batch_id]: e })); return; }
     if (changed && !confirmed) { setOverrideFor(g); return; }
     setOverrideFor(null);
     setBusyKey(g.batch_id);
     try {
-      await api.post('/blending/start', { batch_id: g.batch_id, machine_id: d.machine_id, start_time: d.start_time, expected_minutes: Number(d.minutes), duration_reason: changed ? d.reason.trim() : undefined });
+      await api.post('/blending/start', { batch_id: g.batch_id, machine_id: d.machine_id, start_time: d.start_time,
+        manual_minutes: d.manual !== '' ? Number(d.manual) : undefined, duration_reason: changed ? d.reason.trim() : undefined });
       setDrafts((p) => ({ ...p, [g.batch_id]: undefined }));
       toast(`${g.batch_no} blending started`);
       await load(true);
@@ -442,7 +442,6 @@ export default function BlendingListScreen() {
           : !data && !error ? <LoadingView />
             : error && !data ? <EmptyView error={error} onRetry={() => load(false)} />
               : detail ? (
-                // ----- the blending card of the opened batch -----
                 <CardList {...grid} key={`d${detail.batch_id}-${grid.cols}`} data={[detail]} keyExtractor={(g) => `d${g.batch_id}`}
                   refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await load(true); setRefreshing(false); }} colors={[COLORS.primary]} />}
                   ListHeaderComponent={data.busy_machines.length ? (
@@ -454,7 +453,6 @@ export default function BlendingListScreen() {
                       onStart={() => start(g)} onStop={() => setStopFor(g)} onView={() => setDetailId(g.blending_id)} />
                   )} />
               ) : (
-                // ----- one card per batch -----
                 <CardList {...grid} key={`batches-${status}-${grid.cols}`} data={batchList} keyExtractor={(g) => `b${g.batch_id}`}
                   refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await load(true); setRefreshing(false); }} colors={[COLORS.primary]} />}
                   ListEmptyComponent={<EmptyView icon="🥣" message={`No batches ${status === 'ALL' ? 'yet' : 'with this status'}. Batches appear here after Grinding.`} />}
@@ -465,18 +463,17 @@ export default function BlendingListScreen() {
               )}
       </Container>
 
-            <StopModal g={stopFor} toast={toast} onDismiss={() => setStopFor(null)} onDone={onStopped} />
-      <ConfirmDialog visible={!!overrideFor} busy={busyKey !== null} title="Change blending duration?"
-        message={overrideFor ? `Configured duration is ${fmtDuration(overrideFor.planned_seconds)}, but you entered ${draftOf(overrideFor).minutes} min. Start with the new duration? The reason will be saved.` : ''}
+      <StopModal g={stopFor} onDismiss={() => setStopFor(null)} onDone={onStopped} />
+      <ConfirmDialog visible={!!overrideFor} busy={busyKey !== null} title="Change duration?"
+        message={overrideFor ? overrideMessage(overrideFor.planned_seconds, draftOf(overrideFor).manual, draftOf(overrideFor).reason) : ''}
         confirmText="Yes, start" onCancel={() => setOverrideFor(null)} onConfirm={() => overrideFor && start(overrideFor, true)} />
-      
       <BlendingDetailModal visible={detailId !== null} id={detailId} onDismiss={() => setDetailId(null)} />
     </View>
   );
 }
 
 const s = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: COLORS.bg,  paddingLeft: 10, },
+  wrap: { flex: 1, backgroundColor: COLORS.bg, paddingLeft: 10 },
   card: { backgroundColor: '#fff', borderRadius: 18, borderWidth: 1, borderColor: COLORS.border, padding: 16, marginBottom: 4,
     shadowColor: '#2B1B14', shadowOpacity: 0.06, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 2 },
   head: { flexDirection: 'row', alignItems: 'center' },

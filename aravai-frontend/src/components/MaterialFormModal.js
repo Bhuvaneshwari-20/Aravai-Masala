@@ -9,7 +9,7 @@ import { splitSeconds, fmtDuration } from './DurationField';
 import { COLORS } from '../theme';
 
 const NEW_UNIT = ''; // a new material has NO unit. The unit is chosen when its first stock is received (Material Stock > Material Receipt)
-const EMPTY = { material_name: '', short_code: '', unit: NEW_UNIT, low: '', roast: '', filt: '', grind: '' };
+const EMPTY = { material_name: '', short_code: '', unit: NEW_UNIT, low: '', roast: '', filt: '', grind: '' , blend: '' };
 // Roasting time typed in ONE field:  "1:30:00" = 1h 30m 0s,  "1:30" = 1h 30m,  "45" = 45 minutes.
 // Returns { total (seconds), error }
 const parseRoast = (txt) => {

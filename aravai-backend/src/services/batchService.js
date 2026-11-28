@@ -10,7 +10,8 @@ const REQUIRE_WEIGHT_PHOTO = String(process.env.REQUIRE_WEIGHT_PHOTO || '').toLo
 const wimg = require('./batchWeightImageService');   // weighing machine photo check
 const machines = require('./machineService');
 const { MACHINE_QR_ENABLED } = require('../utils/featureFlags'); // QR scanning / QR token validation / machine identification: OFF unless MACHINE_QR_ENABLED=true
-const ms = require('../utils/materialStages');       // material-level status (Filtering / Roasting) and batch stage sync
+const rp = require('../utils/roastPairs');           // saved roasting pairs (validation)
+const ms = require('../utils/materialStages');      // material-level status (Filtering / Roasting) and batch stage sync
 
 const r3 = (n) => Math.round(n * 1000) / 1000;
 
@@ -62,7 +63,7 @@ async function buildPlan(db, b) {
   const [recipeRows] = await db.query(
     `SELECT d.material_id, m.material_code, m.material_name, m.unit, d.quantity_kg AS recipe_qty_kg, m.current_stock,
             m.default_filter_stages, bd.id AS batching_id, bd.entry_date, bd.no_of_bags, bd.weight_per_bag, bd.required_qty,
-            bd.weighed_qty, bd.needs_filtering AS material_needs_filtering, bd.process_type AS material_process_type, bd.weighing_machine_id, wm.machine_name AS weighing_machine_name, bd.done_by, du.full_name AS done_by_name, bd.checked_by, cu.full_name AS checked_by_name, bd.stock_txn_id
+            bd.weighed_qty, bd.needs_filtering AS material_needs_filtering, bd.process_type AS material_process_type, bd.weighing_machine_id, wm.machine_name AS weighing_machine_name, bd.checked_by, cu.full_name AS checked_by_name, bd.stock_txn_id, bd.roast_partner_of
      FROM recipe_details d
      JOIN materials m ON m.id = d.material_id
      LEFT JOIN batching_details bd ON bd.batch_id = ? AND bd.material_id = d.material_id
@@ -128,6 +129,8 @@ async function buildPlan(db, b) {
       stock_short: !done && required !== null && Number(r.current_stock) / (UNIT_FACTOR[String(r.unit).toUpperCase()] || 1) < required,
     };
   });
+  const nameOf = new Map(ingredients.map((i) => [i.material_id, i.material_name]));
+  ingredients.forEach((i) => { const p = Number(i.roast_partner_of); i.roast_partner_id = p > 0 ? p : null; i.roast_partner_name = p > 0 ? (nameOf.get(p) || null) : null; });
   const done = ingredients.filter((i) => i.is_done);
   const recipeStages = Number(b.recipe_filter_stages || 0);
   return {
@@ -140,6 +143,62 @@ async function buildPlan(db, b) {
     can_complete: ingredients.length > 0 && done.length === ingredients.length,
     suggested_filter_stages: recipeStages > 0 ? recipeStages : Math.max(0, ...ingredients.map((i) => Number(i.default_filter_stages))),
   };
+}
+
+/* ---------- roasting groups: who may choose them, saved group tables, later change ---------- */
+const PAIR_ROLES = ['Admin', 'Super Admin'];   // only these roles may choose roasting combinations
+async function assertCanAssignPairs(conn, userId) {
+  const [[u]] = await conn.query('SELECT r.role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ? AND u.is_active = 1', [userId]);
+  if (!u || !PAIR_ROLES.includes(u.role_name)) throw new AppError('Only an Admin or Super Admin can choose roasting combinations', 403);
+}
+
+// Rebuilds the PLANNED groups of a batch from batching_details.roast_partner_of (same transaction as the change, so they cannot drift apart).
+// Groups that are RUNNING / COMPLETED are never touched. Old batches (every roast_partner_of NULL) get no groups.
+async function saveRoastGroups(conn, batchId, userId) {
+  try {
+    const [rows] = await conn.query('SELECT material_id, roast_partner_of, process_type FROM batching_details WHERE batch_id = ? ORDER BY id', [batchId]);
+    if (!rows.some((r) => r.roast_partner_of !== null && r.roast_partner_of !== undefined)) return;
+    await conn.query("DELETE FROM batch_roast_groups WHERE batch_id = ? AND status = 'PLANNED'", [batchId]);   // members are deleted with it (cascade)
+    const [kept] = await conn.query('SELECT material_id FROM batch_roast_group_members WHERE batch_id = ?', [batchId]);
+    const done = new Set(kept.map((x) => x.material_id));
+    const inBatch = new Set(rows.map((r) => r.material_id));
+    for (const r of rows) {
+      if (done.has(r.material_id) || r.process_type === 'FILTER_ONLY') continue;   // Filtering Only never roasts
+      const p = Number(r.roast_partner_of);
+      const mate = p > 0 && inBatch.has(p) && !done.has(p) ? p : null;
+      const [g] = await conn.query('INSERT INTO batch_roast_groups (batch_id, group_type, created_by) VALUES (?,?,?)', [batchId, mate ? 'PAIRED' : 'INDIVIDUAL', userId]);
+      for (const m of mate ? [r.material_id, mate] : [r.material_id]) {
+        await conn.query('INSERT INTO batch_roast_group_members (group_id, batch_id, material_id) VALUES (?,?,?)', [g.insertId, batchId, m]);
+        done.add(m);
+      }
+    }
+  } catch (e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }   // group tables not created yet: nothing to save
+}
+
+// Admin / Super Admin changes the combinations of a running batch, only until Roasting has started.
+async function setRoastPairs(batchIdRaw, body, user, ip) {
+  const batchId = v.toId(batchIdRaw, 'batch id');
+  return withTransaction(async (conn) => {
+    await assertCanAssignPairs(conn, user.id);
+    const b = await loadBatch(conn, batchId, true);
+    if (b.status !== 'IN_PROGRESS') throw new AppError(`Batch ${b.batch_no} is ${b.status.toLowerCase().replace('_', ' ')}`, 409);
+    const [started] = await conn.query("SELECT id FROM process_sessions WHERE batch_id = ? AND process_type = 'ROASTING' AND status <> 'CANCELLED' LIMIT 1", [batchId]);
+    const [legacy] = await conn.query('SELECT id FROM roasting_details WHERE batch_id = ? LIMIT 1', [batchId]);
+    if (started.length || legacy.length) throw new AppError('Roasting has already started. Combinations can no longer be changed', 409);
+
+    const [items] = await conn.query('SELECT material_id FROM batching_details WHERE batch_id = ? FOR UPDATE', [batchId]);
+    const [rr] = await conn.query('SELECT d.material_id, d.roast_type, d.process_type, m.material_name FROM recipe_details d JOIN materials m ON m.id = d.material_id WHERE d.recipe_id = ?', [b.recipe_id]);
+    const info = new Map(rr.map((x) => [x.material_id, { name: x.material_name, roast_type: x.roast_type, process_type: x.process_type }]));
+    const pairs = rp.normalizePairs(body.roast_pairs, items, info);   // same backend validation as New Batch
+    const col = rp.partnerColumn(items, info, pairs);
+    const [oldRows] = await conn.query('SELECT material_id, roast_partner_of FROM batching_details WHERE batch_id = ?', [batchId]);
+    for (const [mid, val] of col) await conn.query('UPDATE batching_details SET roast_partner_of = ? WHERE batch_id = ? AND material_id = ?', [val, batchId, mid]);
+    await saveRoastGroups(conn, batchId, user.id);
+    await audit({ userId: user.id, action: 'UPDATE', table: 'batching_details', recordId: batchId,
+      oldValues: { roast_partner_of: Object.fromEntries(oldRows.map((x) => [x.material_id, x.roast_partner_of])) },
+      newValues: { roast_partner_of: Object.fromEntries(col) }, ip }, conn);
+    return getById(batchId, conn);
+  });
 }
 
 /* ---------- queries ---------- */
@@ -251,7 +310,12 @@ async function start(body, userId, ip) {
   // a material that needs no filtering goes straight to Roasting.
   //  DIRECT          no material of the recipe needs filtering -> Roasting
   //  AFTER_FILTERING at least one material needs filtering -> the batch waits at FILTERING for those materials
-  const processMode = 'SEQUENTIAL';
+  const modeIn = body.process_mode === undefined || body.process_mode === null || body.process_mode === '' ? null : String(body.process_mode).toUpperCase();
+  if (modeIn && !['SEQUENTIAL', 'SIMULTANEOUS'].includes(modeIn)) throw new AppError('Process mode must be Sequential or Simultaneous');
+  // Simultaneous only means something when a material is filtered; without Filtering the batch is simply Sequential
+  const processMode = needsFiltering && modeIn === 'SIMULTANEOUS' ? 'SIMULTANEOUS' : 'SEQUENTIAL';
+  // New clients send process_mode / roast_pairs (a Roasting-with-Partner material that is not paired roasts alone). Old clients send neither: nothing is saved, old behaviour.
+  const pairsSent = modeIn !== null || body.roast_pairs !== undefined;
   const roastingMode = needsFiltering ? 'AFTER_FILTERING' : 'DIRECT';
   // the stage the batch waits at (the Filtering / Roasting cards decide what each material can do)
   const nextStage = roastingMode === 'AFTER_FILTERING' ? 'FILTERING' : 'ROASTING';
@@ -281,6 +345,18 @@ async function start(body, userId, ip) {
       if (!mc.length) throw new AppError('Selected weighing machine is not available');
     }
 
+    // Roasting partners: validated here, INSIDE the transaction, against the recipe this batch is made with.
+    let partnerCol = new Map();
+    if (pairsSent) {
+      let rr = [];
+      try { [rr] = await conn.query('SELECT d.material_id, d.roast_type, d.process_type, m.material_name FROM recipe_details d JOIN materials m ON m.id = d.material_id WHERE d.recipe_id = ?', [recipeId]); }
+      catch (e) { if (e.code !== 'ER_BAD_FIELD_ERROR') throw e; } // roast_type column not created yet: no pairs are possible
+      const recipeInfo = new Map(rr.map((x) => [x.material_id, { name: x.material_name, roast_type: x.roast_type, process_type: x.process_type }]));
+      if (Array.isArray(body.roast_pairs) && body.roast_pairs.length) await assertCanAssignPairs(conn, userId);   // workers cannot choose combinations
+      partnerCol = rp.partnerColumn(items, recipeInfo, rp.normalizePairs(body.roast_pairs, items, recipeInfo));
+
+    }
+ 
     // (No cross-batch machine lock any more: the same weighing machine can be chosen for any number of batches.)
     // Weighing machine photo of every weighed material: the OCR weight must be a MATCH with the entered weight (same material + same weight). Any photo that is sent must be a MATCH.
     for (const i of items) {
@@ -313,6 +389,7 @@ async function start(body, userId, ip) {
       const [bd] = await conn.query(
         `INSERT INTO batching_details (batch_id, entry_date, material_id, no_of_bags, weight_per_bag, weighed_qty, weighing_machine_id, stock_txn_id, done_by, checked_by, needs_filtering, process_type, status)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'COMPLETED')`, [id, date, i.material_id, i.bags, i.perBag, i.quantity_kg, machineId, st.txn_id, doneBy, checkedBy, i.filter ? 1 : 0, i.ptype]);
+     if (pairsSent && partnerCol.get(i.material_id) !== null) await conn.query('UPDATE batching_details SET roast_partner_of = ? WHERE id = ?', [partnerCol.get(i.material_id), bd.insertId]);
       if (i.lines) {
         await conn.query('INSERT INTO batching_detail_bags (batching_detail_id, bags, weight_per_bag, qty_kg, sort_order) VALUES ?',
           [i.lines.map((l, n) => [bd.insertId, l.bags, l.perBag, l.qty, n])]);
@@ -320,9 +397,10 @@ async function start(body, userId, ip) {
       if (i.image_id) await wimg.link(conn, i.image_id, bd.insertId, id); // photo is now stored against this batch + material
     }
 
+    if (pairsSent) await saveRoastGroups(conn, id, userId);   // group + members saved in the same transaction as the batch
     const created = await getById(id, conn);
     await audit({ userId, action: 'CREATE', table: 'batch_master', recordId: id,
-      newValues: { batch_no: batchNo, product_id: productId, recipe_id: recipeId, total_kg: total, stage: nextStage, roasting_mode: roastingMode, process_mode: processMode, needs_filtering: needsFiltering, materials: items, doneBy, checkedBy }, ip }, conn);
+      newValues: { batch_no: batchNo, product_id: productId, recipe_id: recipeId, total_kg: total, stage: nextStage, roasting_mode: roastingMode,process_mode: processMode, roast_partner_of: Object.fromEntries(partnerCol), needs_filtering: needsFiltering, materials: items, doneBy, checkedBy }, ip }, conn);
     return { ...created, low_stock_alerts: alerts };
   });
 }
@@ -606,6 +684,9 @@ async function removeMaterial(batchIdRaw, materialIdRaw, user, ip) {
     catch (e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
     await conn.query('UPDATE batch_weight_images SET batching_detail_id = NULL WHERE batching_detail_id = ?', [bd.id]); // photo stays on record, it is just released
     await conn.query('DELETE FROM batching_details WHERE id = ?', [bd.id]);
+    await conn.query('UPDATE batching_details SET roast_partner_of = 0 WHERE batch_id = ? AND roast_partner_of = ?', [batchId, materialId]); 
+    // its partner (if any) now roasts alone
+    await saveRoastGroups(conn, batchId, user.id);
     await conn.query(
       `UPDATE batch_master SET planned_qty_kg = GREATEST(planned_qty_kg - ?, 0),
          current_output_kg = IF(current_stage = 'BATCHING', current_output_kg, GREATEST(current_output_kg - ?, 0)) WHERE id = ?`, [qty, qty, batchId]);
@@ -681,4 +762,4 @@ async function resume(batchIdRaw, userId, ip) {
   });
 }
 
-module.exports = { list, active, getById, staff, weighingMachines, verifyMachine, start, addBatching, addExtraMaterial, updateMaterial, removeMaterial, removeBatch, completeBatching, hold, resume };
+module.exports = { list, active, getById, staff, weighingMachines, verifyMachine, start, setRoastPairs, addBatching, addExtraMaterial, updateMaterial, removeMaterial, removeBatch, completeBatching, hold, resume };

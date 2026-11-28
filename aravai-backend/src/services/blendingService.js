@@ -3,12 +3,13 @@ const { audit } = require('../utils/audit');
 const AppError = require('../utils/AppError');
 const v = require('../utils/validate');
 const h = require('../utils/productionHelpers');
+const { resolveDuration } = require('../utils/durationHelper');
 
 // true  = ingredients picked from Material Master are issued from raw stock (ledger row + stock reduced).
 // false = blending only records the weights and never touches stock.
 const DEDUCT_STOCK = false;
-const MAX_LINES = 50;
 const START_TOLERANCE_MIN = Math.max(Number(process.env.START_TIME_TOLERANCE_MIN) || 10, 0);   // phone clock may be a few minutes ahead of the server
+
 // The spices of a batch with their weights. Per-spice weights exist only at batching (or in the recipe), so they are
 // scaled to the powder grinding actually handed over (batch_master.current_output_kg). Mixing % = spice weight / total.
 async function loadIngredients(db, batchId = null) {
@@ -35,7 +36,6 @@ async function loadIngredients(db, batchId = null) {
   });
 
   // Use what Grinding really produced for each material (its O/P weight), not a share of the total.
-  // Old batches ground with the previous form have no per-material output, so they keep the scaled figures above.
   const ids = [...new Set(base.map((r) => r.batch_id))];
   if (ids.length) {
     try {
@@ -53,12 +53,14 @@ async function loadIngredients(db, batchId = null) {
   }
   return base.sort((a, b) => a.batch_id - b.batch_id || a.material_name.localeCompare(b.material_name));
 }
-// Blending time of a batch = the longest Blending time configured in Material Master for its ingredients (null = none configured)
+
+// CONFIGURED blending time of a batch = the longest Blending time set in Material Master for its ingredients (null = none configured)
 async function configuredSeconds(db, materialIds) {
   if (!materialIds.length) return null;
   const [[r]] = await db.query('SELECT MAX(blending_seconds) AS s FROM materials WHERE id IN (?)', [materialIds]);
   return Number(r.s) > 0 ? Number(r.s) : null;
 }
+
 /* ---------- dropdown data for the form ---------- */
 async function lookups() {
   const [batches] = await pool.query(
@@ -78,6 +80,7 @@ async function lookups() {
   try { batchMaterials = await loadIngredients(pool); } catch (e) { console.error('batch_materials lookup failed:', e.message); } // never let this break the whole form
   return { batches, machines, recipes, materials, users, batch_materials: batchMaterials };
 }
+
 /* ---------- validation ---------- */
 function cleanInput(body, userId) {
   const d = {
@@ -91,7 +94,6 @@ function cleanInput(body, userId) {
     checked_by: body.checked_by ? v.toId(body.checked_by, 'checked by user') : null,
     remarks: v.optStr(body.remarks, 'Remarks', 255),
   };
-
   d.output_weight = v.num(body.output_weight, 'Blended output weight', { max: 999999 });
   if (d.output_weight <= 0) throw new AppError('Enter the blended output weight');
   return d;
@@ -160,24 +162,29 @@ async function saveBlending(conn, d, userId, ip) {
   return result;
 }
 
-
-/* ---------- one entry, for the details view ---------- */
+/* ---------- one entry, for the details view (with the duration snapshot of its session) ---------- */
 async function get(id) {
   const bid = v.toId(id, 'blending entry');
   const [rows] = await pool.query(
     `SELECT bd.*, b.batch_no, b.current_stage AS batch_stage, b.status AS batch_status, b.current_output_kg AS batch_output_kg,
             p.product_name, rc.recipe_no, rc.version_no, m.machine_code, m.machine_name, u.full_name AS operator_name,
+            bs.configured_seconds, bs.manual_seconds, COALESCE(bs.effective_seconds, bs.expected_minutes * 60) AS effective_seconds,
+            COALESCE(bs.actual_seconds, ROUND(bs.actual_minutes * 60)) AS actual_seconds, bs.duration_change_reason,
+            DATE_FORMAT(bs.expected_end, '%Y-%m-%d %H:%i:%s') AS expected_end, su.full_name AS started_by_name,
             COALESCE((SELECT SUM(x.weighed_qty) FROM batching_details x WHERE x.batch_id = b.id), 0) AS batching_kg,
-COALESCE((SELECT SUM(x.total_packing_weight) FROM packing_details x WHERE x.batch_id = b.id AND x.status <> 'CANCELLED'), 0) AS batch_packed_kg
+            COALESCE((SELECT SUM(x.total_packing_weight) FROM packing_details x WHERE x.batch_id = b.id AND x.status <> 'CANCELLED'), 0) AS batch_packed_kg
        FROM blending_details bd
        JOIN batch_master b ON b.id = bd.batch_id
        JOIN product_master p ON p.id = b.product_id
        JOIN recipe_master rc ON rc.id = bd.recipe_id
        JOIN machine_master m ON m.id = bd.machine_id
        JOIN users u ON u.id = bd.operator_id
+       LEFT JOIN blending_sessions bs ON bs.blending_id = bd.id
+       LEFT JOIN users su ON su.id = bs.started_by
       WHERE bd.id = ?`, [bid]);
   if (!rows.length) throw new AppError('Blending entry not found', 404);
   const d = rows[0];
+  ['configured_seconds', 'manual_seconds', 'effective_seconds', 'actual_seconds'].forEach((k) => { d[k] = d[k] == null ? null : Number(d[k]); });
   const [ing] = await pool.query(
     `SELECT i.id, i.entry_date, i.ingredient_name, i.ingredient_weight, i.no_of_bags, i.weight_per_bag, mt.material_code,
             du.full_name AS done_by_name, cu.full_name AS checked_by_name
@@ -192,7 +199,7 @@ COALESCE((SELECT SUM(x.total_packing_weight) FROM packing_details x WHERE x.batc
   return d;
 }
 
-/* ---------- recent entries ---------- */
+/* ---------- recent entries (history) ---------- */
 async function list(q) {
   const { page, limit, offset } = v.paging(q);
   const args = [];
@@ -200,18 +207,25 @@ async function list(q) {
   const search = v.clean(q.search);
   if (search) { w = 'WHERE (b.batch_no LIKE ? OR p.product_name LIKE ?)'; args.push(`%${search}%`, `%${search}%`); }
   const from = `FROM blending_details bd JOIN batch_master b ON b.id = bd.batch_id JOIN product_master p ON p.id = b.product_id
-    JOIN machine_master m ON m.id = bd.machine_id JOIN users u ON u.id = bd.operator_id ${w}`;
+    JOIN machine_master m ON m.id = bd.machine_id JOIN users u ON u.id = bd.operator_id
+    LEFT JOIN blending_sessions bs ON bs.blending_id = bd.id ${w}`;
   const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total ${from}`, args);
-  const [items] = await pool.query(
+  const [rows] = await pool.query(
     `SELECT bd.id, b.batch_no, p.product_name, m.machine_name, u.full_name AS operator_name, bd.start_time, bd.mixing_duration_min,
-            bd.total_input_weight, bd.output_weight, bd.wastage_weight, bd.status ${from} ORDER BY bd.id DESC LIMIT ? OFFSET ?`,
+            bd.total_input_weight, bd.output_weight, bd.wastage_weight,
+            bs.configured_seconds, bs.manual_seconds, COALESCE(bs.effective_seconds, bs.expected_minutes * 60) AS effective_seconds,
+            COALESCE(bs.actual_seconds, ROUND(bs.actual_minutes * 60)) AS actual_seconds, bs.duration_change_reason,
+            bd.status ${from} ORDER BY bd.id DESC LIMIT ? OFFSET ?`,
     [...args, limit, offset]);
+  const items = rows.map((r) => ({ ...r,
+    configured_seconds: r.configured_seconds == null ? null : Number(r.configured_seconds),
+    manual_seconds: r.manual_seconds == null ? null : Number(r.manual_seconds),
+    effective_seconds: r.effective_seconds == null ? null : Number(r.effective_seconds),
+    actual_seconds: r.actual_seconds == null ? null : Number(r.actual_seconds) }));
   return { items, page, limit, total, total_pages: Math.max(Math.ceil(total / limit), 1) };
 }
 
-
 /* ======================= Start / Stop flow (batch cards like Grinding) ======================= */
-const ALERT_SECONDS = 300;
 const fmtDT = (c) => `DATE_FORMAT(${c}, '%Y-%m-%d %H:%i:%s')`;
 
 // PENDING = ready, WAITING = batch on hold, RUNNING = started (timer), COMPLETED = saved
@@ -227,7 +241,9 @@ async function queue(q) {
             bs.id AS session_id, bs.machine_id AS s_machine_id, sm.machine_code AS s_machine_code, sm.machine_name AS s_machine_name,
             ${fmtDT('bs.start_time')} AS s_start, bs.expected_minutes AS s_minutes, ${fmtDT('bs.expected_end')} AS s_end, bs.input_weight AS s_input,
             TIMESTAMPDIFF(SECOND, bs.start_time, NOW()) AS s_elapsed, TIMESTAMPDIFF(SECOND, NOW(), bs.expected_end) AS s_remaining,
-            su.full_name AS s_started_by
+            su.full_name AS s_started_by,
+            bs.configured_seconds AS s_cfg, bs.manual_seconds AS s_manual,
+            COALESCE(bs.effective_seconds, bs.expected_minutes * 60) AS s_eff, bs.duration_change_reason AS s_reason
        FROM batch_master b
        JOIN product_master p ON p.id = b.product_id
        LEFT JOIN blending_details bd ON bd.batch_id = b.id AND bd.status = 'COMPLETED'
@@ -239,6 +255,7 @@ async function queue(q) {
         AND ((bd.id IS NULL AND b.current_stage = 'BLENDING' AND b.status IN ('OPEN','IN_PROGRESS','ON_HOLD'))
           OR (bd.id IS NOT NULL AND (b.status IN ('IN_PROGRESS','ON_HOLD') OR bd.start_time >= NOW() - INTERVAL 2 DAY)))${like}
       ORDER BY b.id DESC`, args);
+
   const ing = {}; const matIds = {};
   (await loadIngredients(pool)).forEach((m) => {
     (ing[m.batch_id] = ing[m.batch_id] || []).push({ material_name: m.material_name, qty: m.qty, percent: m.percent });
@@ -251,6 +268,7 @@ async function queue(q) {
     const bySec = {}; ms.forEach((x) => { bySec[x.id] = Number(x.blending_seconds) || 0; });
     Object.keys(matIds).forEach((bid) => { const mx = Math.max(...matIds[bid].map((id) => bySec[id] || 0)); planned[bid] = mx > 0 ? mx : null; });
   }
+
   const ORDER = { RUNNING: 0, PENDING: 1, WAITING: 2, COMPLETED: 3 };
   const items = rows.map((r) => {
     const done = !!r.blending_id;
@@ -263,7 +281,7 @@ async function queue(q) {
       status: done ? 'COMPLETED' : running ? 'RUNNING' : hold ? 'WAITING' : 'PENDING',
       reason: hold ? `Batch is on hold${r.hold_reason ? ` (${r.hold_reason})` : ''}` : '',
       ingredients: list, ingredient_count: list.length,
-      planned_seconds: planned[r.batch_id] || null,
+      planned_seconds: planned[r.batch_id] || null,   // CONFIGURED duration (Material Master)
       quantity: done ? Number(r.total_input_weight) : running ? Number(r.s_input) : (sumIn || h.r3(Number(r.current_output_kg || 0))),
       blending_id: r.blending_id || null,
       output_weight: done ? Number(r.output_weight) : null, wastage_weight: done ? Number(r.wastage_weight) : null,
@@ -273,6 +291,8 @@ async function queue(q) {
         id: r.session_id, machine_id: r.s_machine_id, machine_code: r.s_machine_code, machine_name: r.s_machine_name,
         start_time: r.s_start, expected_minutes: Number(r.s_minutes), expected_end: r.s_end, input_weight: Number(r.s_input),
         elapsed_sec: Number(r.s_elapsed), remaining_sec: Number(r.s_remaining), started_by_name: r.s_started_by,
+        configured_seconds: r.s_cfg == null ? null : Number(r.s_cfg), manual_seconds: r.s_manual == null ? null : Number(r.s_manual),
+        effective_seconds: r.s_eff == null ? null : Number(r.s_eff), duration_change_reason: r.s_reason,
       } : null,
     };
   }).sort((a, b) => (ORDER[a.status] - ORDER[b.status]) || (b.batch_id - a.batch_id));
@@ -299,9 +319,6 @@ async function start(body, userId, ip) {
   const batchId = v.toId(body.batch_id, 'batch');
   const machineId = v.toId(body.machine_id, 'machine');
   const time = h.reqTime(body.start_time, 'Start time');
-   const manualMinutes = body.expected_minutes === undefined || body.expected_minutes === null || body.expected_minutes === '' ? null : Number(body.expected_minutes);
-  if (manualMinutes !== null && (!Number.isInteger(manualMinutes) || manualMinutes < 1 || manualMinutes > 1440)) throw new AppError('Expected duration must be a whole number of minutes between 1 and 1440');
-  const reason = v.optStr(body.duration_reason, 'Reason', 255);
 
   return withTransaction(async (conn) => {
     // the machine row is locked first, so two users cannot take the same machine at the same moment
@@ -318,31 +335,31 @@ async function start(body, userId, ip) {
     const [run] = await conn.query("SELECT id FROM blending_sessions WHERE batch_id = ? AND status = 'RUNNING' LIMIT 1", [batchId]);
     if (run.length) throw new AppError(`Blending of ${batch.batch_no} is already running`, 409);
 
-    const input = h.r3((await loadIngredients(conn, batchId)).reduce((s, l) => s + l.qty, 0));
+    const ingredients = await loadIngredients(conn, batchId);
+    const input = h.r3(ingredients.reduce((s, l) => s + l.qty, 0));
     if (!(input > 0)) throw new AppError('No ingredient weights found for this batch. It needs batching weights or a recipe');
-          // duration: configured (Material Master, longest of the ingredients) -> selected by the worker. Both are saved separately.
-    const matIds = (await loadIngredients(conn, batchId)).map((l) => l.material_id);
-    const cfgSec = await configuredSeconds(conn, matIds);
-    const cfgMin = cfgSec ? Math.max(Math.ceil(cfgSec / 60), 1) : null;
-    if (!cfgSec && !manualMinutes) throw new AppError('No blending time is configured for this batch. Enter the duration in minutes');
-    const minutes = manualMinutes || cfgMin;
-    const changed = !!cfgMin && minutes !== cfgMin;
-    if (changed && !reason) throw new AppError('Enter the reason for changing the duration');
-    const selectedSec = changed || !cfgSec ? minutes * 60 : cfgSec;
-      const [[n]] = await conn.query(
+
+    // duration: configured (Material Master) is never changed. manual = optional override, effective = what the timer uses.
+    const dur = resolveDuration({ configuredSec: await configuredSeconds(conn, ingredients.map((l) => l.material_id)),
+      manualRaw: body.manual_minutes ?? body.expected_minutes, reasonRaw: body.duration_reason, label: 'blending' });
+    if (dur.effectiveSec > 86400) throw new AppError('Duration cannot be more than 24 hours');
+    const minutes = Math.max(Math.ceil(dur.effectiveSec / 60), 1);
+
+    const [[n]] = await conn.query(
       "SELECT DATE_FORMAT(NOW(), '%Y-%m-%d') AS d, DATE_FORMAT(NOW(), '%H:%i') AS hm, DATE_FORMAT(NOW(), '%Y-%m-%d %H:%i:%s') AS full");
-    // the start time field only has hours:minutes. When it is the current minute (the default),
-    // use the exact current second, otherwise the timer would already show up to 59 seconds
+    // the start time field only has hours:minutes. When it is the current minute (the default), use the exact current second
     const startStr = time === n.hm ? n.full : `${n.d} ${time}:00`;
-       const [[fut]] = await conn.query('SELECT (? > NOW() + INTERVAL ? MINUTE) AS fut', [startStr, START_TOLERANCE_MIN]);
+    const [[fut]] = await conn.query('SELECT (? > NOW() + INTERVAL ? MINUTE) AS fut', [startStr, START_TOLERANCE_MIN]);
     if (Number(fut.fut)) throw new AppError('Start time cannot be later than the current time');
 
     const [r] = await conn.query(
-      `INSERT INTO blending_sessions (batch_id, machine_id, input_weight, start_time, expected_minutes, expected_end, status, started_by, configured_seconds, selected_seconds, duration_reason)
-       VALUES (?,?,?,?,?,DATE_ADD(?, INTERVAL ? SECOND),'RUNNING',?,?,?,?)`,
-      [batchId, machineId, input, startStr, minutes, startStr, selectedSec, userId, cfgSec, selectedSec, changed ? reason : null]);
+      `INSERT INTO blending_sessions (batch_id, machine_id, input_weight, start_time, expected_minutes, expected_end, status, started_by,
+         configured_seconds, manual_seconds, effective_seconds, duration_change_reason)
+       VALUES (?,?,?,?,?,DATE_ADD(?, INTERVAL ? SECOND),'RUNNING',?,?,?,?,?)`,
+      [batchId, machineId, input, startStr, minutes, startStr, dur.effectiveSec, userId, dur.configuredSec, dur.manualSec, dur.effectiveSec, dur.reason]);
     await audit({ userId, action: 'CREATE', table: 'blending_sessions', recordId: r.insertId,
-      newValues: { batch_id: batchId, machine_id: machineId, start_time: startStr, expected_minutes: minutes, input_weight: input ,configured_seconds: cfgSec, selected_seconds: selectedSec, duration_reason: reason}, ip }, conn);
+      newValues: { batch_id: batchId, machine_id: machineId, start_time: startStr, expected_minutes: minutes, input_weight: input,
+        configured_seconds: dur.configuredSec, manual_seconds: dur.manualSec, effective_seconds: dur.effectiveSec, duration_change_reason: dur.reason }, ip }, conn);
     return { id: r.insertId, batch_no: batch.batch_no, input_weight: input, start_time: startStr, expected_minutes: minutes };
   });
 }
@@ -362,6 +379,7 @@ async function stop(body, userId, ip) {
     // the end time is taken by the database at this moment (never typed by the user)
     const [[t]] = await conn.query(
       `SELECT DATE_FORMAT(start_time, '%Y-%m-%d') AS entry_date, DATE_FORMAT(start_time, '%H:%i') AS clock,
+              TIMESTAMPDIFF(SECOND, start_time, GREATEST(NOW(), start_time)) AS secs,
               ROUND(TIMESTAMPDIFF(SECOND, start_time, GREATEST(NOW(), start_time)) / 60, 2) AS mins
          FROM blending_sessions WHERE id = ?`, [sessionId]);
 
@@ -372,10 +390,10 @@ async function stop(body, userId, ip) {
     }, userId, ip);
 
     await conn.query(
-      `UPDATE blending_sessions SET actual_end = GREATEST(NOW(), start_time), actual_minutes = ?, output_weight = ?, status = 'COMPLETED',
-              completed_by = ?, remarks = ?, blending_id = ? WHERE id = ?`, [Number(t.mins), out, userId, remarks, result.id, sessionId]);
+      `UPDATE blending_sessions SET actual_end = GREATEST(NOW(), start_time), actual_seconds = ?, actual_minutes = ?, output_weight = ?, status = 'COMPLETED',
+              completed_by = ?, remarks = ?, blending_id = ? WHERE id = ?`, [Number(t.secs), Number(t.mins), out, userId, remarks, result.id, sessionId]);
     await audit({ userId, action: 'UPDATE', table: 'blending_sessions', recordId: sessionId,
-      oldValues: { status: 'RUNNING' }, newValues: { status: 'COMPLETED', output_weight: out, blending_id: result.id }, ip }, conn);
+      oldValues: { status: 'RUNNING' }, newValues: { status: 'COMPLETED', output_weight: out, actual_seconds: Number(t.secs), blending_id: result.id }, ip }, conn);
     return { ...result, session_id: sessionId, batch_moved: { to: 'PACKING', weight_kg: out } };
   });
 }

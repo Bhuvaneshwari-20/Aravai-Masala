@@ -17,5 +17,7 @@ exports.queue = wrap((req) => ps.queue(T, req.query));
 exports.history = wrap((req) => ps.history(T, req.query));
 exports.start = wrap((req) => ps.start(T, req.body, req.user, req.ip), 201);
 exports.stop = wrap((req) => ps.stop(T, req.body, req.user, req.ip));
+exports.startGroup = wrap((req) => ps.startGroup(req.body, req.user, req.ip), 201);
+exports.stopGroup = wrap((req) => ps.stopGroup(req.body, req.user, req.ip));
 exports.alert = wrap((req) => ps.alertDue(T, req.body));
 exports.detail = wrap((req) => ps.detail(T, req.params.id));

@@ -1,6 +1,6 @@
 // Tiny dependency-free PDF writer (A4, Helvetica) for the "Download" button on the web.
 // No library to install. Used by PackingDetailModal -> downloadPackingPdf(d).
-
+import { durationRows } from './durationInfo';
 const W = 595; const H = 842; const M = 40; const VAL_X = 305;
 const INK = [0.11, 0.08, 0.06]; const GREY = [0.42, 0.36, 0.33]; const MAROON = [0.48, 0.07, 0.07];
 const GREEN = [0.18, 0.49, 0.2]; const ORANGE = [0.9, 0.32, 0]; const AMBER_BG = [1, 0.953, 0.878]; const GREEN_BG = [0.91, 0.96, 0.91];
@@ -181,6 +181,7 @@ export function blendingPdfBytes(d) {
     ['Mixing duration', d.mixing_duration_min ? `${num(d.mixing_duration_min)} min` : '—'],
     ['Operator', d.operator_name], ['Status', cap(d.status)],
   ]);
+    section('Duration', durationRows(d));
   section('Ingredients (mixing %)', [
     ...(d.ingredients || []).map((l, i) => [
       `${i + 1}.  ${l.material_code ? `${l.material_code} · ` : ''}${l.ingredient_name}`,
@@ -254,9 +255,10 @@ export function processPdfBytes(d, label) {
     ['Batch', d.batch_no], ['Product', d.product_name, { hl: AMBER_BG, bar: MAROON, color: MAROON }],
     ['Material', d.material_name], ['Machine', `${d.machine_code} · ${d.machine_name}`],
     ['Started', whenT(d.start_time)], ['Expected completion', whenT(d.expected_end)], ['Ended', whenT(d.actual_end)],
-    ['Expected duration', mins(d.expected_minutes)], ['Actual duration', mins(d.actual_minutes)],
+    
     ['Status', cap(d.status)],
   ]);
+    section('Duration', durationRows(d));
   section('Weight', [
     ['I/P weight', kg(d.input_weight)], ['O/P weight', kg(d.output_weight), { color: GREEN }],
     ['Wastage', d.wastage_weight == null ? '—' : `${kg(d.wastage_weight)} (${Number(d.loss_percent).toFixed(2)}%)`,

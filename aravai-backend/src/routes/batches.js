@@ -22,4 +22,5 @@ router.delete('/:id/materials/:materialId', authorize('batching', 'edit'), c.rem
 router.post('/:id/batching/complete', authorize('batching', 'edit'), c.completeBatching);
 router.patch('/:id/hold', authorize('batching', 'approve'), c.hold);
 router.patch('/:id/resume', authorize('batching', 'approve'), c.resume);
+router.put('/:id/roast-pairs', authorize('batch', 'edit'), c.setRoastPairs);
 module.exports = router;

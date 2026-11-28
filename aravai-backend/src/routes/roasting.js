@@ -8,6 +8,8 @@ router.get('/queue', authorize('roasting', 'view'), c.queue);
 router.get('/history', authorize('roasting', 'view'), c.history);
 router.post('/start', authorize('roasting', 'create'), c.start);
 router.post('/stop', authorize('roasting', 'create'), c.stop);
+router.post('/start-group', authorize('roasting', 'create'), c.startGroup);   // saved pair (or old combined roast) on one machine
+router.post('/stop-group', authorize('roasting', 'create'), c.stopGroup);
 router.post('/alert', authorize('roasting', 'view'), c.alert);
 // old form endpoints (kept)
 router.get('/options', authorize('roasting', 'view'), c.options);

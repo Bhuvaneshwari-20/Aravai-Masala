@@ -16,3 +16,6 @@ exports.removeBatch = wrap((req) => svc.removeBatch(req.params.id, req.user, req
 exports.completeBatching = wrap((req) => svc.completeBatching(req.params.id, req.user.id, req.ip));
 exports.hold = wrap((req) => svc.hold(req.params.id, req.body, req.user.id, req.ip));
 exports.resume = wrap((req) => svc.resume(req.params.id, req.user.id, req.ip));
+
+
+exports.setRoastPairs = wrap((req) => svc.setRoastPairs(req.params.id, req.body, req.user, req.ip));

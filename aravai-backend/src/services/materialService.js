@@ -177,7 +177,7 @@ async function create(body, userId, ip) {
     const code = d.sku ? d.sku : await nextNumber(conn, 'MATERIAL');
     const [r] = await conn.query(
       `INSERT INTO materials (material_code, material_name, sku, place, category_id, unit, opening_stock,
-                 minimum_stock, default_filter_stages, purchase_rate, current_stock, is_active, created_by, roast_seconds, filter_seconds, grind_seconds, blending_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?.?)`,
+                 minimum_stock, default_filter_stages, purchase_rate, current_stock, is_active, created_by, roast_seconds, filter_seconds, grind_seconds, blending_seconds)VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [code, d.material_name, d.sku ?? null, d.place ?? null, categoryId, d.unit, opening, d.minimum_stock ?? 0, d.default_filter_stages ?? 0,
         d.purchase_rate ?? 0, opening, d.is_active === undefined ? 1 : d.is_active, userId, d.roast_seconds ?? null, d.filter_seconds ?? null, d.grind_seconds ?? null, d.blending_seconds ?? null]);
     await saveSpecs(conn, r.insertId, d.specifications);
@@ -210,7 +210,7 @@ async function update(idRaw, body, userId, ip) {
     else if (d.sku === null && before.sku) newCode = await nextNumber(conn, 'MATERIAL');
     await conn.query(
       `UPDATE materials SET material_code=?, material_name=?, sku=?, place=?, category_id=?, unit=?, minimum_stock=?, default_filter_stages=?,
-                 purchase_rate=?, is_active=?, roast_seconds=?, filter_seconds=?, grind_seconds=?,blending_seconds=?, WHERE id=?`,
+                 purchase_rate=?, is_active=?, roast_seconds=?, filter_seconds=?, grind_seconds=?, blending_seconds=? WHERE id=?`,
       [newCode, d.material_name, d.sku !== undefined ? d.sku : before.sku, d.place !== undefined ? d.place : before.place,
         d.category_id ?? before.category_id, d.unit || before.unit, d.minimum_stock ?? before.minimum_stock,
         d.default_filter_stages ?? before.default_filter_stages, d.purchase_rate ?? before.purchase_rate, d.is_active === undefined ? before.is_active : d.is_active,

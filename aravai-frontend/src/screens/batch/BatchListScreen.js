@@ -208,7 +208,7 @@ export default function BatchListScreen({ navigation }) {
       </Container>
 
       <StartBatchModal visible={showStart} onDismiss={() => setShowStart(false)}
-        onSaved={(b) => { setShowStart(false); list.reload(); loadActive(); loadCounts(); toast(`Batch ${b.batch_no} saved - next: ${b.roasting_mode === 'PARALLEL' ? 'Filtering + Roasting' : stageLabel(b.current_stage)}`); }} />
+        onSaved={(b) => { setShowStart(false); list.reload(); loadActive(); loadCounts(); toast(`Batch ${b.batch_no} saved - next: ${stageText(b)}`); }} />
     </View>
   );
 }

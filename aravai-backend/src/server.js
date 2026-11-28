@@ -5,7 +5,10 @@ const port = process.env.PORT || 4000;
   await pool.query('SELECT 1'); // fail fast if DB is unreachable
   await require('./utils/ensureBatchMachineLock')(pool); // adds batch_master.weighing_machine_id / machine_locked_at if missing
   await require('./utils/ensureProcessWorkflow')(pool); // adds batch_master.process_mode + process_sessions (material cards) if missing
-  await require('./utils/ensureBatchRoastingMode')(pool); // adds batch_master.roasting_mode (DIRECT / AFTER_FILTERING / PARALLEL) if missing
+  await require('./utils/ensureRecipeProcessType')(pool);
+await require('./utils/ensureRoastPartner')(pool);
+  await require('./utils/ensureRoastGroups')(pool); // roasting groups of a batch (group table + members, one group per material per batch) // adds batching_details.roast_partner_of (saved roasting pairs); lets batch_master.process_mode accept SIMULTANEOUS
+  await require('./utils/ensureBatchRoastingMode')(pool);// adds batch_master.roasting_mode (DIRECT / AFTER_FILTERING / PARALLEL) if missing
   
     try { await require('./utils/ensureMaterialUnits')(pool); } // creates material_units (the Unit dropdown list) if missing
   catch (e) { console.error(`WARNING: material units table could not be created: ${e.message}`); }// adds batch_master.roasting_mode (DIRECT / AFTER_FILTERING / PARALLEL) if missing

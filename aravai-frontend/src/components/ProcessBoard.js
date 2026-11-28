@@ -21,12 +21,16 @@ import FormRow from './FormRow';
 import SelectField from './SelectField';
 import MeshSelectField from './MeshSelectField';
 import TimeField from './TimeField';
+import ProcessDetailModal from './ProcessDetailModal';
+import { fmtDuration } from './DurationField';
 import { ErrorBox, ModalFooter } from './FormBits';
 import { COLORS, fmt } from '../theme';
+import DurationFields, { checkDuration, overrideMessage, durText } from './DurationFields';
 
 // Material-wise cards for Filtering / Roasting / Grinding.
 //   <ProcessBoard type="FILTERING" path="filtering" module="filtering" title="Filtering" icon="filter-variant" />
 // All times and the running timer come from the database (elapsed_sec / remaining_sec), so a page refresh never loses the timer.
+// Duration: Configured (Material Master, read-only) / Manual override (optional, reason when different) / Effective (timer) / Actual.
 
 const ALERT_SECONDS = 300;
 const STATUS = {
@@ -84,13 +88,12 @@ const SectionLabel = ({ children }) => <Text style={s.secLabel}>{children}</Text
 
 // Loss between I/P and O/P of a finished card: { kg, pct }. null when the numbers are missing / not valid.
 const lossOf = (ip, op) => {
-  if (ip === null || ip === undefined || ip === '' || op === null || op === undefined || op === '') return null; // no O/P yet -> no loss
+  if (ip === null || ip === undefined || ip === '' || op === null || op === undefined || op === '') return null;
   const a = Number(ip); const b = Number(op);
   if (!(a > 0) || !(b >= 0) || b > a) return null;
   return { kg: Math.round((a - b) * 1000) / 1000, pct: Math.round(((a - b) / a) * 10000) / 100 };
 };
-const LOSS_ALERT_PCT = 12; // same limit the Stop form uses to turn the loss red
-// "Loss  1 kg · 12.5 %" - shown on every completed Filtering / Roasting / Grinding card and history row
+const LOSS_ALERT_PCT = 12;
 const LossRow = ({ ip, op }) => {
   const l = lossOf(ip, op);
   if (!l) return null;
@@ -170,7 +173,7 @@ function BatchHeader({ g, onBack }) {
 }
 
 /* ------------------------------ one material card ------------------------------ */
-function MaterialCard({ card, label, machines, canAct, tick, fetchedAt, draft, setDraft, busy, onStart, onStop, onProceed, onCombine, err }) {
+function MaterialCard({ card, label, machines, canAct, fetchedAt, draft, setDraft, busy, onStart, onStop, onProceed, onCombine, onView, err }) {
   const ses = card.session;
   const running = card.status === 'RUNNING';
   const delta = running ? Math.floor((Date.now() - fetchedAt) / 1000) : 0;
@@ -181,11 +184,15 @@ function MaterialCard({ card, label, machines, canAct, tick, fetchedAt, draft, s
   const soon = running && !delayed && remaining <= ALERT_SECONDS;
   const d = draft || {};
   const pending = card.status === 'PENDING';
-  const total = running ? Math.max(ses.expected_minutes * 60, 1) : 1;
+  // effective duration = what the timer counts down from
+  const total = running ? Math.max(Number(ses.effective_seconds) || Number(ses.planned_sec) || ses.expected_minutes * 60, 1) : 1;
   const pct = running ? Math.min((elapsed / total) * 100, 100) : 0;
   const isRoast = card.process_type === 'ROASTING';
   const choice = d.roast_choice;                 // Roast Individually | Wait (Combine opens its own dialog)
   const gnames = card.group_names || [];         // other materials roasted together with this one
+  const managed = isRoast && !!card.pair_managed;   // partner saved with the batch: a pair starts together, an unpaired material roasts alone, the worker chooses nothing
+  const askChoice = pending && isRoast && !managed && (!choice || choice === 'WAIT');
+ const showForm = pending && (!isRoast || managed || choice === 'INDIVIDUAL');
 
   return (
     <View style={[s.card, { borderLeftWidth: 5, borderLeftColor: st.color }, delayed && { borderColor: COLORS.danger }, soon && { borderColor: COLORS.warn }]}>
@@ -204,6 +211,19 @@ function MaterialCard({ card, label, machines, canAct, tick, fetchedAt, draft, s
         {card.batch_status === 'ON_HOLD' && <View style={[s.tag, { backgroundColor: COLORS.warnBg }]}><Text style={[s.tagText, { color: COLORS.warn }]}>Batch on hold</Text></View>}
       </View>
 
+      {card.is_group && (
+        <View style={s.groupBox}>
+          <Text style={s.groupHead}>ROASTING PAIR - ONE MACHINE</Text>
+          {card.members.map((m) => (
+            <View key={m.material_id} style={s.groupRow}>
+              <MCI name="link-variant" size={16} color={COLORS.primary} />
+              <Text style={s.groupName} numberOfLines={1}>{m.material_name}</Text>
+              <Text style={s.groupQty}>{m.quantity == null ? '–' : `${fmt(m.quantity)} kg`}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+ 
       {gnames.length > 0 && <View style={s.groupLine}><MCI name="layers-outline" size={16} color={COLORS.primary} /><Text style={s.groupText}>{`Roasted together with: ${gnames.join(', ')}`}</Text></View>}
 
       {card.status === 'WAITING' && (
@@ -211,7 +231,7 @@ function MaterialCard({ card, label, machines, canAct, tick, fetchedAt, draft, s
       )}
 
       {/* ----- Roasting only: ready material -> how should it be roasted? ----- */}
-      {pending && isRoast && (!choice || choice === 'WAIT') && (
+      {askChoice && (
         <View style={s.proceedBox}>
           <Text style={s.proceedText}>{choice === 'WAIT' ? 'Waiting for other materials. Choose again when you are ready.'
             : card.partner_required ? 'This material is set to Roasting with Partner. Select its partner materials to start roasting.'
@@ -220,7 +240,7 @@ function MaterialCard({ card, label, machines, canAct, tick, fetchedAt, draft, s
           <StatGrid><Stat label="QUANTITY" value={card.quantity == null ? '–' : `${fmt(card.quantity)} kg`} strong wide /></StatGrid>
           {canAct && (
             <View>
-              {/* Roasting with Partner: must be combined while a partner is still possible. Only Roasting: never combined. Not set (old recipes): both, as before. */}
+              {/* Roasting with Partner: must be combined while a partner is still possible. Only Roasting: never combined. Not set (old recipes): both. */}
               {!card.partner_required && <Button mode="contained" icon="fire" buttonColor={COLORS.primary} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel} onPress={() => setDraft({ roast_choice: 'INDIVIDUAL' })}>Roast Individually</Button>}
               {card.roast_type !== 'ROAST_ONLY' && <Button mode={card.partner_required ? 'contained' : 'outlined'} icon="layers-plus" buttonColor={card.partner_required ? COLORS.primary : undefined} textColor={card.partner_required ? '#fff' : COLORS.primary} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel} onPress={onCombine}>{card.roast_type === 'ROAST_PARTNER' ? 'Select Partner & Start' : 'Combine with Other Materials'}</Button>}
               {choice !== 'WAIT' && <Button mode="text" icon="timer-sand" textColor={COLORS.grey} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel} onPress={() => setDraft({ roast_choice: 'WAIT' })}>Wait for Other Materials</Button>}
@@ -229,30 +249,27 @@ function MaterialCard({ card, label, machines, canAct, tick, fetchedAt, draft, s
         </View>
       )}
 
-      {/* ----- not started: machine, start time, duration ----- */}
-      {pending && (!isRoast || choice === 'INDIVIDUAL') && (
+      {/* ----- not started: machine + configured (read-only) + manual override + reason ----- */}
+      {showForm && (
         <View>
           <StatGrid><Stat label="QUANTITY" value={card.quantity == null ? '–' : `${fmt(card.quantity)} kg`} strong wide /></StatGrid>
           <View style={s.formBox}>
             <SectionLabel>START {label.toUpperCase()}</SectionLabel>
             <SelectField label={`${label} machine *`} value={d.machine_id || null} options={machines} onChange={(v) => setDraft({ machine_id: v })} error={err && err.machine} />
             {!machines.length && <Text style={s.noMachine}>No {label.toLowerCase()} machine is available right now.</Text>}
-            <FormRow>
-              <TimeField label="Start time *" value={d.start_time || ''} onChangeText={(t) => setDraft({ start_time: t })} error={err && err.start} />
-              <FormField label="Duration (min) *" digits value={d.minutes || ''} onChangeText={(t) => setDraft({ minutes: t.replace(/[^0-9]/g, '') })} error={err && err.minutes} />
-            </FormRow>
+            <DurationFields configuredSec={card.planned_seconds} manual={d.manual} reason={d.reason} onChange={setDraft} err={err} />
             <View style={s.endPill}>
               <MCI name="flag-checkered" size={17} color={COLORS.green} />
-              <Text style={s.endLabel}>Expected completion</Text>
-              <Text style={s.endValue}>{previewEnd(d.start_time, d.minutes)}</Text>
+              <Text style={s.endLabel}>Expected completion (if started now)</Text>
+              <Text style={s.endValue}>{previewEnd(nowHHMM(), checkDuration(card.planned_seconds, d.manual, d.reason).effMin)}</Text>
             </View>
+            <Text style={s.hintLine}>The timer starts only when you press Start. The start time is taken from the server clock.</Text>
           </View>
           {!!(err && err.server) && <Text style={s.err}>{err.server}</Text>}
           {canAct && (
             <Button mode="contained" icon="play" buttonColor={COLORS.green} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
               loading={busy} disabled={busy || !machines.length} onPress={onStart}>Start</Button>
           )}
-          {isRoast && canAct && <Button mode="text" compact textColor={COLORS.grey} onPress={() => setDraft({ roast_choice: undefined })}>Change roasting option</Button>}
         </View>
       )}
 
@@ -263,17 +280,21 @@ function MaterialCard({ card, label, machines, canAct, tick, fetchedAt, draft, s
       {running && (
         <View>
           <View style={[s.timer, { backgroundColor: st.bg }]}>
-            <Text style={[s.timerLabel, { color: st.color }]}>{delayed ? 'OVER EXPECTED TIME' : soon ? 'COMPLETING SOON' : 'RUNNING FOR'}</Text>
-            <Text style={[s.timerVal, { color: st.color }]}>{delayed ? `+${clock(remaining)}` : clock(elapsed)}</Text>
+            <Text style={[s.timerLabel, { color: st.color }]}>{delayed ? 'TIME IS UP - OVERDUE' : soon ? 'COMPLETING SOON' : 'TIME REMAINING'}</Text>
+            <Text style={[s.timerVal, { color: st.color }]}>{delayed ? `+${clock(remaining)}` : clock(remaining)}</Text>
             <View style={s.timerTrack}><View style={[s.timerFill, { width: `${pct}%`, backgroundColor: st.color }]} /></View>
-            <Text style={s.timerSub}>{delayed ? `Elapsed ${clock(elapsed)} · the machine keeps running until you press Stop` : `Time left ${clock(remaining)}  ·  ${ses.expected_minutes} min planned`}</Text>
+            <Text style={s.timerSub}>{delayed ? `Effective ${fmtDuration(total)} · the machine keeps running until you press Stop` : `Elapsed ${clock(elapsed)}  ·  Effective ${fmtDuration(total)}`}</Text>
           </View>
           <StatGrid>
             <Stat label="QUANTITY" value={`${fmt(card.quantity)} kg`} strong />
             <Stat label="MACHINE" value={`${ses.machine_code} · ${ses.machine_name}`} />
             <Stat label="START TIME" value={t12(ses.start_time)} />
             <Stat label="EXPECTED COMPLETION" value={t12(ses.expected_end)} strong color={delayed ? COLORS.danger : undefined} />
+            <Stat label="CONFIGURED" value={durText(ses.configured_seconds)} />
+            <Stat label="MANUAL" value={durText(ses.manual_seconds)} color={ses.manual_seconds ? COLORS.warn : undefined} />
+            <Stat label="EFFECTIVE (TIMER)" value={fmtDuration(total)} strong wide />
           </StatGrid>
+          {!!ses.duration_change_reason && <Text style={s.byLine}>Duration changed: {ses.duration_change_reason}</Text>}
           <Text style={s.byLine}>Started by {ses.started_by_name}</Text>
           {canAct && <Button mode="contained" icon="stop-circle-outline" buttonColor={COLORS.danger} style={s.btn} contentStyle={s.btnContent} labelStyle={s.btnLabel}
             loading={busy} disabled={busy} onPress={onStop}>Stop / Complete</Button>}
@@ -282,15 +303,25 @@ function MaterialCard({ card, label, machines, canAct, tick, fetchedAt, draft, s
 
       {/* ----- completed ----- */}
       {card.status === 'COMPLETED' && ses && (
-        <StatGrid>
-          <Stat label="MACHINE" value={`${ses.machine_code} · ${ses.machine_name}`} wide />
-          <Stat label="START TIME" value={t12(ses.start_time)} />
-          <Stat label="ACTUAL END" value={t12(ses.actual_end)} strong />
-          <Stat label="EXPECTED" value={`${ses.expected_minutes} min · ${t12(ses.expected_end)}`} />
-          <Stat label="ACTUAL DURATION" value={`${ses.actual_minutes} min`} strong />
-          <Stat label="I/P → O/P" value={`${fmt(card.quantity)} → ${fmt(ses.output_weight)} kg`} />
-          <LossRow ip={card.quantity} op={ses.output_weight} />
-        </StatGrid>
+        <View>
+          <StatGrid>
+            <Stat label="MACHINE" value={`${ses.machine_code} · ${ses.machine_name}`} wide />
+            <Stat label="START TIME" value={t12(ses.start_time)} />
+            <Stat label="ACTUAL END" value={t12(ses.actual_end)} strong />
+            <Stat label="EXPECTED" value={t12(ses.expected_end)} />
+            <Stat label="CONFIGURED" value={durText(ses.configured_seconds)} />
+            <Stat label="MANUAL" value={durText(ses.manual_seconds)} />
+            <Stat label="ACTUAL DURATION" value={durText(ses.actual_seconds)} strong />
+            {card.is_group
+              ? card.members.map((m) => <Stat key={m.material_id} label={`${m.material_name} I/P → O/P`} value={`${fmt(m.quantity)} → ${fmt(m.session && m.session.output_weight)} kg`} wide />)
+              : <Stat label="I/P → O/P" value={`${fmt(card.quantity)} → ${fmt(ses.output_weight)} kg`} />}
+            {!card.is_group && <LossRow ip={card.quantity} op={ses.output_weight} />}
+          </StatGrid>
+          <Pressable onPress={onView} style={s.viewLink}>
+            <Text style={s.viewText}>View full details</Text>
+            <MCI name="chevron-right" size={18} color={COLORS.primary} />
+          </Pressable>
+        </View>
       )}
       {card.status === 'COMPLETED' && !ses && <Text style={s.legacy}>Completed earlier (saved with the old form).</Text>}
       {card.awaiting_proceed && canAct && (
@@ -359,7 +390,7 @@ function StopModal({ type, card, label, canAddMesh, toast, onDismiss, onDone }) 
         {type === 'GRINDING' && (
           <FormRow>
             {/* sizes come from the Mesh Size master; a new size can be added right here and is selected at once */}
-                        <MeshSelectField value={f.mesh_id} onChange={(id) => set('mesh_id')(id)} error={errors.mesh}
+            <MeshSelectField value={f.mesh_id} onChange={(id) => set('mesh_id')(id)} error={errors.mesh}
               canAdd={canAddMesh} onAdded={(m) => toast(`Mesh ${m.mesh_size} mm added`)} />
             <SelectField label="Sieved" value={f.sieved} options={YESNO} onChange={set('sieved')} />
           </FormRow>
@@ -378,7 +409,7 @@ function CombineModal({ card, cards, machines, onDismiss, onDone }) {
   const [errors, setErrors] = useState({});
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
-  useEffect(() => { if (card) { setSel({ [card.material_id]: true }); setF({ machine_id: null, start_time: nowHHMM(), minutes: '' }); setErrors({}); setErr(''); setSaving(false); } }, [card]);
+  useEffect(() => { if (card) { setSel({ [card.material_id]: true }); setF({ machine_id: null, start_time: nowHHMM(), manual: '', reason: '' }); setErrors({}); setErr(''); setSaving(false); } }, [card]);
   if (!card) return null;
   const set = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
   const partnerMode = card.roast_type === 'ROAST_PARTNER';                    // Roasting with Partner: pick the partner materials
@@ -388,19 +419,22 @@ function CombineModal({ card, cards, machines, onDismiss, onDone }) {
   const notReady = mates.filter((c) => c.status === 'WAITING');              // e.g. Filtering not completed yet: never allowed into Roasting
   const chosen = ready.filter((c) => sel[c.material_id]);
   const qty = chosen.reduce((a, c) => a + Number(c.quantity || 0), 0);
+  // configured duration of a combined roast = the longest configured Roasting time of the chosen materials
+  const cfgSec = Math.max(0, ...chosen.map((c) => Number(c.planned_seconds) || 0)) || null;
+  const chk = checkDuration(cfgSec, f.manual, f.reason);
   const toggle = (id) => { if (partnerMode && id === card.material_id) return; setSel((p) => ({ ...p, [id]: !p[id] })); }; // the material itself always stays selected
 
   const save = async () => {
-    const e = {};
+    const e = { ...chk.e };
     if (chosen.length < 2) e.pick = partnerMode ? 'Select at least one partner material' : 'Select at least two ready materials to combine';
     if (!f.machine_id) e.machine = 'Select a machine';
     if (!TIME_RE.test(f.start_time || '')) e.start = 'Select the start time';
-    if (!(Number(f.minutes) >= 1)) e.minutes = 'Enter duration in minutes';
     setErrors(e);
     if (Object.keys(e).length) return;
     setSaving(true); setErr('');
     try {
-      const r = await api.post('/roasting/start-group', { batch_id: card.batch_id, material_ids: chosen.map((c) => c.material_id), machine_id: f.machine_id, start_time: f.start_time, expected_minutes: Number(f.minutes) });
+      const r = await api.post('/roasting/start-group', { batch_id: card.batch_id, material_ids: chosen.map((c) => c.material_id), machine_id: f.machine_id, start_time: f.start_time,
+        manual_minutes: f.manual !== '' ? Number(f.manual) : undefined, duration_reason: chk.changed ? String(f.reason).trim() : undefined });
       setSaving(false);
       onDone(r.data.data);
     } catch (x) { setErr(errMsg(x)); setSaving(false); }
@@ -440,14 +474,12 @@ function CombineModal({ card, cards, machines, onDismiss, onDone }) {
         <Text style={s.combTotal}>{`${chosen.length} selected  •  ${fmt(qty)} kg`}</Text>
         <SelectField label="Roasting machine *" value={f.machine_id || null} options={machines} onChange={set('machine_id')} error={errors.machine} />
         {!machines.length && <Text style={s.noMachine}>No roasting machine is available right now.</Text>}
-        <FormRow>
-          <TimeField label="Start time *" value={f.start_time || ''} onChangeText={set('start_time')} error={errors.start} />
-          <FormField label="Duration (min) *" digits value={f.minutes || ''} onChangeText={(t) => set('minutes')(t.replace(/[^0-9]/g, ''))} error={errors.minutes} />
-        </FormRow>
+        <TimeField label="Start time *" value={f.start_time || ''} onChangeText={set('start_time')} error={errors.start} />
+        <DurationFields configuredSec={cfgSec} manual={f.manual} reason={f.reason} onChange={(patch) => setF((p) => ({ ...p, ...patch }))} err={errors} />
         <View style={s.endPill}>
           <MCI name="flag-checkered" size={17} color={COLORS.green} />
           <Text style={s.endLabel}>Expected completion</Text>
-          <Text style={s.endValue}>{previewEnd(f.start_time, f.minutes)}</Text>
+          <Text style={s.endValue}>{previewEnd(f.start_time, chk.effMin)}</Text>
         </View>
         <ErrorBox text={err} />
       </View>
@@ -521,7 +553,7 @@ function GroupStopModal({ card, members, onDismiss, onDone }) {
 }
 
 /* ------------------------------ history tab ------------------------------ */
-function HistoryList({ type, path, search, label }) {
+function HistoryList({ path, search, label, onOpen }) {
   const grid = useCardCols({ min: 300, phoneMin: 280 });
   const list = usePagedList(`/${path}/history`, { search: search || undefined });
   if (list.loading) return <LoadingView />;
@@ -535,7 +567,7 @@ function HistoryList({ type, path, search, label }) {
       renderItem={(i) => {
         const late = i.actual_end && i.expected_end && i.actual_end > i.expected_end;
         return (
-          <View style={[s.card, { borderLeftWidth: 5, borderLeftColor: COLORS.ok }]}>
+          <Pressable onPress={() => onOpen(i.id)} style={[s.card, { borderLeftWidth: 5, borderLeftColor: COLORS.ok }]}>
             <View style={[s.head, { marginBottom: 6 }]}>
               <View style={[s.mIcon, { backgroundColor: COLORS.okBg }]}><MCI name="check-circle-outline" size={22} color={COLORS.ok} /></View>
               <View style={{ flex: 1, minWidth: 0 }}>
@@ -548,13 +580,18 @@ function HistoryList({ type, path, search, label }) {
               <Stat label="MACHINE" value={`${i.machine_code} · ${i.machine_name}`} wide />
               <Stat label="START" value={`${t12(i.start_time)}  ${dmy(i.start_time)}`} />
               <Stat label="ACTUAL END" value={`${t12(i.actual_end)}  ${dmy(i.actual_end)}`} strong color={late ? COLORS.danger : undefined} />
-              <Stat label="EXPECTED END" value={`${t12(i.expected_end)} · ${i.expected_minutes} min`} />
-              <Stat label="ACTUAL DURATION" value={`${i.actual_minutes} min`} strong />
+              <Stat label="EXPECTED END" value={t12(i.expected_end)} />
+              <Stat label="CONFIGURED" value={durText(i.configured_seconds)} />
+              <Stat label="MANUAL" value={durText(i.manual_seconds)} />
+              <Stat label="EFFECTIVE" value={durText(i.effective_seconds)} />
+              <Stat label="ACTUAL DURATION" value={durText(i.actual_seconds)} strong />
+              <Stat label="DURATION SOURCE" value={i.manual_seconds ? 'Manually changed' : 'Default (configured)'} color={i.manual_seconds ? COLORS.warn : COLORS.ok} wide />
               <Stat label="I/P → O/P" value={`${fmt(i.input_weight)} → ${fmt(i.output_weight)} kg`} />
               <LossRow ip={i.input_weight} op={i.output_weight} />
             </StatGrid>
+            {!!i.duration_change_reason && <Text style={s.byLine}>Reason: {i.duration_change_reason}</Text>}
             <Text style={s.byLine}>Started by {i.started_by_name}  ·  Completed by {i.completed_by_name || '–'}</Text>
-          </View>
+          </Pressable>
         );
       }} />
   );
@@ -580,11 +617,11 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
   const [stopCard, setStopCard] = useState(null);
   const [proceedCard, setProceedCard] = useState(null);
   const [combineCard, setCombineCard] = useState(null);   // Roasting: ready material that is being combined with others
-  const [selBatch, setSelBatch] = useState(null);   // batch whose materials are open (null = list of batches)
-  const [alerts, setAlerts] = useState([]);
+  const [overrideFor, setOverrideFor] = useState(null);   // manual duration differs from configured: confirm first
+  const [detailId, setDetailId] = useState(null);         // saved session shown in the details popup
+  const [selBatch, setSelBatch] = useState(null);         // batch whose materials are open (null = list of batches)
   const [, setTick] = useState(0);
   const fetchedAt = useRef(Date.now());
-  const acked = useRef(new Set());
 
   const load = useCallback(async (quiet) => {
     try {
@@ -599,39 +636,25 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
   useEffect(() => { const t = setInterval(() => load(true), 20000); return () => clearInterval(t); }, [load]);   // other users' changes + machine availability
   useEffect(() => { const t = setInterval(() => setTick((n) => n + 1), 1000); return () => clearInterval(t); }, []); // live timers
 
-  // 5-minute advance notification: the server marks it as sent, so it appears only once per processing session
-  useEffect(() => {
-    if (!data) return;
-    data.items.forEach((c) => {
-      if (c.status !== 'RUNNING' || !c.session || c.session.alert_sent || acked.current.has(c.session.id)) return;
-      const remaining = c.session.remaining_sec - Math.floor((Date.now() - fetchedAt.current) / 1000);
-      if (remaining > ALERT_SECONDS) return;
-      acked.current.add(c.session.id);
-      api.post(`/${path}/alert`, { session_id: c.session.id }).then((r) => {
-        const d = r.data.data;
-        if (d && d.fired) { setAlerts((a) => [{ id: c.session.id, text: d.message }, ...a]); toast(d.message); }
-      }).catch(() => { acked.current.delete(c.session.id); });
-    });
-  });
-
   const draftOf = (c) => {
     const d = drafts[c.key] || {};
-    return { machine_id: d.machine_id, start_time: d.start_time !== undefined ? d.start_time : nowHHMM(), minutes: d.minutes !== undefined ? d.minutes : '', roast_choice: d.roast_choice };
+    return { machine_id: d.machine_id, manual: d.manual !== undefined ? d.manual : '', reason: d.reason || '', roast_choice: d.roast_choice };
   };
   const setDraft = (c) => (patch) => { setDrafts((p) => ({ ...p, [c.key]: { ...draftOf(c), ...patch } })); setErrs((p) => ({ ...p, [c.key]: undefined })); };
 
   const machineOpts = useMemo(() => (data ? data.machines.map((m) => ({ value: m.id, label: `${m.machine_code} - ${m.machine_name}` })) : []), [data]);
 
-  const start = async (c) => {
+  const start = async (c, confirmed) => {
     const d = draftOf(c);
-    const e = {};
+    const { e, changed } = checkDuration(c.planned_seconds, d.manual, d.reason);
     if (!d.machine_id) e.machine = 'Select a machine';
-    if (!TIME_RE.test(d.start_time || '')) e.start = 'Select the start time';
-    if (!(Number(d.minutes) >= 1)) e.minutes = 'Enter duration in minutes';
     if (Object.keys(e).length) { setErrs((p) => ({ ...p, [c.key]: e })); return; }
+    if (changed && !confirmed) { setOverrideFor(c); return; }
+    setOverrideFor(null);
     setBusyKey(c.key);
     try {
-      await api.post(`/${path}/start`, { batch_id: c.batch_id, material_id: c.material_id, machine_id: d.machine_id, start_time: d.start_time, expected_minutes: Number(d.minutes) });
+      await api.post(c.is_group ? '/roasting/start-group' : `/${path}/start`, { batch_id: c.batch_id, material_id: c.material_id, machine_id: d.machine_id,
+        manual_minutes: d.manual !== '' ? Number(d.manual) : undefined, duration_reason: changed ? d.reason.trim() : undefined });
       setDrafts((p) => ({ ...p, [c.key]: undefined }));
       toast(`${c.material_name} started`);
       await load(true);
@@ -701,20 +724,8 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
         {tab === 'queue' && <FilterChips options={chips} value={status} onChange={setStatus} />}
       </Container>
 
-      {alerts.length > 0 && (
-        <Container>
-          {alerts.map((a) => (
-            <View key={a.id} style={s.alert}>
-              <MCI name="bell-ring-outline" size={20} color={COLORS.warn} />
-              <Text style={s.alertText}>{a.text}</Text>
-              <Pressable hitSlop={8} onPress={() => setAlerts((x) => x.filter((y) => y.id !== a.id))}><MCI name="close" size={18} color={COLORS.warn} /></Pressable>
-            </View>
-          ))}
-        </Container>
-      )}
-
       <Container fill>
-        {tab === 'history' ? <HistoryList type={type} path={path} search={dSearch} label={label} />
+        {tab === 'history' ? <HistoryList path={path} search={dSearch} label={label} onOpen={setDetailId} />
           : !data && !error ? <LoadingView />
             : error && !data ? <EmptyView error={error} onRetry={() => load(false)} />
               : detail ? (
@@ -728,7 +739,8 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
                   renderItem={(c) => (
                     <MaterialCard card={c} label={label} machines={machineOpts} canAct={canAct} fetchedAt={fetchedAt.current}
                       draft={draftOf(c)} setDraft={setDraft(c)} err={errs[c.key]} busy={busyKey === c.key}
-                      onStart={() => start(c)} onStop={() => setStopCard(c)} onProceed={() => setProceedCard(c)} onCombine={() => setCombineCard(c)} />
+                      onStart={() => start(c)} onStop={() => setStopCard(c)} onProceed={() => setProceedCard(c)} onCombine={() => setCombineCard(c)}
+                      onView={() => c.session && setDetailId(c.session.id)} />
                   )} />
               ) : (
                 // ----- batch-wise: one card per batch -----
@@ -742,11 +754,11 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
               )}
       </Container>
 
-            <StopModal type={type} card={stopCard && !(stopCard.session && stopCard.session.group_id) ? stopCard : null} label={label} canAddMesh={can('grinding', 'create') || can('mesh', 'create')} toast={toast}
+      <StopModal type={type} card={stopCard && !(stopCard.session && stopCard.session.group_id) ? stopCard : null} label={label} canAddMesh={can('grinding', 'create') || can('mesh', 'create')} toast={toast}
         onDismiss={() => setStopCard(null)} onDone={onStopped} />
       {type === 'ROASTING' && (
         <GroupStopModal card={stopCard && stopCard.session && stopCard.session.group_id ? stopCard : null}
-          members={stopCard && stopCard.session && stopCard.session.group_id && data ? data.items.filter((i) => i.status === 'RUNNING' && i.session && i.session.group_id === stopCard.session.group_id) : []}
+          members={stopCard && stopCard.is_group ? stopCard.members : (stopCard && stopCard.session && stopCard.session.group_id && data ? data.items.filter((i) => i.status === 'RUNNING' && i.session && i.session.group_id === stopCard.session.group_id) : [])}
           onDismiss={() => setStopCard(null)} onDone={onStopped} />
       )}
       {type === 'ROASTING' && (
@@ -754,9 +766,16 @@ export default function ProcessBoard({ type, path, module: mod, title, icon }) {
           onDone={async (r) => { setCombineCard(null); toast(`${r.sessions} materials started together: ${r.materials.join(', ')}`); await load(true); }} />
       )}
 
+      {/* manual duration differs from the configured one: show configured / manual / difference / reason and ask first */}
+      <ConfirmDialog visible={!!overrideFor} busy={!!busyKey} title="Change duration?"
+        message={overrideFor ? overrideMessage(overrideFor.planned_seconds, draftOf(overrideFor).manual, draftOf(overrideFor).reason) : ''}
+        confirmText="Yes, start" onCancel={() => setOverrideFor(null)} onConfirm={() => overrideFor && start(overrideFor, true)} />
+
       <ConfirmDialog visible={!!proceedCard} busy={!!busyKey} title="Proceed to Roasting?"
         message={proceedCard ? `${proceedCard.material_name} (${proceedCard.batch_no}) has finished Filtering. Move it to the Roasting queue now? If you choose "Not now" it stays waiting.` : ''}
         confirmText="Yes, proceed" onCancel={() => setProceedCard(null)} onConfirm={() => proceedCard && proceed(proceedCard)} />
+
+      <ProcessDetailModal visible={detailId !== null} id={detailId} path={path} label={label} icon={icon} onDismiss={() => setDetailId(null)} />
     </View>
   );
 }
@@ -765,6 +784,11 @@ const s = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: COLORS.bg },
   groupLine: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
   groupText: { marginLeft: 6, fontSize: 12.5, fontWeight: '800', color: COLORS.primary, flex: 1 },
+  groupBox: { backgroundColor: `${COLORS.primary}0D`, borderRadius: 12, padding: 10, marginTop: 8 },
+  groupHead: { fontSize: 10.5, fontWeight: '900', letterSpacing: 0.8, color: COLORS.primary, marginBottom: 4 },
+  groupRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 3 },
+  groupName: { flex: 1, marginLeft: 8, fontSize: 14, fontWeight: '800', color: COLORS.text },
+  groupQty: { fontSize: 13.5, fontWeight: '800', color: COLORS.textSoft },
   combHead: { fontSize: 11.5, fontWeight: '900', letterSpacing: 0.8, color: COLORS.grey, marginTop: 4, marginBottom: 6 },
   combRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 12, borderWidth: 1.5, borderColor: COLORS.border, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 8 },
   combOn: { borderColor: COLORS.primary, backgroundColor: `${COLORS.primary}0D` },
@@ -805,19 +829,20 @@ const s = StyleSheet.create({
   endLabel: { flex: 1, marginLeft: 8, fontSize: 12.5, fontWeight: '700', color: COLORS.green },
   endValue: { fontSize: 15, fontWeight: '900', color: COLORS.green },
   byLine: { fontSize: 11.5, fontWeight: '600', color: COLORS.grey, marginTop: 8, marginLeft: 2 },
+  hintLine: { fontSize: 11.5, fontWeight: '600', color: COLORS.grey, marginTop: 8 },
   timerTrack: { alignSelf: 'stretch', height: 6, borderRadius: 3, backgroundColor: 'rgba(0,0,0,0.08)', overflow: 'hidden', marginTop: 8, marginBottom: 6 },
   timerFill: { height: 6, borderRadius: 3 },
   timer: { borderRadius: 14, padding: 14, alignItems: 'center', marginTop: 4 },
   timerLabel: { fontSize: 10.5, fontWeight: '900', letterSpacing: 0.8 },
   timerVal: { fontSize: 38, fontWeight: '900', letterSpacing: 1, marginVertical: 2 },
   timerSub: { fontSize: 12, fontWeight: '700', color: COLORS.grey, textAlign: 'center' },
+  viewLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 8 },
+  viewText: { color: COLORS.primary, fontWeight: '800', fontSize: 13 },
   legacy: { color: COLORS.grey, fontSize: 12.5, fontWeight: '600', marginTop: 8 },
   proceedBox: { backgroundColor: `${COLORS.primary}0D`, borderRadius: 12, padding: 12, marginTop: 10 },
   proceedText: { fontWeight: '800', color: COLORS.text },
   stopInfo: { backgroundColor: COLORS.greyBg, borderRadius: 10, padding: 10, marginBottom: 12 },
   stopInfoText: { color: COLORS.textSoft, fontSize: 12.5, fontWeight: '600', lineHeight: 18 },
-  alert: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.warnBg, borderRadius: 12, padding: 12, marginBottom: 6 },
-  alertText: { flex: 1, marginHorizontal: 10, color: COLORS.warn, fontWeight: '800', fontSize: 13 },
   busyNote: { color: COLORS.grey, fontSize: 12, fontWeight: '700', marginBottom: 8 },
   bcard: { backgroundColor: '#fff', borderRadius: 20, borderWidth: 1.5, borderColor: COLORS.border, padding: 16, marginBottom: 4,
     shadowColor: '#0F172A', shadowOpacity: 0.05, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 2 },

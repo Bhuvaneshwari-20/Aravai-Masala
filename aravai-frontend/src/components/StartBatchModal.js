@@ -11,6 +11,7 @@ import FormRow from './FormRow';
 import useOptions from '../hooks/useOptions';
 import useLayout from '../hooks/useLayout';
 import WeightImageVerify from './WeightImageVerify';
+import RoastPlanSection, { cleanPairs, pairError } from './RoastPlanSection';
 import { ErrorBox, InfoBox, ModalFooter } from './FormBits';
 import { COLORS, fmt } from '../theme';
 import { REQUIRE_WEIGHT_PHOTO } from '../config';
@@ -206,18 +207,21 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false); // double-tap guard: a second Save press while the first request runs must not create a second batch (stock would be deducted twice)
   const [err, setErr] = useState('');
+  const [processMode, setProcessMode] = useState('SEQUENTIAL'); // Sequential | Simultaneous
+  const [pairs, setPairs] = useState([]);                       // roasting partner pairs [{ a, b }]
   const [addOpen, setAddOpen] = useState(false); // "Add Material" popup
 
   useEffect(() => {
     if (visible) {
       setAddOpen(false);
       setDate(today()); setProductId(null); setRecipe(null); setRows({}); setPhotos({}); setPanels({}); setErrors({}); setErr(''); setSaving(false); savingRef.current = false;
-      setMachineId(null); setRemoved({});
+      setMachineId(null); setRemoved({}); setProcessMode('SEQUENTIAL'); setPairs([]);
     }
   }, [visible]); // eslint-disable-line
 
   useEffect(() => {
     setRecipe(null); setRows({}); setPhotos({}); setPanels({}); setErrors({}); setRemoved({});
+    setPairs([]); setProcessMode('SEQUENTIAL');
     setLoadingRecipe(false); // a cancelled request never clears the spinner itself
     if (!visible || !productId) return undefined;
     let live = true;
@@ -271,6 +275,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   const removedItems = recipe ? recipe.ingredients.filter((i) => removed[i.material_id]) : [];
   const removeMaterial = (id) => () => {
     setRemoved((p) => ({ ...p, [id]: true }));
+    setPairs((p) => p.map((x) => (x.a === id ? { ...x, a: null } : x.b === id ? { ...x, b: null } : x))); // a removed material leaves its pair
     setRows((p) => { const n = { ...p }; delete n[id]; return n; });
     setPhotos((p) => { const n = { ...p }; delete n[id]; return n; });
     setErrors({});
@@ -292,10 +297,17 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
   const needsFiltering = filterItems.length > 0;
   // Materials whose weighing machine photo weight is not a MATCH yet. A photo is needed for every material when
   // REQUIRE_WEIGHT_PHOTO is on; when it is off a photo is optional, but one that was taken (even a stale / failed / unchecked one) must be a MATCH.
-  const photoPending = active.filter((i) => {
+  // const photoPending = active.filter((i) => {
+  //   const p = photos[i.material_id];
+  //   const ok = !!(p && p.passed && String(p.materialId) === String(i.material_id));
+  //   return !ok && (REQUIRE_WEIGHT_PHOTO || !!(p && (p.imageId || p.stale || p.hasPhoto)));
+  // });
+
+    // Weighing machine photo check is OFF for now (REQUIRE_WEIGHT_PHOTO = false in config.js):
+  // a photo is optional and never blocks Save Batch. Turn it on by setting REQUIRE_WEIGHT_PHOTO = true.
+  const photoPending = !REQUIRE_WEIGHT_PHOTO ? [] : active.filter((i) => {
     const p = photos[i.material_id];
-    const ok = !!(p && p.passed && String(p.materialId) === String(i.material_id));
-    return !ok && (REQUIRE_WEIGHT_PHOTO || !!(p && (p.imageId || p.stale || p.hasPhoto)));
+    return !(p && p.passed && String(p.materialId) === String(i.material_id));
   });
   // Save Batch stays clickable for the other fields so that every empty / wrong one is highlighted when it is pressed,
   // but it is locked until QR and weight verification have passed for the materials above.
@@ -321,6 +333,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
         if (multi && (x.extra || []).some((l) => !(Number(l.bags) >= 1) || !(Number(l.wt) > 0))) { e[`${k}qty`] = 'Fill bags and kg/bag in every bag size line'; e[`${k}lines`] = true; }
       });
       if (!e.total && !(total > 0)) e.total = 'Enter the quantity for every material';
+      if (pairError(pairs)) e.pairs = pairError(pairs);
       // the photo weight must be a MATCH with the weighed qty - checked again by the server
       {
         const missing = photoPending;
@@ -339,7 +352,7 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
     savingRef.current = true; setSaving(true); setErr('');
     try {
       const r = await api.post('/batches', { product_id: productId, recipe_id: recipe.id, production_date: date, weighing_machine_id: machineId,
-        roasting_mode: finalMode,
+        roasting_mode: finalMode, process_mode: needsFiltering ? processMode : 'SEQUENTIAL', roast_pairs: cleanPairs(pairs),
         ingredients: active.map((i) => {
           const x = rows[i.material_id] || {};
           const multi = (x.extra || []).length > 0;
@@ -404,6 +417,8 @@ export default function StartBatchModal({ visible, onDismiss, onSaved }) {
 
             {photoPending.length > 0 && <InfoBox text={`Save Batch unlocks when the weight read from the weighing machine photo is a MATCH with the weighed qty. Pending: ${photoPending.map((i) => i.material_name).join(', ')}`} />}
 
+            <RoastPlanSection active={active} needsFiltering={needsFiltering} mode={processMode} onMode={setProcessMode} pairs={pairs} onPairs={setPairs} error={errors.pairs} />
+ 
             {/* Read-only: Filtering is configured in Recipe Management. Flagged materials go to the Filtering cards; the others go to Roasting. */}
             <View style={[t.fcheck, needsFiltering && t.fcheckOn]}>
               <MCI name={needsFiltering ? 'filter-variant' : 'arrow-right-bold-circle-outline'} size={24} color={needsFiltering ? COLORS.primary : COLORS.grey} />
