@@ -12,6 +12,7 @@ router.use('/reports/monthly.csv', (req, res, next) => {
 router.use(authenticate);
 
 router.get('/lookups', authorize('sales', 'view'), c.lookups);
+router.get('/next-invoice-no', authorize('sales', 'view'), c.nextInvoiceNo);
 router.get('/dashboard', authorize('sales', 'view'), c.dashboard);
 router.get('/reports/monthly', authorize('sales', 'view'), c.monthlyReport);
 router.get('/reports/monthly.csv', authorize('sales', 'view'), c.monthlyCsv);
@@ -31,6 +32,14 @@ router.post('/returns/:id/settle', authorize('sales', 'edit'), c.settleReturn);
 router.get('/returns/:id', authorize('sales', 'view'), c.getReturn);
 
 router.get('/stock-card/:packingRateId', authorize('sales', 'view'), c.stockCard);
+router.get('/stock-summary', authorize('sales', 'view'), c.stockSummary);
+
+// deliveries / dispatch (static paths before /:id)
+router.get('/deliveries/pending-invoices', authorize('sales', 'view'), c.pendingDeliveryInvoices);
+router.get('/deliveries', authorize('sales', 'view'), c.listDeliveries);
+router.post('/deliveries', authorize('sales', 'create'), c.createDelivery);
+router.get('/deliveries/:id', authorize('sales', 'view'), c.getDelivery);
+router.put('/deliveries/:id/status', authorize('sales', 'edit'), c.setDeliveryStatus);
 
 // invoices (service-level shape)
 router.post('/invoices', authorize('sales', 'create'), c.createInvoice);

@@ -12,8 +12,12 @@ const SUPER_ROLE = 'Super Admin';
 
 // Read-only screens that follow an existing permission (no extra permission row needed)
 const FOLLOWS = { tracking: 'batching', material_overview: 'material', ingredient: 'material',
-  // the five Sales pages share ONE permission row: module 'sales' in role_permissions (view / create / edit / delete)
-  sales_dashboard: 'sales', sales_entry: 'sales', sales_history: 'sales', sales_return: 'sales', sales_report: 'sales' };
+  // Mesh Size is managed from inside Grinding, so it follows the Grinding permission row
+  mesh: 'grinding',
+  // Quotation / Purchase Order / GRN follow the Indent ('purchase') permission row
+  quotation: 'purchase', purchase_order: 'purchase', grn: 'purchase',
+  // the Sales pages share ONE permission row: module 'sales' in role_permissions (view / create / edit / delete)
+  sales_dashboard: 'sales', sales_entry: 'sales', sales_delivery: 'sales', sales_history: 'sales', sales_return: 'sales', sales_report: 'sales' };
 
 // Accounts that were made before "User Access & Permission Management": the old three switches decide these actions
 const LEGACY = { start: 'create', stop: 'create', history: 'view', review: 'edit', remark: 'edit' };

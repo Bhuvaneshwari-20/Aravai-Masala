@@ -2,10 +2,19 @@ const sales = require('../services/salesService');
 const returns = require('../services/salesReturnService');
 const reports = require('../services/salesReportService');
 const compat = require('../services/salesCompatService');
+const deliveries = require('../services/salesDeliveryService');
 const wrap = require('../utils/asyncWrap');
 
 // dashboard + reports
 exports.dashboard = wrap(() => reports.dashboard());
+exports.stockSummary = wrap((req) => reports.stockSummary(req.query));
+
+// deliveries / dispatch
+exports.pendingDeliveryInvoices = wrap((req) => deliveries.pendingInvoices(req.query));
+exports.listDeliveries = wrap((req) => deliveries.list(req.query));
+exports.getDelivery = wrap((req) => deliveries.get(req.params.id));
+exports.createDelivery = wrap((req) => deliveries.create(req.body, req.user.id, req.ip), 201);
+exports.setDeliveryStatus = wrap((req) => deliveries.setStatus(req.params.id, req.body, req.user.id, req.ip));
 exports.monthlyReport = wrap((req) => reports.monthlyReport(req.query));
 exports.monthlyCsv = async (req, res, next) => {
   try {
@@ -18,6 +27,7 @@ exports.monthlyCsv = async (req, res, next) => {
 
 // lookups, customers / agencies
 exports.lookups = wrap(() => compat.lookups());
+exports.nextInvoiceNo = wrap(() => sales.peekInvoiceNo());
 exports.listCustomers = wrap((req) => sales.listCustomers(req.query));
 exports.createCustomer = wrap((req) => sales.createCustomer(req.body, req.user.id, req.ip), 201);
 exports.updateCustomer = wrap((req) => sales.updateCustomer(req.params.id, req.body, req.user.id, req.ip));

@@ -35,6 +35,22 @@ const COLS = [
   { k: 'estimated_profit', label: 'Est. profit', w: 118, money: true, profit: true },
 ];
 const TABLE_W = COLS.reduce((a, c) => a + c.w, 0);
+// month-wise table (last 12 months up to the chosen month): stock flow in packs + kg and the money columns. Tap a month to open it.
+const MCOLS = [
+  { k: 'label', label: 'Month', w: 96, left: true },
+  { k: 'opening_stock', label: 'Opening', w: 82 },
+  { k: 'production_received', label: 'Production', w: 92 },
+  { k: 'production_kg', label: 'Prod. kg', w: 86 },
+  { k: 'packs_sold', label: 'Sold', w: 78 },
+  { k: 'sold_kg', label: 'Sold kg', w: 86 },
+  { k: 'packs_returned', label: 'Returned', w: 86 },
+  { k: 'closing_stock', label: 'Closing', w: 82 },
+  { k: 'invoices', label: 'Invoices', w: 82 },
+  { k: 'gross_sales', label: 'Gross sales', w: 118, money: true },
+  { k: 'net_sales', label: 'Net sales', w: 118, money: true },
+  { k: 'estimated_profit', label: 'Est. profit', w: 118, money: true, profit: true },
+];
+const MTABLE_W = MCOLS.reduce((a, c) => a + c.w, 0);
 
 export default function SalesReportScreen() {
   const { toast } = useUi();
@@ -167,6 +183,39 @@ export default function SalesReportScreen() {
                               {c.k === 'name' ? 'TOTAL' : c.money ? money(t[c.k]) : fmt(t[c.k])}
                             </Text>
                           ))}
+                        </View>
+                      )}
+                    </View>
+                  </ScrollView>
+                </Panel>
+                <Panel title="Month-wise sales & stock" icon="calendar-month-outline" style={{ marginTop: 12 }} bodyStyle={{ padding: 0 }}
+                  right={<Text style={s.hint}>Tap a month to open it</Text>}>
+                  <ScrollView horizontal showsHorizontalScrollIndicator>
+                    <View style={{ minWidth: MTABLE_W }}>
+                      <View style={[s.tr, s.thead]}>
+                        {MCOLS.map((c) => <Text key={c.k} style={[s.th, { width: c.w }, c.left ? { textAlign: 'left' } : null]}>{c.label.toUpperCase()}</Text>)}
+                      </View>
+                      {(d.month_wise || []).length === 0 && <Text style={s.empty}>No month data</Text>}
+                      {[...(d.month_wise || [])].reverse().map((r) => (
+                        <Pressable key={r.month} onPress={() => pickMonth(r.month)} style={({ hovered }) => [s.tr, r.month === month && { backgroundColor: COLORS.primarySoft }, hovered && { backgroundColor: COLORS.greyBg }]}>
+                          {MCOLS.map((c) => (
+                            <Text key={c.k} style={[s.td, { width: c.w }, c.left && { textAlign: 'left', fontWeight: '900' }, c.profit && { color: profitColor(r[c.k]), fontWeight: '900' }]} numberOfLines={1}>
+                              {c.left ? r[c.k] : c.money ? money(r[c.k]) : fmt(r[c.k])}
+                            </Text>
+                          ))}
+                        </Pressable>
+                      ))}
+                      {(d.month_wise || []).length > 0 && (
+                        <View style={[s.tr, s.tfoot]}>
+                          {MCOLS.map((c) => {
+                            const mt = d.month_wise_totals || {};
+                            const v = c.k === 'label' ? 'TOTAL' : mt[c.k === 'opening_stock' ? 'opening_stock' : c.k];
+                            return (
+                              <Text key={c.k} style={[s.td, { width: c.w, fontWeight: '900' }, c.left && { textAlign: 'left' }, c.profit && { color: profitColor(v) }]} numberOfLines={1}>
+                                {c.left ? v : c.money ? money(v) : fmt(v)}
+                              </Text>
+                            );
+                          })}
                         </View>
                       )}
                     </View>

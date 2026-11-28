@@ -6,7 +6,7 @@ import ModalShell from './ModalShell';
 import Badge from './Badge';
 import { KV } from './SalesBits';
 import { ErrorBox, Label } from './FormBits';
-import { niceDate, profitColor, statusText, statusTone } from '../screens/sales/salesUtils';
+import { niceDate, payText, profitColor, statusText, statusTone, typeLabel } from '../screens/sales/salesUtils';
 import { COLORS, fmt, money } from '../theme';
 
 // Invoice details: items, totals (gross / returns / net / estimated profit), returns made against it,
@@ -34,7 +34,7 @@ export default function SalesDetailModal({ visible, id, onDismiss }) {
       {!!d && (
         <View>
           <View style={s.metaRow}>
-            <Badge tone="primary" text={d.customer_type === 'AGENCY' ? 'Agency' : 'Customer'} />
+            <Badge tone="primary" text={typeLabel(d.customer_type)} />
             {Number(d.returned_amount) > 0 && <Badge tone="warn" text={`Returned ${money(d.returned_amount)}`} style={{ marginLeft: 8 }} />}
           </View>
           {!!d.notes && <Text style={s.notes}>{d.notes}</Text>}
@@ -58,7 +58,28 @@ export default function SalesDetailModal({ visible, id, onDismiss }) {
             <KV label="Net sales" value={money(d.net_amount)} bold />
             <KV label="Estimated cost" value={d.cost_amount === null || d.cost_amount === undefined ? 'Not available' : money(d.cost_amount)} />
             <KV label="Estimated profit" value={d.profit === null || d.profit === undefined ? '-' : money(d.profit)} color={profitColor(d.profit)} bold />
+            <KV label="Collected at delivery" value={money(d.collected_amount || 0)} color={Number(d.collected_amount) > 0 ? COLORS.ok : undefined} />
+            <KV label="Balance to collect" value={money(d.balance_amount ?? d.net_amount)} color={Number(d.balance_amount ?? d.net_amount) > 0.009 ? COLORS.warn : COLORS.ok} bold />
           </View>
+
+          {(d.deliveries || []).length > 0 && (
+            <View>
+              <Label style={{ marginTop: 16 }}>DELIVERY & PAYMENT</Label>
+              {d.deliveries.map((x) => (
+                <View key={x.id} style={s.ret}>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={s.name}>{x.delivery_no}</Text>
+                    <Text style={s.sub}>{`${niceDate(x.delivery_date)}  •  ${fmt(x.total_qty)} packs  •  ${x.status === 'DELIVERED' ? 'Delivered' : x.status === 'CANCELLED' ? 'Cancelled' : 'In transit'}`}</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    {x.status === 'DELIVERED' && x.payment_mode
+                      ? <><Text style={s.amt}>{x.payment_mode === 'CREDIT' ? 'Credit' : money(x.amount_collected)}</Text><Text style={s.sub}>{payText(x.payment_mode)}</Text></>
+                      : <Text style={s.sub}>{x.status === 'DELIVERED' ? 'Payment not recorded' : 'Payment at delivery'}</Text>}
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
 
           {returns.length > 0 && (
             <View>

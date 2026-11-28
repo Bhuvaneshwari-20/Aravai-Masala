@@ -9,16 +9,26 @@ const stock = require('../utils/salesStock');
 
 const MAX_LINES = 100;
 const PAY_MODES = ['CASH', 'UPI', 'BANK', 'CREDIT'];
+const CUSTOMER_TYPES = ['CUSTOMER', 'AGENCY', 'WHOLESALE', 'DISTRIBUTOR', 'RETAIL'];
 
 /* ---------- dropdown data for the entry forms ---------- */
 async function lookups() {
   const [customers] = await pool.query(
-    `SELECT id, customer_code, customer_name, customer_type, contact_person, mobile, gst_number, address FROM sales_customers WHERE is_active = 1 ORDER BY customer_name`);
+    `SELECT id, customer_code, customer_name, customer_type, contact_person, mobile, gst_number, address, city FROM sales_customers WHERE is_active = 1 ORDER BY customer_name`);
   const [skus] = await pool.query(
     `SELECT r.id AS packing_rate_id, r.product_id, p.product_code, p.product_name, r.sku_code, r.packing_size_label, r.weight_grams, r.mrp,
             COALESCE((SELECT SUM(fg.available_qty) FROM finished_goods_stock fg WHERE fg.packing_rate_id = r.id), 0) AS available_qty
        FROM product_packing_rates r JOIN product_master p ON p.id = r.product_id
       WHERE r.is_active = 1 AND p.is_active = 1 ORDER BY p.product_name, r.weight_grams`);
+  for (const s of skus) {
+    s.cost_per_pack = null;
+    if (Number(s.available_qty) > 0) {
+      const [[fg]] = await pool.query(
+        `SELECT fg.batch_id FROM finished_goods_stock fg JOIN batch_master b ON b.id = fg.batch_id
+          WHERE fg.packing_rate_id = ? AND fg.available_qty > 0 ORDER BY b.production_date, fg.batch_id LIMIT 1`, [s.packing_rate_id]);
+      if (fg) { const c = await stock.unitCost(pool, fg.batch_id, s.packing_rate_id); s.cost_per_pack = stock.r2(c.material + c.packing); }
+    }
+  }
   const products = [];
   const byId = new Map();
   for (const s of skus) {
@@ -31,10 +41,22 @@ async function lookups() {
   return { customers, products, payment_modes: PAY_MODES };
 }
 
+/* ---------- next invoice no (preview only: does not use up the number) ---------- */
+async function peekInvoiceNo() {
+  const [rows] = await pool.query("SELECT * FROM document_sequences WHERE series_code = 'SALES_INVOICE'");
+  if (!rows.length) return { invoice_no: '' };
+  const s = rows[0];
+  const year = new Date().getFullYear();
+  let next = s.last_number + 1;
+  if (s.year_scope !== null && s.year_scope !== year) next = 1;
+  const num = String(next).padStart(s.pad_length, '0');
+  return { invoice_no: s.year_scope !== null ? `${s.prefix}${year}-${num}` : `${s.prefix}${num}` };
+}
+
 /* ---------- customers / agencies ---------- */
 function cleanCustomer(b) {
   const type = v.clean(b.customer_type) || 'CUSTOMER';
-  if (!['CUSTOMER', 'AGENCY'].includes(type)) throw new AppError('Type must be CUSTOMER or AGENCY');
+  if (!CUSTOMER_TYPES.includes(type)) throw new AppError(`Type must be one of ${CUSTOMER_TYPES.join(', ')}`);
   const mobile = v.optStr(b.mobile, 'Mobile', 15);
   if (mobile && !v.MOBILE_RE.test(mobile)) throw new AppError('Mobile must be 10 digits');
   const email = v.optStr(b.email, 'Email', 100);
@@ -44,7 +66,7 @@ function cleanCustomer(b) {
   return {
     customer_name: v.reqStr(b.customer_name, 'Customer / agency name', 150), customer_type: type,
     contact_person: v.optStr(b.contact_person, 'Contact person', 100), mobile, email,
-    gst_number: gst ? gst.toUpperCase() : null, address: v.optStr(b.address, 'Address', 500),
+    gst_number: gst ? gst.toUpperCase() : null, address: v.optStr(b.address, 'Address', 500), city: v.optStr(b.city, 'City', 80),
   };
 }
 
@@ -52,8 +74,8 @@ async function listCustomers(q) {
   const { page, limit, offset } = v.paging(q);
   const w = []; const a = [];
   const s = v.clean(q.search);
-  if (s) { w.push('(c.customer_name LIKE ? OR c.customer_code LIKE ? OR c.mobile LIKE ?)'); a.push(`%${s}%`, `%${s}%`, `%${s}%`); }
-  if (q.type === 'CUSTOMER' || q.type === 'AGENCY') { w.push('c.customer_type = ?'); a.push(q.type); }
+  if (s) { w.push('(c.customer_name LIKE ? OR c.customer_code LIKE ? OR c.mobile LIKE ? OR c.city LIKE ?)'); a.push(`%${s}%`, `%${s}%`, `%${s}%`, `%${s}%`); }
+  if (CUSTOMER_TYPES.includes(q.type)) { w.push('c.customer_type = ?'); a.push(q.type); }
   if (q.active === '0' || q.active === '1') { w.push('c.is_active = ?'); a.push(Number(q.active)); }
   const where = w.length ? `WHERE ${w.join(' AND ')}` : '';
   const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM sales_customers c ${where}`, a);
@@ -69,9 +91,9 @@ async function createCustomer(body, userId, ip) {
   return withTransaction(async (conn) => {
     const code = await nextNumber(conn, 'SALES_CUSTOMER');
     const [r] = await conn.query(
-      `INSERT INTO sales_customers (customer_code, customer_name, customer_type, contact_person, mobile, email, gst_number, address, created_by)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
-      [code, d.customer_name, d.customer_type, d.contact_person, d.mobile, d.email, d.gst_number, d.address, userId]);
+      `INSERT INTO sales_customers (customer_code, customer_name, customer_type, contact_person, mobile, email, gst_number, address, city, created_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [code, d.customer_name, d.customer_type, d.contact_person, d.mobile, d.email, d.gst_number, d.address, d.city, userId]);
     const out = { id: r.insertId, customer_code: code, ...d };
     await audit({ userId, action: 'CREATE', table: 'sales_customers', recordId: r.insertId, newValues: out, ip }, conn);
     return out;
@@ -86,8 +108,8 @@ async function updateCustomer(id, body, userId, ip) {
     const [[old]] = await conn.query('SELECT * FROM sales_customers WHERE id = ? FOR UPDATE', [cid]);
     if (!old) throw new AppError('Customer not found', 404);
     await conn.query(
-      `UPDATE sales_customers SET customer_name=?, customer_type=?, contact_person=?, mobile=?, email=?, gst_number=?, address=?, is_active=? WHERE id=?`,
-      [d.customer_name, d.customer_type, d.contact_person, d.mobile, d.email, d.gst_number, d.address, active === undefined ? old.is_active : (active ? 1 : 0), cid]);
+      `UPDATE sales_customers SET customer_name=?, customer_type=?, contact_person=?, mobile=?, email=?, gst_number=?, address=?, city=?, is_active=? WHERE id=?`,
+      [d.customer_name, d.customer_type, d.contact_person, d.mobile, d.email, d.gst_number, d.address, d.city, active === undefined ? old.is_active : (active ? 1 : 0), cid]);
     await audit({ userId, action: 'UPDATE', table: 'sales_customers', recordId: cid, oldValues: old, newValues: { ...d, is_active: active }, ip }, conn);
     return { id: cid, ...d, is_active: active === undefined ? !!old.is_active : active };
   });
@@ -188,7 +210,11 @@ async function getInvoice(id) {
   const [returns] = await pool.query(
     `SELECT id, return_no, return_date, resolution, settlement_status, total_qty, refund_amount FROM sales_returns WHERE invoice_id = ? ORDER BY id`, [iid]);
   const refunded = items.reduce((a, i) => a + Number(i.refunded_amount), 0);
-  return { ...inv, items, returns, refunded_amount: stock.r2(refunded), net_amount: stock.r2(Number(inv.total_amount) - refunded) };
+  const [[pay]] = await pool.query(
+    "SELECT COALESCE(SUM(amount_collected), 0) AS collected FROM sales_deliveries WHERE invoice_id = ? AND status = 'DELIVERED'", [iid]);
+  const net = stock.r2(Number(inv.total_amount) - refunded);
+  const collected = stock.r2(Number(pay.collected));
+  return { ...inv, items, returns, refunded_amount: stock.r2(refunded), net_amount: net, collected_amount: collected, balance_amount: Math.max(stock.r2(net - collected), 0) };
 }
 
 /* ---------- cancel an invoice (puts every pack back, only when nothing was returned against it) ---------- */
@@ -201,6 +227,7 @@ async function cancelInvoice(id, body, userId, ip) {
     if (inv.status === 'CANCELLED') throw new AppError('This invoice is already cancelled');
     const [items] = await conn.query('SELECT * FROM sales_invoice_items WHERE invoice_id = ?', [iid]);
     if (items.some((i) => i.returned_qty > 0)) throw new AppError('This invoice has sales returns against it, so it cannot be cancelled');
+    if (await require('./salesDeliveryService').hasActiveDelivery(conn, iid)) throw new AppError('This invoice has a delivery against it. Cancel the delivery first, then cancel the invoice');
     const today = v.date(null);
     for (const it of items) {
       await stock.restoreToStock(conn, { invoiceItemId: it.id, qty: it.qty, date: today, source: 'CANCEL', invoiceId: iid, ref: inv.invoice_no, userId, label: `Cancelled ${inv.invoice_no}` });
@@ -251,7 +278,7 @@ async function history(q) {
     const [items] = await pool.query(
       `SELECT i.id, i.invoice_no, i.invoice_date, i.status, i.payment_mode, c.customer_name, c.customer_type, COUNT(*) AS line_count, SUM(ii.qty) AS packs_sold,
               i.total_amount AS gross_sales, SUM(ii.refunded_amount) AS returns_value, i.total_amount - SUM(ii.refunded_amount) AS net_sales
-         ${from} GROUP BY i.id, c.customer_name, c.customer_type ORDER BY i.invoice_date DESC, i.id DESC LIMIT ? OFFSET ?`, [...a, limit, offset]);
+         ${from} GROUP BY i.id, i.invoice_no, i.invoice_date, i.status, i.payment_mode, i.total_amount, c.customer_name, c.customer_type ORDER BY i.invoice_date DESC, i.id DESC LIMIT ? OFFSET ?`, [...a, limit, offset]);
     return { group, items, page, limit, total, total_pages: Math.max(Math.ceil(total / limit), 1), totals: await totals() };
   }
   if (group === 'date') { key = 'i.invoice_date'; cols = 'i.invoice_date AS label, COUNT(DISTINCT i.id) AS invoices'; order = 'i.invoice_date DESC'; }
@@ -297,4 +324,4 @@ async function stockCard(rateIdRaw, q) {
   return { sku, items, page, limit, total, total_pages: Math.max(Math.ceil(total / limit), 1) };
 }
 
-module.exports = { lookups, listCustomers, createCustomer, updateCustomer, createInvoice, getInvoice, cancelInvoice, history, stockCard };
+module.exports = { peekInvoiceNo, lookups, listCustomers, createCustomer, updateCustomer, createInvoice, getInvoice, cancelInvoice, history, stockCard };

@@ -63,7 +63,19 @@ export const profitColor = (v) => (Number(v) > 0 ? COLORS.ok : Number(v) < 0 ? C
 
 // ---- labels ----
 export const skuLabel = (s) => `${s.product_name} · ${s.packing_size_label}`;
-export const CUSTOMER_TYPES = [{ value: 'CUSTOMER', label: 'Customer' }, { value: 'AGENCY', label: 'Agency' }];
+export const CUSTOMER_TYPES = [
+  { value: 'CUSTOMER', label: 'Customer' }, { value: 'WHOLESALE', label: 'Wholesale' }, { value: 'DISTRIBUTOR', label: 'Distributor' },
+  { value: 'RETAIL', label: 'Retail' }, { value: 'AGENCY', label: 'Agency' },
+];
+export const typeLabel = (t) => (CUSTOMER_TYPES.find((x) => x.value === t) || { label: t || 'Customer' }).label;
+// pill colours for the customer type in the Customers table
+export const TYPE_STYLE = {
+  WHOLESALE: { fg: '#5B21B6', bg: '#EDE7FB' }, DISTRIBUTOR: { fg: '#0E6B99', bg: '#E1F1FA' }, RETAIL: { fg: '#2E7D32', bg: '#E8F5E9' },
+  AGENCY: { fg: '#B26A00', bg: '#FFF1CC' }, CUSTOMER: { fg: '#5E5148', bg: '#F1ECE6' },
+};
+// how the money was received (recorded when the goods are delivered)
+export const PAY_MODES = [{ value: 'CASH', label: 'Cash' }, { value: 'UPI', label: 'UPI' }, { value: 'BANK', label: 'Bank transfer' }, { value: 'CREDIT', label: 'Credit (pay later)' }];
+export const payText = (m) => (PAY_MODES.find((x) => x.value === m) || { label: m || '-' }).label;
 export const RETURN_REASONS = ['Damaged / torn pack', 'Leakage', 'Expired / near expiry', 'Quality complaint', 'Wrong item supplied', 'Excess stock returned', 'Other']
   .map((r) => ({ value: r, label: r }));
 export const RETURN_TYPES = [{ value: 'REFUND', label: 'Refund' }, { value: 'REPLACEMENT', label: 'Replacement' }];

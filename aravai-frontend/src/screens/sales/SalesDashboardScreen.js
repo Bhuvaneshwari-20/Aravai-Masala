@@ -141,7 +141,11 @@ export default function SalesDashboardScreen() {
     { icon: 'file-document-outline', ghost: 'file-document-outline', tint: '#2F80ED', bg: '#E1EEFD', label: 'Total Invoices', value: fmt(m.invoices), hint: `${fmt(t.invoices)} today` },
     { icon: 'package-variant-closed', ghost: 'truck-outline', tint: '#E0A100', bg: '#FFF2CC', label: 'Packs Sold', value: fmt(m.packs_sold), hint: `${fmt(t.packs)} today` },
     { icon: 'timer-sand', ghost: 'keyboard-return', tint: '#D93B5A', bg: '#FDE3E8', label: 'Pending Returns', value: fmt(d.pending_returns), hint: `${fmt(m.returned_packs)} packs returned` },
+    { icon: 'warehouse', ghost: 'warehouse', tint: '#0E7490', bg: '#DDF1F6', label: 'Finished Stock (KG)', value: fmt(d.stock_total_kg), hint: `${fmt(d.stock_total_packs)} packs` },
+    { icon: 'truck-delivery-outline', ghost: 'truck-outline', tint: '#6D28D9', bg: '#EBE3FB', label: 'To Dispatch', value: fmt(d.deliveries?.pending_invoices), hint: `${fmt(d.deliveries?.in_transit)} in transit` },
   ] : [];
+  const byProduct = Array.isArray(d?.stock_by_product) ? d.stock_by_product : [];
+  const monthWise = [...(Array.isArray(d?.month_wise) ? d.month_wise : [])].reverse();
 
   const cols = { flexDirection: isWide ? 'row' : 'column', marginHorizontal: isWide ? -6 : 0 };
   const colGap = isWide ? { marginHorizontal: 6 } : null;
@@ -176,7 +180,7 @@ export default function SalesDashboardScreen() {
               {/* KPI row */}
               <View style={s.kpiRow}>
                 {kpis.map((k) => (
-                  <View key={k.label} style={{ width: isWide ? '25%' : '50%', padding: 6 }}><Kpi {...k} /></View>
+                  <View key={k.label} style={{ width: isWide ? '33.333%' : '50%', padding: 6 }}><Kpi {...k} /></View>
                 ))}
               </View>
 
@@ -220,6 +224,7 @@ export default function SalesDashboardScreen() {
                 right={isWide ? (
                   <View style={s.actions}>
                     {can('sales_entry', 'create') && <SoftBtn icon="plus" label="New Invoice" onPress={() => go('SalesEntry')} />}
+                    {can('sales_delivery', 'view') && <SoftBtn icon="truck-delivery-outline" label="Deliveries" onPress={() => go('SalesDelivery')} />}
                     {can('sales_return', 'create') && <SoftBtn icon="keyboard-return" label="Sales Return" onPress={() => go('SalesReturn')} />}
                     <SoftBtn icon="chart-bar" label="Monthly Report" onPress={() => go('SalesReport')} />
                   </View>
@@ -227,6 +232,7 @@ export default function SalesDashboardScreen() {
                 {!isWide && (
                   <View style={[s.actions, { marginLeft: -8, marginBottom: 10 }]}>
                     {can('sales_entry', 'create') && <SoftBtn icon="plus" label="New Invoice" onPress={() => go('SalesEntry')} />}
+                    {can('sales_delivery', 'view') && <SoftBtn icon="truck-delivery-outline" label="Deliveries" onPress={() => go('SalesDelivery')} />}
                     {can('sales_return', 'create') && <SoftBtn icon="keyboard-return" label="Sales Return" onPress={() => go('SalesReturn')} />}
                     <SoftBtn icon="chart-bar" label="Monthly Report" onPress={() => go('SalesReport')} />
                   </View>
@@ -267,19 +273,57 @@ export default function SalesDashboardScreen() {
               </Card>
 
               {/* finished goods stock (tap a SKU for its stock card) */}
-              <Card icon="warehouse" title="Finished goods stock" style={{ marginTop: 12 }} right={<Text style={s.hint}>Tap a SKU for its stock card</Text>}>
-                {stock.length === 0 && <Text style={s.empty}>No finished goods in stock</Text>}
-                {stock.map((r, i, arr) => (
-                  <Pressable key={r.packing_rate_id} onPress={() => setStockSku(r)}
-                    style={({ hovered }) => [s.line, i === arr.length - 1 && { borderBottomWidth: 0 }, hovered && { backgroundColor: COLORS.primarySoft }]}>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={s.lineTitle} numberOfLines={1}>{r.product_name} · {r.packing_size_label}</Text>
-                      <Text style={s.lineSub}>{r.sku_code}</Text>
+              <Card icon="warehouse" title="Finished goods stock (pack-wise)" style={{ marginTop: 12 }}
+                right={<Text style={s.hint}>{`Total ${fmt(d.stock_total_kg)} kg · ${fmt(d.stock_total_packs)} packs`}</Text>}>
+                {byProduct.length === 0 && <Text style={s.empty}>No products with pack sizes yet</Text>}
+                {byProduct.map((p) => (
+                  <View key={p.product_id} style={{ marginBottom: 14 }}>
+                    <View style={s.prodHead}>
+                      <Text style={s.prodName} numberOfLines={1}>{p.product_name}</Text>
+                      <Text style={s.prodTotal}>{`Total ${fmt(p.total_kg)} KG`}</Text>
                     </View>
-                    <Badge tone={Number(r.stock_packs) <= 0 ? 'danger' : Number(r.stock_packs) < Number(r.low_stock_packs || 20) ? 'warn' : 'ok'} text={`${fmt(r.stock_packs)} packs`} />
-                    <MCI name="chevron-right" size={18} color="#9AAAA0" style={{ marginLeft: 6 }} />
-                  </Pressable>
+                    {p.skus.map((r, i, arr) => (
+                      <Pressable key={r.packing_rate_id} onPress={() => setStockSku({ ...r, product_name: p.product_name })}
+                        style={({ hovered }) => [s.line, i === arr.length - 1 && { borderBottomWidth: 0 }, hovered && { backgroundColor: COLORS.primarySoft }]}>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={s.lineTitle} numberOfLines={1}>{r.packing_size_label}</Text>
+                          <Text style={s.lineSub}>{`${r.sku_code} · ${fmt(r.stock_kg)} kg`}</Text>
+                        </View>
+                        <Badge tone={Number(r.stock_packs) <= 0 ? 'danger' : Number(r.stock_packs) < Number(r.low_stock_packs || 20) ? 'warn' : 'ok'} text={`${fmt(r.stock_packs)} packs`} />
+                        <MCI name="chevron-right" size={18} color="#9AAAA0" style={{ marginLeft: 6 }} />
+                      </Pressable>
+                    ))}
+                  </View>
                 ))}
+                <Text style={s.lineSub}>Tap a pack size for its stock card</Text>
+              </Card>
+
+              {/* month-wise (last 6 months) */}
+              <Card icon="calendar-month-outline" title="Month-wise sales" style={{ marginTop: 12 }}
+                right={can('sales_report', 'view') ? <SoftBtn icon="chart-bar" label="Full report" onPress={() => go('SalesReport')} /> : null}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  <View style={{ minWidth: 640, flex: 1 }}>
+                    <View style={s.thead}>
+                      <Text style={[s.th, { flex: 1.2 }]}>Month</Text>
+                      <Text style={[s.th, { flex: 1, textAlign: 'right' }]}>Packs sold</Text>
+                      <Text style={[s.th, { flex: 1, textAlign: 'right' }]}>Sold (KG)</Text>
+                      <Text style={[s.th, { flex: 1.3, textAlign: 'right' }]}>Net sales (₹)</Text>
+                      <Text style={[s.th, { flex: 1.3, textAlign: 'right' }]}>Est. profit (₹)</Text>
+                      <Text style={[s.th, { flex: 1, textAlign: 'right' }]}>Closing packs</Text>
+                    </View>
+                    {monthWise.length === 0 && <Text style={s.empty}>No data</Text>}
+                    {monthWise.map((r, i, arr) => (
+                      <View key={r.month} style={[s.trow, i === arr.length - 1 && { borderBottomWidth: 0 }]}>
+                        <Text style={[s.td, s.bold, { flex: 1.2 }]}>{r.label}</Text>
+                        <Text style={[s.td, { flex: 1, textAlign: 'right' }]}>{fmt(r.packs_sold)}</Text>
+                        <Text style={[s.td, { flex: 1, textAlign: 'right' }]}>{fmt(r.sold_kg)}</Text>
+                        <Text style={[s.td, { flex: 1.3, textAlign: 'right' }]}>{inr(r.net_sales)}</Text>
+                        <Text style={[s.td, { flex: 1.3, textAlign: 'right', color: Number(r.estimated_profit) < 0 ? COLORS.danger : COLORS.ok, fontWeight: '800' }]}>{inr(r.estimated_profit)}</Text>
+                        <Text style={[s.td, { flex: 1, textAlign: 'right' }]}>{fmt(r.closing_stock)}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </ScrollView>
               </Card>
 
               <Text style={s.note}>
@@ -318,6 +362,9 @@ const s = StyleSheet.create({
   cardHead: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
   cardTitle: { fontSize: 16, fontWeight: '900', color: COLORS.text, marginLeft: 9, flexShrink: 1 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' },
+  prodHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: COLORS.primarySoft, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 2 },
+  prodName: { fontSize: 15, fontWeight: '900', color: COLORS.text, flexShrink: 1 },
+  prodTotal: { fontSize: 13.5, fontWeight: '900', color: COLORS.primary, marginLeft: 10 },
 
   donutRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'center', paddingVertical: 10 },
   donutCenter: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },

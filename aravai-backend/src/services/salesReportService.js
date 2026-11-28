@@ -52,7 +52,7 @@ async function monthly(q = {}) {
   const COST = '(l.unit_material_cost + l.unit_packing_cost)';
 
   const [production] = await pool.query(
-    `SELECT DATE_FORMAT(pd.packing_date, '%Y-%m') AS m, SUM(pd.accepted_bag_count) AS packs,
+    `SELECT DATE_FORMAT(pd.packing_date, '%Y-%m') AS m, SUM(pd.accepted_bag_count) AS packs, SUM(pd.accepted_weight) AS kg,
             SUM(pd.total_bag_material_cost + pd.production_cost) AS packing_cost, SUM(pd.accepted_weight * COALESCE(br.raw_per_kg, 0)) AS material_cost
        FROM packing_details pd LEFT JOIN ${RAW_PER_KG} br ON br.batch_id = pd.batch_id
       WHERE pd.status <> 'CANCELLED' AND pd.packing_date <= ? ${fp.sql} GROUP BY m`, [end, ...fp.args]);
@@ -60,8 +60,9 @@ async function monthly(q = {}) {
     `SELECT DATE_FORMAT(l.txn_date, '%Y-%m') AS m,
             SUM(IF(l.source_type = 'SALE', l.qty, 0)) AS sold, SUM(IF(l.source_type = 'RETURN', l.qty, 0)) AS restocked,
             SUM(IF(l.source_type = 'REPLACEMENT', l.qty, 0)) AS replaced,
+            SUM(IF(l.source_type = 'SALE', l.qty * pr.weight_grams, 0)) / 1000 AS sold_kg,
             SUM(IF(l.direction = 'OUT', 1, -1) * CAST(l.qty AS SIGNED) * ${COST}) AS net_cost
-       FROM sales_stock_ledger l JOIN sales_invoices i ON i.id = l.invoice_id
+       FROM sales_stock_ledger l JOIN sales_invoices i ON i.id = l.invoice_id JOIN product_packing_rates pr ON pr.id = l.packing_rate_id
       WHERE l.source_type <> 'CANCEL' AND i.status = 'ACTIVE' AND l.txn_date <= ? ${fl.sql} GROUP BY m`, [end, ...fl.args]);
   const [sales] = await pool.query(
     `SELECT DATE_FORMAT(i.invoice_date, '%Y-%m') AS m, SUM(ii.amount) AS gross, COUNT(DISTINCT i.id) AS invoices
@@ -92,7 +93,7 @@ async function monthly(q = {}) {
     const gross = r2(n(s.gross)); const returnsValue = r2(n(r.refund_value)); const netSales = r2(gross - returnsValue);
     const cogs = r2(n(m.net_cost)); const profit = r2(netSales - cogs);
     rows.push({
-      month: key, label: label(key), opening_stock: opening, production_received, packs_sold: sold, packs_returned: n(r.returned),
+      month: key, label: label(key), opening_stock: opening, production_received, production_kg: r2(n(p.kg)), sold_kg: r2(n(m.sold_kg)), packs_sold: sold, packs_returned: n(r.returned),
       packs_restocked: restocked, packs_damaged: n(r.damaged), replacement_packs: replaced, adjustments, closing_stock: closing,
       invoices: n(s.invoices), gross_sales: gross, returns_value: returnsValue, refund_pending: r2(n(r.refund_pending)), net_sales: netSales,
       production_cost: r2(n(p.packing_cost) + n(p.material_cost)), packing_cost: r2(n(p.packing_cost)), material_cost: r2(n(p.material_cost)),
@@ -103,7 +104,7 @@ async function monthly(q = {}) {
   const sum = (k) => r2(rows.reduce((a, x) => a + x[k], 0));
   const totals = {
     opening_stock: rows[0].opening_stock, closing_stock: rows[rows.length - 1].closing_stock,
-    ...Object.fromEntries(['production_received', 'packs_sold', 'packs_returned', 'packs_restocked', 'packs_damaged', 'replacement_packs', 'adjustments', 'invoices',
+    ...Object.fromEntries(['production_received', 'production_kg', 'sold_kg', 'packs_sold', 'packs_returned', 'packs_restocked', 'packs_damaged', 'replacement_packs', 'adjustments', 'invoices',
       'gross_sales', 'returns_value', 'refund_pending', 'net_sales', 'production_cost', 'packing_cost', 'material_cost', 'cost_of_goods_sold', 'estimated_profit'].map((k) => [k, sum(k)])),
   };
   totals.profit_margin_pct = totals.net_sales > 0 ? r2((totals.estimated_profit / totals.net_sales) * 100) : 0;
@@ -152,6 +153,31 @@ async function bySku(fromDate, toDate, q) {
   }).sort((a, b) => b.net_sales - a.net_sales);
 }
 
+/* ---------- Finished goods stock, product by product: every pack size with packs and KG (e.g. Chicken Masala 50g / 100g / 500g / 1kg) ---------- */
+async function stockSummary(q = {}) {
+  const w = []; const a = [];
+  if (q.product_id) { w.push('p.id = ?'); a.push(v.toId(q.product_id, 'product')); }
+  const [rows] = await pool.query(
+    `SELECT p.id AS product_id, p.product_name, r.id AS packing_rate_id, r.sku_code, r.packing_size_label, r.weight_grams,
+            COALESCE(SUM(fg.available_qty), 0) AS stock_packs
+       FROM product_packing_rates r JOIN product_master p ON p.id = r.product_id LEFT JOIN finished_goods_stock fg ON fg.packing_rate_id = r.id
+      WHERE r.is_active = 1 AND p.is_active = 1 ${w.length ? `AND ${w.join(' AND ')}` : ''}
+      GROUP BY p.id, p.product_name, r.id, r.sku_code, r.packing_size_label, r.weight_grams ORDER BY p.product_name, r.weight_grams`, a);
+  const products = []; const byId = new Map();
+  for (const x of rows) {
+    if (!byId.has(x.product_id)) { const p = { product_id: x.product_id, product_name: x.product_name, total_packs: 0, total_kg: 0, skus: [] }; byId.set(x.product_id, p); products.push(p); }
+    const p = byId.get(x.product_id);
+    const packs = n(x.stock_packs); const kg = Math.round((packs * n(x.weight_grams))) / 1000;
+    p.skus.push({ packing_rate_id: x.packing_rate_id, sku_code: x.sku_code, packing_size_label: x.packing_size_label, weight_grams: n(x.weight_grams), stock_packs: packs, stock_kg: kg });
+    p.total_packs += packs; p.total_kg = Math.round((p.total_kg + kg) * 1000) / 1000;
+  }
+  return {
+    products,
+    total_packs: products.reduce((s, p) => s + p.total_packs, 0),
+    total_kg: Math.round(products.reduce((s, p) => s + p.total_kg, 0) * 1000) / 1000,
+  };
+}
+
 /* ---------- Sales Dashboard ---------- */
 // Response shape matches SalesDashboardScreen (frontend):
 //   month_key, today{sales,invoices,packs}, month{gross_sales,packs_sold,returns_amount,returned_packs,net_sales,estimated_profit,profit_margin_pct},
@@ -180,6 +206,8 @@ async function dashboard() {
        FROM sales_invoices i JOIN sales_customers c ON c.id = i.customer_id
       WHERE i.status = 'ACTIVE' ORDER BY i.id DESC LIMIT 5`);
   const [[pend]] = await pool.query("SELECT COUNT(*) AS c FROM sales_returns WHERE settlement_status = 'PENDING'");
+  const deliveries = await require('./salesDeliveryService').list({ limit: 1 });
+  const fgSummary = await stockSummary({});
 
   // last 14 days (oldest -> newest), zero-filled
   const days = Array.from({ length: 14 }, (_, k) => {
@@ -200,9 +228,9 @@ async function dashboard() {
     .map((x) => ({ ...x, packs: x.packs_sold, amount: x.net_sales }));
 
   const [stock] = await pool.query(
-    `SELECT r.id AS packing_rate_id, r.sku_code, r.packing_size_label, p.product_name, COALESCE(SUM(fg.available_qty), 0) AS stock_packs
+    `SELECT r.id AS packing_rate_id, r.sku_code, r.packing_size_label, r.weight_grams, p.product_name, COALESCE(SUM(fg.available_qty), 0) AS stock_packs
        FROM finished_goods_stock fg JOIN product_packing_rates r ON r.id = fg.packing_rate_id JOIN product_master p ON p.id = r.product_id
-      GROUP BY r.id, r.sku_code, r.packing_size_label, p.product_name
+      GROUP BY r.id, r.sku_code, r.packing_size_label, r.weight_grams, p.product_name
      HAVING stock_packs > 0 ORDER BY p.product_name, r.id`);
 
   return {
@@ -214,8 +242,11 @@ async function dashboard() {
     },
     trend, top_skus: topSkus, top_customers: topCustomers,
     recent: recentRows.map((x) => ({ ...x, sale_date: x.invoice_date, total_packs: x.total_qty, net_amount: r2(n(x.net_amount)) })),
-    stock: stock.map((x) => ({ ...x, stock_packs: n(x.stock_packs) })),
+    stock: stock.map((x) => ({ ...x, stock_packs: n(x.stock_packs), stock_kg: Math.round(n(x.stock_packs) * n(x.weight_grams)) / 1000 })),
+    stock_by_product: fgSummary.products, stock_total_kg: fgSummary.total_kg, stock_total_packs: fgSummary.total_packs,
     pending_returns: n(pend.c),
+    deliveries: deliveries.summary,
+    month_wise: rep.rows,
   };
 }
 
@@ -298,6 +329,7 @@ async function monthlyReport(q = {}) {
   return {
     month, products, rows, daily,
     months: rep.rows.map((x) => ({ month: x.month, net: x.net_sales, profit: x.estimated_profit })),
+    month_wise: rep.rows, month_wise_totals: rep.totals,
     totals: {
       opening_packs: cur.opening_stock, produced_packs: cur.production_received, sold_packs: cur.packs_sold, returned_packs: cur.packs_restocked,
       closing_packs: cur.closing_stock, gross_sales: cur.gross_sales, returns_amount: cur.returns_value, net_sales: cur.net_sales,
@@ -316,4 +348,4 @@ async function monthlyCsv(q = {}) {
   return { name: `sales-report-${d.month}.csv`, csv: `${lines.join('\r\n')}\r\n` };
 }
 
-module.exports = { monthly, dashboard, monthlyReport, monthlyCsv };
+module.exports = { monthly, dashboard, monthlyReport, monthlyCsv, stockSummary };

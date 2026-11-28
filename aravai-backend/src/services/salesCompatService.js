@@ -7,6 +7,7 @@ const AppError = require('../utils/AppError');
 const sales = require('./salesService');
 const returns = require('./salesReturnService');
 const { r2 } = require('../utils/salesStock');
+const deliveries = require('./salesDeliveryService');
 
 const n = (x) => Number(x) || 0;
 const toServiceCondition = (c) => { const u = String(c || 'RESALABLE').toUpperCase(); return u === 'RESALABLE' ? 'RESALEABLE' : u; };
@@ -16,7 +17,7 @@ const toAppCondition = (c) => (c === 'RESALEABLE' ? 'RESALABLE' : c);
 async function lookups() {
   const base = await sales.lookups();
   const skus = base.products.flatMap((p) => p.skus.map((s) => ({ ...s, stock_packs: n(s.available_qty) })));
-  const customers = base.customers.map((c) => ({ ...c, name: c.customer_name, city: null }));
+  const customers = base.customers.map((c) => ({ ...c, name: c.customer_name }));
   return { ...base, customers, skus, ...returns.lookups() };
 }
 
@@ -41,11 +42,14 @@ async function listSales(q) {
     rows.forEach((x) => summary.set(x.invoice_id, x.s));
   }
   const t = h.totals || {};
+  const dStatus = await deliveries.statusForInvoices(ids);
   return {
     ...h,
     items: h.items.map((x) => ({
       ...x, sale_date: x.invoice_date, item_count: n(x.line_count), total_packs: n(x.packs_sold), total_amount: n(x.gross_sales),
       returned_amount: n(x.returns_value), net_amount: n(x.net_sales), items_summary: summary.get(x.id) || '',
+      delivery_status: x.status === 'CANCELLED' ? null : (dStatus.get(x.id) || {}).status || 'PENDING',
+      delivered_packs: (dStatus.get(x.id) || {}).received || 0, dispatched_packs: (dStatus.get(x.id) || {}).sent || 0,
     })),
     summary: { invoices: n(t.invoices), packs: n(t.packs_sold), gross: n(t.gross_sales), returns: n(t.returns_value), net: n(t.net_sales) },
   };
@@ -95,6 +99,8 @@ async function getSale(id) {
     items: inv.items.map((it) => ({ ...it, quantity: it.qty })),
     gross_amount: n(inv.total_amount), returned_amount: n(inv.refunded_amount), net_amount: n(inv.net_amount),
     cost_amount: cost, profit: cost === null ? null : r2(n(inv.net_amount) - cost),
+    deliveries: await deliveries.forInvoice(inv.id),
+    delivery_status: inv.status === 'CANCELLED' ? null : ((await deliveries.statusForInvoices([inv.id])).get(inv.id) || {}).status || 'PENDING',
     returns: inv.returns.map((r) => ({ ...r, total_packs: n(r.total_qty), status: r.settlement_status, return_type: r.resolution })),
     stock_moves: moves,
   };
