@@ -9,3 +9,6 @@ exports.reject = wrap((req) => svc.decide(req.params.id, 'REJECTED', req.body, r
 exports.cancel = wrap((req) => svc.cancel(req.params.id, req.user, req.ip));
 exports.update = wrap((req) => svc.update(req.params.id, req.body, req.user, req.ip));
 exports.remove = wrap((req) => svc.remove(req.params.id, req.user, req.ip));
+exports.requestReedit = wrap((req) => svc.requestReedit(req.params.id, req.body, req.user, req.ip));
+exports.allowReedit = wrap((req) => svc.allowReedit(req.params.id, req.user, req.ip));
+exports.nextNo = wrap(() => svc.nextNo());
