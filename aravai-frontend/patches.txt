@@ -1,0 +1,412 @@
+Edits for the existing files. Format: "@@@ <backend|frontend> <path>", then "--- find" / "--- replace" / "--- end".
+Every "find" text must occur EXACTLY ONCE in its file, otherwise apply.js changes nothing.
+
+@@@ backend server.js
+--- find
+await require('./utils/ensureBatchRoastingMode')(pool);
+--- replace
+await require('./utils/ensureRoastPartner')(pool); // adds batching_details.roast_partner_of (saved roasting pairs); lets batch_master.process_mode accept SIMULTANEOUS
+  await require('./utils/ensureBatchRoastingMode')(pool);
+--- end
+
+@@@ backend routes/roasting.js
+--- find
+router.post('/stop', authorize('roasting', 'create'), c.stop);
+--- replace
+router.post('/stop', authorize('roasting', 'create'), c.stop);
+router.post('/start-group', authorize('roasting', 'create'), c.startGroup);   // saved pair (or old combined roast) on one machine
+router.post('/stop-group', authorize('roasting', 'create'), c.stopGroup);
+--- end
+
+@@@ backend controllers/roastingController.js
+--- find
+exports.stop = wrap((req) => ps.stop(T, req.body, req.user, req.ip));
+--- replace
+exports.stop = wrap((req) => ps.stop(T, req.body, req.user, req.ip));
+exports.startGroup = wrap((req) => ps.startGroup(req.body, req.user, req.ip), 201);
+exports.stopGroup = wrap((req) => ps.stopGroup(req.body, req.user, req.ip));
+--- end
+
+@@@ backend services/batchService.js
+--- find
+const ms = require('../utils/materialStages');
+--- replace
+const rp = require('../utils/roastPairs');           // saved roasting pairs (validation)
+const ms = require('../utils/materialStages');
+--- end
+
+@@@ backend services/batchService.js
+--- find
+bd.checked_by, cu.full_name AS checked_by_name, bd.stock_txn_id
+--- replace
+bd.checked_by, cu.full_name AS checked_by_name, bd.stock_txn_id, bd.roast_partner_of
+--- end
+
+@@@ backend services/batchService.js
+--- find
+const done = ingredients.filter((i) => i.is_done);
+--- replace
+const nameOf = new Map(ingredients.map((i) => [i.material_id, i.material_name]));
+  ingredients.forEach((i) => { const p = Number(i.roast_partner_of); i.roast_partner_id = p > 0 ? p : null; i.roast_partner_name = p > 0 ? (nameOf.get(p) || null) : null; });
+  const done = ingredients.filter((i) => i.is_done);
+--- end
+
+@@@ backend services/batchService.js
+--- find
+const processMode = 'SEQUENTIAL';
+--- replace
+const modeIn = body.process_mode === undefined || body.process_mode === null || body.process_mode === '' ? null : String(body.process_mode).toUpperCase();
+  if (modeIn && !['SEQUENTIAL', 'SIMULTANEOUS'].includes(modeIn)) throw new AppError('Process mode must be Sequential or Simultaneous');
+  // Simultaneous only means something when a material is filtered; without Filtering the batch is simply Sequential
+  const processMode = needsFiltering && modeIn === 'SIMULTANEOUS' ? 'SIMULTANEOUS' : 'SEQUENTIAL';
+  // New clients send process_mode / roast_pairs (a Roasting-with-Partner material that is not paired roasts alone). Old clients send neither: nothing is saved, old behaviour.
+  const pairsSent = modeIn !== null || body.roast_pairs !== undefined;
+--- end
+
+@@@ backend services/batchService.js
+--- find
+// (No cross-batch machine lock any more: the same weighing machine can be chosen for any number of batches.)
+--- replace
+// Roasting partners: validated here, INSIDE the transaction, against the recipe this batch is made with.
+    let partnerCol = new Map();
+    if (pairsSent) {
+      let rr = [];
+      try { [rr] = await conn.query('SELECT d.material_id, d.roast_type, d.process_type, m.material_name FROM recipe_details d JOIN materials m ON m.id = d.material_id WHERE d.recipe_id = ?', [recipeId]); }
+      catch (e) { if (e.code !== 'ER_BAD_FIELD_ERROR') throw e; } // roast_type column not created yet: no pairs are possible
+      const recipeInfo = new Map(rr.map((x) => [x.material_id, { name: x.material_name, roast_type: x.roast_type, process_type: x.process_type }]));
+      partnerCol = rp.partnerColumn(items, recipeInfo, rp.normalizePairs(body.roast_pairs, items, recipeInfo));
+    }
+
+    // (No cross-batch machine lock any more: the same weighing machine can be chosen for any number of batches.)
+--- end
+
+@@@ backend services/batchService.js
+--- find
+if (i.lines) {
+--- replace
+if (pairsSent && partnerCol.get(i.material_id) !== null) await conn.query('UPDATE batching_details SET roast_partner_of = ? WHERE id = ?', [partnerCol.get(i.material_id), bd.insertId]);
+      if (i.lines) {
+--- end
+
+@@@ backend services/batchService.js
+--- find
+process_mode: processMode, needs_filtering: needsFiltering,
+--- replace
+process_mode: processMode, roast_partner_of: Object.fromEntries(partnerCol), needs_filtering: needsFiltering,
+--- end
+
+@@@ backend services/batchService.js
+--- find
+await conn.query('DELETE FROM batching_details WHERE id = ?', [bd.id]);
+--- replace
+await conn.query('DELETE FROM batching_details WHERE id = ?', [bd.id]);
+    await conn.query('UPDATE batching_details SET roast_partner_of = 0 WHERE batch_id = ? AND roast_partner_of = ?', [batchId, materialId]); // its partner (if any) now roasts alone
+--- end
+
+@@@ backend services/processService.js
+--- find
+const { resolveDuration } = require('../utils/durationHelper');
+--- replace
+const { resolveDuration } = require('../utils/durationHelper');
+const rp = require('../utils/roastPairs');   // saved roasting pairs + Sequential / Simultaneous eligibility
+--- end
+
+@@@ backend services/processService.js
+--- find
+const [sess] = await db.query(
+--- replace
+// Saved roasting partners (batching_details.roast_partner_of): NULL = old batch -> old rules, 0 = partner material left unpaired, >0 = partner
+  try {
+    const [pr] = await db.query('SELECT batch_id, material_id, roast_partner_of FROM batching_details WHERE batch_id IN (?) AND roast_partner_of IS NOT NULL', [batchIds]);
+    pr.forEach((x) => { const m = byKey.get(`${x.batch_id}:${x.material_id}`); if (m) m.partner_ref = Number(x.roast_partner_of); });
+    out.forEach((bb) => rp.linkPairs(bb.materials));
+  } catch (e) { if (e.code !== 'ER_BAD_FIELD_ERROR') throw e; } // column not created yet
+  const [sess] = await db.query(
+--- end
+
+@@@ backend services/processService.js
+--- find
+const partnerRequired = (b, m) => m.roast_type === 'ROAST_PARTNER' && partnersLeft(b, m).length > 0;
+--- replace
+// (old batches only: when the partner was saved with the batch, the server decides and the worker chooses nothing)
+const partnerRequired = (b, m) => m.roast_type === 'ROAST_PARTNER' && !rp.isManaged(m) && partnersLeft(b, m).length > 0;
+--- end
+
+@@@ backend services/processService.js
+--- find
+if (type === 'GRINDING' && upstreamPending) {
+--- replace
+if (type === 'ROASTING') {   // pair-aware: a saved pair is ready only when BOTH materials are ready (same result as above for a material without a pair)
+    const g = rp.roastGroupReady(b, m);
+    status = g.ok ? 'PENDING' : 'WAITING'; reason = g.ok ? '' : g.reason;
+  }
+  if (type === 'GRINDING' && upstreamPending) {
+--- end
+
+@@@ backend services/processService.js
+--- find
+partner_required: type === 'ROASTING' && partnerRequired(b, m),
+--- replace
+partner_required: type === 'ROASTING' && partnerRequired(b, m),
+    pair_managed: type === 'ROASTING' && rp.isManaged(m), pair_material_id: type === 'ROASTING' ? (m.pair_id || null) : null,
+--- end
+
+@@@ backend services/processService.js
+--- find
+items.sort((a, c) => (ORDER[a.status] - ORDER[c.status])
+--- replace
+items.splice(0, items.length, ...rp.mergePairCards(items)); // a saved pair is ONE Roasting card
+  items.sort((a, c) => (ORDER[a.status] - ORDER[c.status])
+--- end
+
+@@@ backend services/processService.js
+--- find
+if (type === 'ROASTING' && partnerRequired(b, m)) throw new AppError(
+--- replace
+if (type === 'ROASTING' && m.pair_id) { const mate = rp.mateOf(b, m); throw new AppError(`${m.material_name} is paired with ${mate ? mate.material_name : 'its partner'}. They are roasted together on one machine`, 409); }
+    if (type === 'ROASTING' && partnerRequired(b, m)) throw new AppError(
+--- end
+
+@@@ backend services/processService.js
+--- find
+if (!Array.isArray(body.material_ids)) throw new AppError('Select the materials to roast together');
+--- replace
+const derive = !Array.isArray(body.material_ids);   // cards of a saved pair send only material_id: the server reads the saved partner itself
+  if (derive && !body.material_id) throw new AppError('Select the materials to roast together');
+--- end
+
+@@@ backend services/processService.js
+--- find
+const ids = [...new Set(body.material_ids.map((x) => v.toId(x, 'material')))];
+--- replace
+const ids = derive ? [v.toId(body.material_id, 'material')] : [...new Set(body.material_ids.map((x) => v.toId(x, 'material')))];
+--- end
+
+@@@ backend services/processService.js
+--- find
+if (ids.length < 2) throw new AppError('Select at least two materials to combine. To roast one material, choose Roast Individually');
+--- replace
+// ("at least two" is checked below, once it is known whether the batch has a saved pair)
+--- end
+
+@@@ backend services/processService.js
+--- find
+const time = reqTime(body.start_time, 'Start time');
+--- replace
+const time = body.start_time ? reqTime(body.start_time, 'Start time') : null;   // no time sent = the database clock, as for a single material
+--- end
+
+@@@ backend services/processService.js
+--- find
+const picked = ids.map((id) => {
+--- replace
+const grp = rp.resolveStartGroup(b, ids, derive);   // batch with saved pairs: exactly the saved pair, a different partner is rejected
+    if (!grp.managed && ids.length < 2) throw new AppError('Select at least two materials to combine. To roast one material, choose Roast Individually');
+    const picked = grp.mats.map((m) => {
+--- end
+
+@@@ backend services/processService.js
+--- find
+const m = b.materials.find((x) => x.material_id === id);
+--- replace
+// (m comes from the resolved group)
+--- end
+
+@@@ backend services/processService.js
+--- find
+const startStr = time === d.hm ?
+--- replace
+const startStr = !time || time === d.hm ?
+--- end
+
+@@@ frontend batchMaterialStatus.js
+--- find
+export const ROAST_MODE_TEXT = {
+--- replace
+export const PROCESS_MODE_TEXT = {
+  SEQUENTIAL: 'Sequential: Roasting starts only after all Filtering of the batch is completed.',
+  SIMULTANEOUS: 'Simultaneous: each roasting pair starts as soon as its own Filtering is completed.',
+};
+
+export const ROAST_MODE_TEXT = {
+--- end
+
+@@@ frontend components/StartBatchModal.js
+--- find
+import WeightImageVerify from './WeightImageVerify';
+--- replace
+import WeightImageVerify from './WeightImageVerify';
+import RoastPlanSection, { cleanPairs, pairError } from './RoastPlanSection';
+--- end
+
+@@@ frontend components/StartBatchModal.js
+--- find
+const [addOpen, setAddOpen] = useState(false);
+--- replace
+const [processMode, setProcessMode] = useState('SEQUENTIAL'); // Sequential | Simultaneous
+  const [pairs, setPairs] = useState([]);                       // roasting partner pairs [{ a, b }]
+  const [addOpen, setAddOpen] = useState(false);
+--- end
+
+@@@ frontend components/StartBatchModal.js
+--- find
+setMachineId(null); setRemoved({});
+--- replace
+setMachineId(null); setRemoved({}); setProcessMode('SEQUENTIAL'); setPairs([]);
+--- end
+
+@@@ frontend components/StartBatchModal.js
+--- find
+setLoadingRecipe(false); // a cancelled
+--- replace
+setPairs([]); setProcessMode('SEQUENTIAL');
+    setLoadingRecipe(false); // a cancelled
+--- end
+
+@@@ frontend components/StartBatchModal.js
+--- find
+setRemoved((p) => ({ ...p, [id]: true }));
+--- replace
+setRemoved((p) => ({ ...p, [id]: true }));
+    setPairs((p) => p.map((x) => (x.a === id ? { ...x, a: null } : x.b === id ? { ...x, b: null } : x))); // a removed material leaves its pair
+--- end
+
+@@@ frontend components/StartBatchModal.js
+--- find
+if (!e.total && !(total > 0)) e.total = 'Enter the quantity for every material';
+--- replace
+if (!e.total && !(total > 0)) e.total = 'Enter the quantity for every material';
+      if (pairError(pairs)) e.pairs = pairError(pairs);
+--- end
+
+@@@ frontend components/StartBatchModal.js
+--- find
+roasting_mode: finalMode,
+--- replace
+roasting_mode: finalMode, process_mode: needsFiltering ? processMode : 'SEQUENTIAL', roast_pairs: cleanPairs(pairs),
+--- end
+
+@@@ frontend components/StartBatchModal.js
+--- find
+{/* Read-only: Filtering is configured in Recipe Management.
+--- replace
+<RoastPlanSection active={active} needsFiltering={needsFiltering} mode={processMode} onMode={setProcessMode} pairs={pairs} onPairs={setPairs} error={errors.pairs} />
+
+            {/* Read-only: Filtering is configured in Recipe Management.
+--- end
+
+@@@ frontend components/ProcessBoard.js
+--- find
+const askChoice = pending && isRoast && (!choice || choice === 'WAIT');
+--- replace
+const managed = isRoast && !!card.pair_managed;   // partner saved with the batch: a pair starts together, an unpaired material roasts alone, the worker chooses nothing
+  const askChoice = pending && isRoast && !managed && (!choice || choice === 'WAIT');
+--- end
+
+@@@ frontend components/ProcessBoard.js
+--- find
+const showForm = pending && (!isRoast || choice === 'INDIVIDUAL');
+--- replace
+const showForm = pending && (!isRoast || managed || choice === 'INDIVIDUAL');
+--- end
+
+@@@ frontend components/ProcessBoard.js
+--- find
+{gnames.length > 0 && <View style={s.groupLine}>
+--- replace
+{card.is_group && (
+        <View style={s.groupBox}>
+          <Text style={s.groupHead}>ROASTING PAIR - ONE MACHINE</Text>
+          {card.members.map((m) => (
+            <View key={m.material_id} style={s.groupRow}>
+              <MCI name="link-variant" size={16} color={COLORS.primary} />
+              <Text style={s.groupName} numberOfLines={1}>{m.material_name}</Text>
+              <Text style={s.groupQty}>{m.quantity == null ? '–' : `${fmt(m.quantity)} kg`}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {gnames.length > 0 && <View style={s.groupLine}>
+--- end
+
+@@@ frontend components/ProcessBoard.js
+--- find
+<Stat label="I/P → O/P" value={`${fmt(card.quantity)} → ${fmt(ses.output_weight)} kg`} />
+--- replace
+{card.is_group
+              ? card.members.map((m) => <Stat key={m.material_id} label={`${m.material_name} I/P → O/P`} value={`${fmt(m.quantity)} → ${fmt(m.session && m.session.output_weight)} kg`} wide />)
+              : <Stat label="I/P → O/P" value={`${fmt(card.quantity)} → ${fmt(ses.output_weight)} kg`} />}
+--- end
+
+@@@ frontend components/ProcessBoard.js
+--- find
+<LossRow ip={card.quantity} op={ses.output_weight} />
+--- replace
+{!card.is_group && <LossRow ip={card.quantity} op={ses.output_weight} />}
+--- end
+
+@@@ frontend components/ProcessBoard.js
+--- find
+await api.post(`/${path}/start`, {
+--- replace
+await api.post(c.is_group ? '/roasting/start-group' : `/${path}/start`, {
+--- end
+
+@@@ frontend components/ProcessBoard.js
+--- find
+members={stopCard && stopCard.session && stopCard.session.group_id && data ? data.items.filter((i) => i.status === 'RUNNING' && i.session && i.session.group_id === stopCard.session.group_id) : []}
+--- replace
+members={stopCard && stopCard.is_group ? stopCard.members : (stopCard && stopCard.session && stopCard.session.group_id && data ? data.items.filter((i) => i.status === 'RUNNING' && i.session && i.session.group_id === stopCard.session.group_id) : [])}
+--- end
+
+@@@ frontend components/ProcessBoard.js
+--- find
+groupText: { marginLeft: 6, fontSize: 12.5, fontWeight: '800', color: COLORS.primary, flex: 1 },
+--- replace
+groupText: { marginLeft: 6, fontSize: 12.5, fontWeight: '800', color: COLORS.primary, flex: 1 },
+  groupBox: { backgroundColor: `${COLORS.primary}0D`, borderRadius: 12, padding: 10, marginTop: 8 },
+  groupHead: { fontSize: 10.5, fontWeight: '900', letterSpacing: 0.8, color: COLORS.primary, marginBottom: 4 },
+  groupRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 3 },
+  groupName: { flex: 1, marginLeft: 8, fontSize: 14, fontWeight: '800', color: COLORS.text },
+  groupQty: { fontSize: 13.5, fontWeight: '800', color: COLORS.textSoft },
+--- end
+
+@@@ frontend screens/batch/BatchDetailScreen.js
+--- find
+stageSummary, ROAST_MODE_TEXT }
+--- replace
+stageSummary, ROAST_MODE_TEXT, PROCESS_MODE_TEXT }
+--- end
+
+@@@ frontend screens/batch/BatchDetailScreen.js
+--- find
+const summary = stageSummary(doneMats);
+--- replace
+const summary = stageSummary(doneMats);
+  const pairNames = [...new Set(doneMats.filter((i) => i.roast_partner_id && i.roast_partner_name).map((i) => [i.material_name, i.roast_partner_name].sort().join(' + ')))];
+--- end
+
+@@@ frontend screens/batch/BatchDetailScreen.js
+--- find
+{!!machineName && <MetaChip icon="scale" text={machineName} />}
+--- replace
+{!!machineName && <MetaChip icon="scale" text={machineName} />}
+            <MetaChip icon={b.process_mode === 'SIMULTANEOUS' ? 'call-split' : 'arrow-right-bold-outline'} text={b.process_mode === 'SIMULTANEOUS' ? 'Simultaneous' : 'Sequential'} />
+--- end
+
+@@@ frontend screens/batch/BatchDetailScreen.js
+--- find
+{!!b.roasting_mode && !!ROAST_MODE_TEXT[b.roasting_mode] && <Text style={s.noteText}>{ROAST_MODE_TEXT[b.roasting_mode]}</Text>}
+--- replace
+{!!PROCESS_MODE_TEXT[b.process_mode] && <Text style={s.noteText}>{PROCESS_MODE_TEXT[b.process_mode]}</Text>}
+                  {pairNames.length > 0 && <Text style={s.noteText}>{`Roasting pairs: ${pairNames.join('  |  ')}`}</Text>}
+                  {!PROCESS_MODE_TEXT[b.process_mode] && !!b.roasting_mode && !!ROAST_MODE_TEXT[b.roasting_mode] && <Text style={s.noteText}>{ROAST_MODE_TEXT[b.roasting_mode]}</Text>}
+--- end
+
+@@@ frontend screens/batch/BatchListScreen.js
+--- find
+next: ${b.roasting_mode === 'PARALLEL' ? 'Filtering + Roasting' : stageLabel(b.current_stage)}
+--- replace
+next: ${stageText(b)}
+--- end

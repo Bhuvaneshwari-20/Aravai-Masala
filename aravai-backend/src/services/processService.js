@@ -547,10 +547,23 @@ async function startGroup(body, user, ip) {
         else await conn.query('UPDATE process_sessions SET group_id = ? WHERE id = ?', [leadId, r.insertId]);
         created.push(r.insertId);
       }
-    } catch (e) {
-      if (e.code === 'ER_DUP_ENTRY') throw new AppError('This machine or one of the materials was just started by someone else. Reload and try again', 409);
-      throw e;
-    }
+  } catch (e) {
+  console.error('ROAST GROUP START DUPLICATE ERROR:', {
+    code: e.code,
+    errno: e.errno,
+    sqlMessage: e.sqlMessage,
+    sql: e.sql,
+  });
+
+  if (e.code === 'ER_DUP_ENTRY') {
+    throw new AppError(
+      'This machine or one of the materials was just started by someone else. Reload and try again',
+      409
+    );
+  }
+
+  throw e;
+}
     await audit({ userId: user.id, action: 'CREATE', table: 'process_sessions', recordId: leadId,
       newValues: { process: type, combined: true, group_id: leadId, batch_id: batchId, machine_id: machineId, start_time: startStr, expected_minutes: minutes,
         configured_seconds: dur.configuredSec, manual_seconds: dur.manualSec, duration_change_reason: dur.reason,
